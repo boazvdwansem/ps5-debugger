@@ -26,7 +26,6 @@ aborts cleanly.
 | 6.xx               | `FW 6.x`                   |
 | 7.xx               | `FW 7.x`                   |
 | 7.5x               | `FW 7.5x`                  |
-| 8.xx               | `FW 8.x`                   |
 
 Each family covers several point releases - see the switch in
 [installer/source/main.c](installer/source/main.c) for the exact set of FW
