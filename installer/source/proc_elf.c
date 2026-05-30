@@ -6,6 +6,7 @@
 #include "proc.h"
 #include "kern_rw_fast.h"
 #include <stdarg.h>
+#include <sys/mman.h>
 
 extern uint64_t proc_call_remote_sys(int pid, int sysno, ...);
 extern int      kern_ptrace_attach_and_wait(int pid);
@@ -254,14 +255,11 @@ static int proc_resolve_call_nid_Jp7F(int pid, void *scratch)
 static void compute_fw_vmmap_adjustments(uint64_t *out_nentries_adj,
                                           uint64_t *out_name_adj) {
     uint32_t fw = kernel_get_fw_version();
-    uint32_t s1 = (fw >> 1) & 0x55550000u;
-    uint32_t s2 = fw & 0xD5550000u;
-    uint32_t s  = s1 + 2u * s2;
     int write_adj = 0;
-    switch (s) {
-    case 0x9000000: case 0x9010000: case 0x9a00000:
-    case 0xb000000: case 0xb020000:
-    case 0x4000000: case 0x4100000: case 0x4800000: case 0x4900000:
+    switch (fw & 0xffff0000u) {
+    case 0x6000000u: case 0x6020000u: case 0x6500000u:                  /* 6.00 6.02 6.50 */
+    case 0x7000000u: case 0x7010000u:                                   /* 7.00 7.01 */
+    case 0x8000000u: case 0x8200000u: case 0x8400000u: case 0x8600000u: /* 8.00 8.20 8.40 8.60 */
         write_adj = 1; break;
     default: write_adj = 0; break;
     }
@@ -393,7 +391,6 @@ static int kern_init_dbgctx_at_addr_kern(uint32_t pid, uint64_t addr)
 
 static uint64_t proc_call_remote_sce(int pid)
 {
-
     void *mmap_rv = freebsd_mmap((unsigned long)pid, (void *)0, 0x4000, 3,
                                   0x1002, -1, 0);
     if ((long)mmap_rv == -1L) return 0;
@@ -402,12 +399,11 @@ static uint64_t proc_call_remote_sce(int pid)
     int sock_a = kern_syscall_socket(pid, 0x1c, 2, 0x11);
     if (sock_a < 0) return 0;
 
-    pt_write_i(pid, (void *)(scratch + 0x00), 0x14);
-    pt_write_i(pid, (void *)(scratch + 0x04), 0x29);
-    pt_write_i(pid, (void *)(scratch + 0x08), 0x3D);
-    pt_write_i(pid, (void *)(scratch + 0x0C), 0);
-    pt_write_i(pid, (void *)(scratch + 0x10), 0);
-    pt_write_i(pid, (void *)(scratch + 0x14), 0);
+    {
+        uint32_t seed_a[6] = { 0x14, 0x29, 0x3D, 0, 0, 0 };
+        if (ptrace_io_write_d((int)pid, seed_a, (void *)(scratch + 0x00), 24))
+            return 0;
+    }
 
     if (kern_setsockopt(pid, sock_a, 0x29, 0x19, scratch, 0x18) != 0)
         return 0;
@@ -415,11 +411,11 @@ static uint64_t proc_call_remote_sce(int pid)
     int sock_b = kern_syscall_socket(pid, 0x1c, 2, 0x11);
     if (sock_b < 0) return 0;
 
-    pt_write_i(pid, (void *)(scratch + 0x00), 0);
-    pt_write_i(pid, (void *)(scratch + 0x04), 0);
-    pt_write_i(pid, (void *)(scratch + 0x08), 0);
-    pt_write_i(pid, (void *)(scratch + 0x0C), 0);
-    pt_write_i(pid, (void *)(scratch + 0x10), 0);
+    {
+        uint32_t seed_b[5] = { 0, 0, 0, 0, 0 };
+        if (ptrace_io_write_d((int)pid, seed_b, (void *)(scratch + 0x00), 20))
+            return 0;
+    }
 
     if (kern_setsockopt(pid, sock_b, 0x29, 0x2E, scratch, 0x14) != 0)
         return 0;
@@ -441,18 +437,35 @@ static uint64_t proc_call_remote_sce(int pid)
     nid_addr += 9;
 
     void *fd_data = pf_kernel_get_proc_file(pid, read_a);
-    pt_io(pid, (void *)(scratch + 0x00), nid_addr);
-    pt_io(pid, (void *)(scratch + 0x08), scratch + 0x100);
-    pt_io(pid, (void *)(scratch + 0x10), scratch + 0x200);
-    pt_io(pid, (void *)(scratch + 0x18), (uint64_t)fd_data);
-    pt_io(pid, (void *)(scratch + 0x20), (uint64_t)KERNEL_ADDRESS_DATA_BASE);
-    pt_io(pid, (void *)(scratch + 0x28), scratch + 0x300);
 
-    pt_write_i(pid, (void *)(scratch + 0x100), read_a);
-    pt_write_i(pid, (void *)(scratch + 0x104), read_b);
-    pt_write_i(pid, (void *)(scratch + 0x200), sock_a);
-    pt_write_i(pid, (void *)(scratch + 0x204), sock_b);
-    pt_write_i(pid, (void *)(scratch + 0x300), 0);
+    {
+        uint64_t hdr[6] = {
+            nid_addr,
+            scratch + 0x100,
+            scratch + 0x200,
+            (uint64_t)fd_data,
+            (uint64_t)KERNEL_ADDRESS_DATA_BASE,
+            scratch + 0x300
+        };
+        if (ptrace_io_write_d((int)pid, hdr, (void *)(scratch + 0x00), 48))
+            return 0;
+    }
+
+    {
+        uint32_t pair1[2] = { (uint32_t)read_a, (uint32_t)read_b };
+        if (ptrace_io_write_d((int)pid, pair1, (void *)(scratch + 0x100), 8))
+            return 0;
+    }
+    {
+        uint32_t pair2[2] = { (uint32_t)sock_a, (uint32_t)sock_b };
+        if (ptrace_io_write_d((int)pid, pair2, (void *)(scratch + 0x200), 8))
+            return 0;
+    }
+    {
+        uint32_t zero = 0;
+        if (ptrace_io_write_d((int)pid, &zero, (void *)(scratch + 0x300), 4))
+            return 0;
+    }
 
     return scratch;
 }
@@ -528,6 +541,48 @@ long proc_load_elf_inject(uint32_t pid, char *elf_buf, const char *thread_name)
     if ((intptr_t)base_p == -1) return 0;
     uint64_t base_addr = (uint64_t)base_p;
 
+    uint8_t *image = (uint8_t *)mmap(NULL, (size_t)total_size,
+                                      3 ,
+                                      0x1002 ,
+                                      -1, 0);
+    if ((intptr_t)image == -1) goto cleanup_base;
+    memset(image, 0, (size_t)total_size);
+
+    if (e_phnum) {
+        for (uint16_t i = 0; i < e_phnum; i++) {
+            char *ph = phdr_base + (uint64_t)i * 56;
+            uint32_t p_type = *(uint32_t *)(ph + 0);
+            if (p_type != 1) continue;
+            uint64_t p_filesz = *(uint64_t *)(ph + 32);
+            if (p_filesz == 0) continue;
+            uint64_t p_offset = *(uint64_t *)(ph + 8);
+            uint64_t p_vaddr  = *(uint64_t *)(ph + 16);
+            memcpy(image + (p_vaddr - min_aligned),
+                   elf_buf + p_offset, (size_t)p_filesz);
+        }
+    }
+
+    if (e_shnum) {
+        for (uint16_t i = 0; i < e_shnum; i++) {
+            char *sh = shdr_base + (uint64_t)i * 64;
+            uint32_t sh_type = *(uint32_t *)(sh + 4);
+            if (sh_type != 4) continue;
+            uint64_t sh_size = *(uint64_t *)(sh + 0x20);
+            if (sh_size < 24) continue;
+            uint64_t sh_offset = *(uint64_t *)(sh + 0x18);
+            char *rela_base = elf_buf + sh_offset;
+            uint64_t nrela = sh_size / 24;
+            for (uint64_t j = 0; j < nrela; j++) {
+                char *r = rela_base + j * 24;
+                uint32_t r_type_lo = *(uint32_t *)(r + 8);
+                if (r_type_lo != 8) continue;
+                uint64_t r_offset = *(uint64_t *)(r + 0);
+                uint64_t r_addend = *(uint64_t *)(r + 16);
+                *(uint64_t *)(image + (r_offset - min_aligned)) = base_addr + r_addend;
+            }
+        }
+    }
+
     if (e_phnum) {
         for (uint16_t i = 0; i < e_phnum; i++) {
             char *ph = phdr_base + (uint64_t)i * 56;
@@ -536,12 +591,12 @@ long proc_load_elf_inject(uint32_t pid, char *elf_buf, const char *thread_name)
             uint64_t p_memsz = *(uint64_t *)(ph + 40);
             if (p_memsz == 0) continue;
             uint32_t p_flags = *(uint32_t *)(ph + 4);
-            uint64_t p_offset = *(uint64_t *)(ph + 8);
             uint64_t p_vaddr  = *(uint64_t *)(ph + 16);
 
             uint64_t aligned_memsz = PAGE_ROUND_UP(p_memsz);
             uint64_t target_addr = base_addr + p_vaddr;
-            void *src = elf_buf + p_offset;
+
+            void *src = image + (p_vaddr - min_aligned);
             int seg_prot = elf_pflags_to_prot(p_flags);
 
             if (p_flags & 1) {
@@ -598,30 +653,6 @@ long proc_load_elf_inject(uint32_t pid, char *elf_buf, const char *thread_name)
         }
     }
 
-    if (e_shnum) {
-        for (uint16_t i = 0; i < e_shnum; i++) {
-            char *sh = shdr_base + (uint64_t)i * 64;
-            uint32_t sh_type = *(uint32_t *)(sh + 4);
-            if (sh_type != 4) continue;
-            uint64_t sh_size = *(uint64_t *)(sh + 0x20);
-            if (sh_size < 24) continue;
-            uint64_t sh_offset = *(uint64_t *)(sh + 0x18);
-            char *rela_base = elf_buf + sh_offset;
-            uint64_t nrela = sh_size / 24;
-            for (uint64_t j = 0; j < nrela; j++) {
-                char *r = rela_base + j * 24;
-                uint32_t r_type_lo = *(uint32_t *)(r + 8);
-                if (r_type_lo != 8) continue;
-                uint64_t r_offset = *(uint64_t *)(r + 0);
-                uint64_t r_addend = *(uint64_t *)(r + 16);
-                uint64_t target = base_addr + r_offset;
-                uint64_t local_value = base_addr + r_addend;
-                if (ptrace_io_write_d((int)pid, &local_value, (void *)target, 8))
-                    goto cleanup_base;
-            }
-        }
-    }
-
     if (e_phnum) {
         for (uint16_t i = 0; i < e_phnum; i++) {
             char *ph = phdr_base + (uint64_t)i * 56;
@@ -644,10 +675,12 @@ long proc_load_elf_inject(uint32_t pid, char *elf_buf, const char *thread_name)
         kern_init_dbgctx_at_addr_kern(pid, base_addr + e_entry);
     }
 
+    munmap(image, (size_t)total_size);
     return (long)(base_addr + e_entry);
 
 cleanup_base:
 
+    if (image && (intptr_t)image != -1) munmap(image, (size_t)total_size);
     freebsd_munmap((int)pid, (unsigned long)base_addr, (unsigned long)total_size);
     return 0;
 }

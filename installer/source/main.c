@@ -12,6 +12,46 @@ extern const uint8_t  embedded_inner_start[];
 extern const uint8_t  embedded_inner_end[];
 extern const uint64_t embedded_inner_size;
 
+#define GUARD_SYS_close    6
+#define GUARD_SYS_socket   97
+#define GUARD_SYS_connect  98
+#define PS5DEBUG_PORT      744
+
+struct guard_sockaddr_in {
+    uint8_t  sin_len;
+    uint8_t  sin_family;
+    uint16_t sin_port;
+    uint32_t sin_addr;
+    uint8_t  sin_zero[8];
+};
+
+static void guard_notify(const char *msg)
+{
+    typedef struct { char useless1[45]; char message[3075]; } req_t;
+    req_t req;
+    memset(&req, 0, sizeof(req));
+    strncpy(req.message, msg, sizeof(req.message) - 1);
+    sceKernelSendNotificationRequest(0, &req, sizeof(req), 0);
+}
+
+static int ps5debug_already_running(void)
+{
+    long fd = ps5debug_syscall(GUARD_SYS_socket, 2 , 1 ,
+                               0, 0, 0, 0);
+    if (fd < 0) return 0;
+
+    struct guard_sockaddr_in sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_len    = 0x10;
+    sa.sin_family = 2;
+    sa.sin_port   = (uint16_t)((PS5DEBUG_PORT << 8) | (PS5DEBUG_PORT >> 8));
+    sa.sin_addr   = 0x0100007Fu;
+
+    long rc = ps5debug_syscall(GUARD_SYS_connect, fd, (long)&sa, 0x10, 0, 0, 0);
+    ps5debug_syscall(GUARD_SYS_close, fd, 0, 0, 0, 0, 0);
+    return (rc == 0);
+}
+
 static int unlock_target_syscall_filter(int pid)
 {
     intptr_t kproc = kernel_get_proc((pid_t)pid);
@@ -35,51 +75,49 @@ static int install_kernel_patch(void)
 {
     intptr_t kbase = (intptr_t)KERNEL_ADDRESS_DATA_BASE;
 
-    uint32_t s1 = kernel_get_fw_version();
-    uint32_t s1_p = (s1 >> 1) & 0x55550000u;
-    uint32_t s2 = kernel_get_fw_version() & 0xD5550000u;
-    uint32_t v = s1_p + 2u * s2;
+    uint32_t raw = kernel_get_fw_version();
+    uint32_t fw  = raw & 0xffff0000u;
 
-    klog_printf("port_outer: kpatch FW raw=0x%x derived_v=0x%x kbase=0x%lx\n",
-                s1, v, (unsigned long)kbase);
+    klog_printf("port_outer: kpatch FW raw=0x%x kbase=0x%lx\n",
+                raw, (unsigned long)kbase);
 
     intptr_t patch_addr;
     const char *fw_label;
-    switch (v) {
-    case 0x3000000u: case 0x3100000u: case 0x3120000u: case 0x3200000u:
+    switch (fw) {
+    case 0x3000000u: case 0x3100000u: case 0x3200000u: case 0x3210000u:   /* 3.00 3.10 3.20 3.21 */
         patch_addr = kbase + 0x6466498ULL;
         fw_label = "FW 3.x";
         break;
-    case 0x8010000u:
+    case 0x4020000u:                                                      /* 4.02 */
         patch_addr = kbase + 0x6505498ULL;
         fw_label = "FW 4.0";
         break;
-    case 0x8000000u: case 0x8030000u: case 0x8a00000u: case 0x8a20000u:
+    case 0x4000000u: case 0x4030000u: case 0x4500000u: case 0x4510000u:   /* 4.00 4.03 4.50 4.51 */
         patch_addr = kbase + 0x6506498ULL;
         fw_label = "FW 4.x (incl. 4.51)";
         break;
-    case 0xa000000u: case 0xa010000u: case 0xa200000u: case 0xaa00000u:
+    case 0x5000000u: case 0x5020000u: case 0x5100000u: case 0x5500000u:   /* 5.00 5.02 5.10 5.50 */
         patch_addr = kbase + 0x6646710ULL;
         fw_label = "FW 5.x";
         break;
-    case 0x9000000u: case 0x9010000u: case 0x9a00000u:
+    case 0x6000000u: case 0x6020000u: case 0x6500000u:                    /* 6.00 6.02 6.50 */
         patch_addr = kbase + 0x6596910ULL;
         fw_label = "FW 6.x";
         break;
-    case 0xb000000u: case 0xb020000u:
+    case 0x7000000u: case 0x7010000u:                                     /* 7.00 7.01 */
         patch_addr = kbase + 0xAC8088ULL;
         fw_label = "FW 7.x";
         break;
-    case 0xb100000u: case 0xb800000u: case 0xb900000u: case 0xb920000u:
+    case 0x7200000u: case 0x7400000u: case 0x7600000u: case 0x7610000u:   /* 7.20 7.40 7.60 7.61 */
         patch_addr = kbase + 0xAC8088ULL;
         fw_label = "FW 7.5x";
         break;
-    case 0x4000000u: case 0x4100000u: case 0x4800000u: case 0x4900000u:
+    case 0x8000000u: case 0x8200000u: case 0x8400000u: case 0x8600000u:   /* 8.00 8.20 8.40 8.60 */
         patch_addr = kbase + 0xAC3088ULL;
         fw_label = "FW 8.x";
         break;
     default:
-        klog_printf("port_outer: kpatch SKIP - unsupported FW magic 0x%x\n", v);
+        klog_printf("port_outer: kpatch SKIP - unsupported FW magic 0x%x\n", fw);
         return -1;
     }
     klog_printf("port_outer: kpatch %s recognized; addr=0x%lx\n",
@@ -116,6 +154,13 @@ int main(int argc, char *argv[])
     (void)argc; (void)argv;
 
     port_outer_init_mutexes();
+
+    if (ps5debug_already_running()) {
+        klog_puts("port_outer: ps5debug already running on port 744 - install aborted\n");
+        guard_notify("ps5debug-NG is already running - injection skipped");
+        payload_exit(0);
+        return 0;
+    }
 
     klog_printf("port_outer: embedded inner ELF = %lu B\n",
                 (unsigned long)embedded_inner_size);

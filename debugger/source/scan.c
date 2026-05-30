@@ -14,15 +14,11 @@ static uint64_t vmmap_name_adj     = 0;
 static void vmmap_init_offsets(void) {
     uint32_t fw = kernel_get_fw_version();
 
-    uint32_t s1 = (fw >> 1) & 0x55550000u;
-    uint32_t s2 = fw & 0xD5550000u;
-    uint32_t s  = s1 + 2u * s2;
-
     int write_adj = 0;
-    switch (s) {
-    case 0x9000000: case 0x9010000: case 0x9a00000:
-    case 0xb000000: case 0xb020000:
-    case 0x4000000: case 0x4100000: case 0x4800000: case 0x4900000:
+    switch (fw & 0xffff0000u) {
+    case 0x6000000u: case 0x6020000u: case 0x6500000u:                  /* 6.00 6.02 6.50 */
+    case 0x7000000u: case 0x7010000u:                                   /* 7.00 7.01 */
+    case 0x8000000u: case 0x8200000u: case 0x8400000u: case 0x8600000u: /* 8.00 8.20 8.40 8.60 */
         write_adj = 1;
         break;
     default:
@@ -140,7 +136,7 @@ int proc_scan_handle(int fd, struct cmd_packet *packet) {
                 uint64_t off = j & 0x3FFF;
                 if (j == 0 || off == 0) {
 
-                    sys_proc_rw_w0((uint64_t)sp->pid, start, 0x4000, scan_buf, 0);
+                    proc_read_mem(sp->pid, start, 0x4000, scan_buf);
                     off = j & 0x3FFF;
                 }
                 uint64_t cur_addr = start + j;
@@ -216,7 +212,7 @@ int proc_scan_aob_handle(int fd, struct cmd_packet *packet) {
     while (remaining > 0) {
         uint64_t to_read = (chunk_size < remaining) ? chunk_size : remaining;
         memset(read_buf, 0, to_read);
-        sys_proc_rw_w0((uint64_t)sp->pid, address, to_read, read_buf, 0);
+        proc_read_mem(sp->pid, address, to_read, read_buf);
 
         uint64_t limit = (to_read >= plen) ? to_read - plen : 0;
         for (uint64_t j = 0; j <= limit; j++) {
@@ -307,7 +303,7 @@ int proc_scan_aob_multi_handle(int fd, struct cmd_packet *packet) {
         for (;;) {
             uint64_t to_read = (remaining < 0x100000) ? remaining : 0x100000;
             memset(read_buf, 0, to_read);
-            sys_proc_rw_w0((uint64_t)mp->pid, address, to_read, read_buf, 0);
+            proc_read_mem(mp->pid, address, to_read, read_buf);
 
             uint32_t cursor = 0;
             int outer_break = 0;
@@ -339,10 +335,8 @@ int proc_scan_aob_multi_handle(int fd, struct cmd_packet *packet) {
 
                 cursor += 5 + 2u * plen;
 
-                if (!stop_unique && found_count >= pat_count) { outer_break = 1; break; }
-                if ( stop_unique && (found_count + invalidated_count) >= pat_count) {
-                    outer_break = 1; break;
-                }
+                if (!stop_unique && found_count      >= pat_count) { outer_break = 1; break; }
+                if ( stop_unique && invalidated_count >= pat_count) { outer_break = 1; break; }
             }
 
             if (outer_break) break;
@@ -446,7 +440,7 @@ int proc_scan_start_handle(int fd, struct cmd_packet *packet) {
     while (remaining > 0) {
         uint64_t to_read = (remaining > chunk_size) ? chunk_size : remaining;
         memset(read_buf, 0, to_read);
-        sys_proc_rw_w0((uint64_t)sp->pid, addr, to_read, read_buf, 0);
+        proc_read_mem(sp->pid, addr, to_read, read_buf);
 
         uint64_t limit = (to_read >= value_length) ? to_read - value_length : 0;
         for (uint64_t j = 0; j <= limit; j += step) {
@@ -593,7 +587,7 @@ int proc_scan_count_handle(int fd, struct cmd_packet *packet) {
                 uint32_t read_size = (span > 0x100000ULL) ? 0x100000u : (uint32_t)span;
 
                 memset(mem_buf, 0, read_size);
-                sys_proc_rw_w0((uint64_t)cp->pid, addr, (uint64_t)read_size, mem_buf, 0);
+                proc_read_mem(cp->pid, addr, (uint64_t)read_size, mem_buf);
                 window_start = addr;
                 window_end   = addr + read_size;
             }
@@ -670,7 +664,7 @@ int proc_scan_get_handle(int fd, struct cmd_packet *packet) {
         while (length > 0) {
             uint64_t to_read = (length > 0x100000ULL) ? 0x100000ULL : length;
             memset(buf, 0, to_read);
-            sys_proc_rw_w0((uint64_t)gp->pid, addr, to_read, buf, 0);
+            proc_read_mem(gp->pid, addr, to_read, buf);
             net_send_all(fd, buf, (int)to_read);
             addr   += to_read;
             length -= to_read;

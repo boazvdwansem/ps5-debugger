@@ -254,14 +254,11 @@ static int proc_resolve_call_nid_Jp7F(int pid, void *scratch)
 static void compute_fw_vmmap_adjustments(uint64_t *out_nentries_adj,
                                           uint64_t *out_name_adj) {
     uint32_t fw = kernel_get_fw_version();
-    uint32_t s1 = (fw >> 1) & 0x55550000u;
-    uint32_t s2 = fw & 0xD5550000u;
-    uint32_t s  = s1 + 2u * s2;
     int write_adj = 0;
-    switch (s) {
-    case 0x9000000: case 0x9010000: case 0x9a00000:
-    case 0xb000000: case 0xb020000:
-    case 0x4000000: case 0x4100000: case 0x4800000: case 0x4900000:
+    switch (fw & 0xffff0000u) {
+    case 0x6000000u: case 0x6020000u: case 0x6500000u:                  /* 6.00 6.02 6.50 */
+    case 0x7000000u: case 0x7010000u:                                   /* 7.00 7.01 */
+    case 0x8000000u: case 0x8200000u: case 0x8400000u: case 0x8600000u: /* 8.00 8.20 8.40 8.60 */
         write_adj = 1; break;
     default: write_adj = 0; break;
     }

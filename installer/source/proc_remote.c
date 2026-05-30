@@ -8,6 +8,7 @@
 
 #include <stdarg.h>
 #include <sys/mman.h>
+#include <sys/wait.h>
 
 #define PCRK_SIZEOF_REG  0xb0
 #define PCRK_R_R10       0x28
@@ -174,7 +175,10 @@ int kern_ptrace_attach_and_wait(int pid)
 {
     if (ptrace_elev(0x0A , pid, 0, 0) == -1) return -1;
 
-    sceKernelUsleep(100000);
+    int status = 0;
+    if (wait4((pid_t)pid, &status, 0, NULL) == -1) {
+        sceKernelUsleep(20000);
+    }
     return 0;
 }
 

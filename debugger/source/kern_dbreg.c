@@ -14,30 +14,17 @@ bool fw_uses_kernel_dbreg_path(void) {
         fw = kernel_get_fw_version();
         g_fw_cache = fw;
     }
-    uint32_t s = ((fw << 1) & 0xAAAA0000u) | ((fw >> 1) & 0x55550000u);
-
-    if (s == 0x3120000u) return true;
-    if (s == 0x3200000u) return true;
-    if (s == 0x4800000u) return true;
-    if (s == 0x4900000u) return true;
-    if (s == 0x8000000u) return true;
-    if (s == 0x8010000u) return true;
-    if (s == 0x8030000u) return true;
-    if (s == 0x8a00000u) return true;
-    if (s == 0x8a20000u) return true;
-    if (s == 0x9a00000u) return true;
-    if (s == 0xa200000u) return true;
-    if (s == 0xaa00000u) return true;
-    if (s == 0xb100000u) return true;
-    if (s == 0xb800000u) return true;
-
-    if ((s & 0xFFEFFFFFu) == 0x3000000u) return true;
-    if ((s & 0xFFEFFFFFu) == 0x4000000u) return true;
-    if ((s & 0xFFFEFFFFu) == 0x9000000u) return true;
-    if ((s & 0xFFFEFFFFu) == 0xa000000u) return true;
-    if ((s & 0xFFFDFFFFu) == 0xb900000u) return true;
-
-    return false;
+    switch (fw & 0xffff0000u) {
+    case 0x3000000u: case 0x3100000u: case 0x3200000u: case 0x3210000u:                 /* 3.00 3.10 3.20 3.21 */
+    case 0x4000000u: case 0x4020000u: case 0x4030000u: case 0x4500000u: case 0x4510000u: /* 4.00 4.02 4.03 4.50 4.51 */
+    case 0x5000000u: case 0x5020000u: case 0x5100000u: case 0x5500000u:                  /* 5.00 5.02 5.10 5.50 */
+    case 0x6000000u: case 0x6020000u: case 0x6500000u:                                   /* 6.00 6.02 6.50 */
+    case 0x7200000u: case 0x7400000u: case 0x7600000u: case 0x7610000u:                  /* 7.20 7.40 7.60 7.61 (not 7.00/7.01) */
+    case 0x8000000u: case 0x8200000u: case 0x8400000u: case 0x8600000u:                  /* 8.00 8.20 8.40 8.60 */
+        return true;
+    default:
+        return false;
+    }
 }
 
 bool is_process_stopped(int pid) {
@@ -74,7 +61,7 @@ void kern_thread_cache_flush(void) {
     }
 }
 
-static intptr_t kern_thread_addr(int pid, int lwpid) {
+intptr_t kern_thread_addr(int pid, int lwpid) {
     for (int i = 0; i < KR_THR_CACHE_N; i++) {
         if (kr_thr_cache[i].pid == (int32_t)pid && kr_thr_cache[i].lwpid == (int32_t)lwpid
             && kr_thr_cache[i].kthread != 0) {

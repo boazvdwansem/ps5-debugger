@@ -2,5 +2,5 @@
 
 #pragma once
 
-#define PS5DEBUG_NG_VERSION_STR "1.2.3"
+#define PS5DEBUG_NG_VERSION_STR "1.2.4"
 #define PS5DEBUG_NG_BRAND_STR   "ps5debug-NG by OSR v" PS5DEBUG_NG_VERSION_STR

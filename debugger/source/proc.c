@@ -362,6 +362,13 @@ int proc_list_handle(int fd, struct cmd_packet *packet) {
     return 0;
 }
 
+void proc_read_mem(uint32_t pid, uint64_t addr, uint64_t len, void *buf) {
+    if (proc_aux_range_contains(pid, addr, len) &&
+        proc_ptwalk_read(pid, addr, len, buf) == 0)
+        return;
+    sys_proc_rw_w0((uint64_t)pid, addr, len, buf, 0);
+}
+
 int proc_read_handle(int fd, struct cmd_packet *packet) {
     struct cmd_proc_read_packet *rp = (struct cmd_proc_read_packet *)packet->data;
     if (!rp) {
@@ -382,14 +389,14 @@ int proc_read_handle(int fd, struct cmd_packet *packet) {
 
     while (length > 0x10000) {
         memset(data, 0, 0x10000);
-        sys_proc_rw_w0((uint64_t)rp->pid, address, 0x10000, data, 0);
+        proc_read_mem(rp->pid, address, 0x10000, data);
         net_send_all(fd, data, 0x10000);
         address += 0x10000;
         length  -= 0x10000;
     }
     if (length > 0) {
         memset(data, 0, (size_t)length);
-        sys_proc_rw_w0((uint64_t)rp->pid, address, length, data, 0);
+        proc_read_mem(rp->pid, address, length, data);
         net_send_all(fd, data, (int)length);
     }
 
@@ -550,6 +557,16 @@ int proc_maps_handle(int fd, struct cmd_packet *packet) {
     if (maps == NULL) {
         net_send_int32(fd, CMD_DATA_NULL);
         return 1;
+    }
+
+    void *aug       = NULL;
+    int   aug_count = 0;
+    if (proc_ptwalk_augment(mp->pid, (struct proc_vm_map_entry *)maps, count,
+                            (struct proc_vm_map_entry **)&aug, &aug_count) == 0
+        && aug != NULL && aug_count > 0) {
+        free(maps);
+        maps  = aug;
+        count = aug_count;
     }
 
     net_send_int32(fd, CMD_SUCCESS);

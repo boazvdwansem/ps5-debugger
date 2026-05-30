@@ -33,9 +33,107 @@ struct dbgctx {
 static int g_cached_app_pid = 0;
 static int g_cached_app_id  = 0;
 
+#define LWP_CACHE_MAX 512
+static int      g_lwp_cache_pid   = 0;
+static uint32_t g_lwp_cache_list[LWP_CACHE_MAX];
+static int      g_lwp_cache_count = 0;
+static uint32_t g_lwp_cache_gen   = 0;
+
+static int get_lwp_list_cached(int pid, uint32_t **out_list, int *out_count) {
+
+    if (pid != g_lwp_cache_pid || g_lwp_cache_count == 0 || g_lwp_cache_gen >= 1024) {
+        int num = (int)ptrace_raw(PT_GETNUMLWPS, pid, NULL, 0);
+        if (num <= 0 || num > LWP_CACHE_MAX) return -1;
+        long r = ptrace_raw(PT_GETLWPLIST, pid, g_lwp_cache_list, num);
+        if (r <= 0) return -1;
+        g_lwp_cache_count = (int)r;
+        g_lwp_cache_pid   = pid;
+        g_lwp_cache_gen   = 0;
+    } else {
+        g_lwp_cache_gen++;
+    }
+    *out_list  = g_lwp_cache_list;
+    *out_count = g_lwp_cache_count;
+    return 0;
+}
+
+static void lwp_list_cache_flush(void) {
+    g_lwp_cache_pid   = 0;
+    g_lwp_cache_count = 0;
+    g_lwp_cache_gen   = 0;
+}
+
+extern intptr_t kern_thread_addr(int pid, int lwpid);
+
+#define RIP_CACHE_N 128
+static struct {
+    int32_t  pid;
+    int32_t  lwpid;
+    intptr_t rip_kaddr;
+} g_rip_cache[RIP_CACHE_N];
+static int      g_rip_cache_next = 0;
+static uint32_t g_rip_cache_gen  = 0;
+
+static int kern_get_rip_fast(int pid, int lwpid, uint64_t *out_rip) {
+
+    if (++g_rip_cache_gen >= 1024) {
+        for (int i = 0; i < RIP_CACHE_N; i++) g_rip_cache[i].rip_kaddr = 0;
+        g_rip_cache_gen = 0;
+    }
+
+    for (int i = 0; i < RIP_CACHE_N; i++) {
+        if (g_rip_cache[i].pid == pid && g_rip_cache[i].lwpid == lwpid
+            && g_rip_cache[i].rip_kaddr) {
+            return kernel_copyout_fast(g_rip_cache[i].rip_kaddr, out_rip, 8) < 0 ? 1 : 0;
+        }
+    }
+
+    intptr_t kthread = kern_thread_addr(pid, lwpid);
+    if (!kthread) return 1;
+    intptr_t frame_addr;
+    if (kernel_copyout_fast(kthread + 0x460, &frame_addr, 8) < 0) return 1;
+    int slot = g_rip_cache_next;
+    g_rip_cache[slot].pid       = pid;
+    g_rip_cache[slot].lwpid     = lwpid;
+    g_rip_cache[slot].rip_kaddr = frame_addr + 0xe8;
+    g_rip_cache_next = (g_rip_cache_next + 1) % RIP_CACHE_N;
+    return kernel_copyout_fast(frame_addr + 0xe8, out_rip, 8) < 0 ? 1 : 0;
+}
+
+static int kern_set_rip_fast(int pid, int lwpid, uint64_t new_rip) {
+    for (int i = 0; i < RIP_CACHE_N; i++) {
+        if (g_rip_cache[i].pid == pid && g_rip_cache[i].lwpid == lwpid
+            && g_rip_cache[i].rip_kaddr) {
+            return kernel_copyin_fast(&new_rip, g_rip_cache[i].rip_kaddr, 8) < 0 ? 1 : 0;
+        }
+    }
+    intptr_t kthread = kern_thread_addr(pid, lwpid);
+    if (!kthread) return 1;
+    intptr_t frame_addr;
+    if (kernel_copyout_fast(kthread + 0x460, &frame_addr, 8) < 0) return 1;
+    int slot = g_rip_cache_next;
+    g_rip_cache[slot].pid       = pid;
+    g_rip_cache[slot].lwpid     = lwpid;
+    g_rip_cache[slot].rip_kaddr = frame_addr + 0xe8;
+    g_rip_cache_next = (g_rip_cache_next + 1) % RIP_CACHE_N;
+    return kernel_copyin_fast(&new_rip, frame_addr + 0xe8, 8) < 0 ? 1 : 0;
+}
+
+static void rip_cache_flush(void) {
+    for (int i = 0; i < RIP_CACHE_N; i++) {
+        g_rip_cache[i].pid = 0;
+        g_rip_cache[i].lwpid = 0;
+        g_rip_cache[i].rip_kaddr = 0;
+    }
+    g_rip_cache_next = 0;
+    g_rip_cache_gen  = 0;
+}
+
 void debug_resume_cache_flush(void) {
     g_cached_app_pid = 0;
     g_cached_app_id  = 0;
+    lwp_list_cache_flush();
+    rip_cache_flush();
 }
 
 static int resume_app_via_self_id(int pid) {
@@ -56,6 +154,23 @@ static inline void resume_app_unelev(struct elev_state *es, int pid) {
     if (was_valid) elev_restore(es);
     resume_app_via_self_id(pid);
     if (was_valid) (void)elev_save_and_set(es);
+}
+
+static inline int authid_bump_safe(uint64_t *out_saved) {
+    intptr_t ucred = kernel_get_proc_ucred_fast((pid_t)getpid());
+    if (ucred == 0) return -1;
+    if (kernel_copyout_fast(ucred + 0x58, out_saved, 8) != 0) return -1;
+    if (*out_saved == 0) return -1;
+    uint64_t priv_authid = 0x4800000000000006ULL;
+    if (kernel_copyin_fast(&priv_authid, ucred + 0x58, 8) != 0) return -1;
+    return 0;
+}
+
+static inline void authid_restore_safe(uint64_t saved_authid) {
+    intptr_t ucred = kernel_get_proc_ucred_fast((pid_t)getpid());
+    if (ucred != 0) {
+        kernel_copyin_fast(&saved_authid, ucred + 0x58, 8);
+    }
 }
 
 extern bool fw_uses_kernel_dbreg_path(void);
@@ -111,6 +226,14 @@ int connect_debugger(struct dbgctx *ctx, void *client_sockaddr_in) {
 
 uint32_t g_stepping_lwpid = 0;
 
+#define DBG_STORM_FATAL_SIGS(sig) \
+    ((sig) == 11  || (sig) == 7  || (sig) == 4  || (sig) == 8 )
+#define DBG_STORM_LIMIT 32
+static uint32_t g_storm_lwpid  = 0;
+static uint64_t g_storm_rip    = 0;
+static uint8_t  g_storm_sig    = 0;
+static uint32_t g_storm_count  = 0;
+
 extern int sys_proc_vm_map(uint32_t pid, void **out_maps, int *out_count);
 extern int gettimeofday(struct timeval *tp, void *tzp);
 
@@ -141,6 +264,14 @@ static int int3_scan_stuck(int pid, const uint64_t *bp_addrs, int n_bps,
                 uint64_t a = bp_addrs[b];
                 int hit = 0;
                 if (rip == a + 1) {
+
+                    uint8_t li_buf[160];
+                    if (ptrace_raw(PT_LWPINFO, lwpids[i], li_buf, 160) != 0) {
+                        continue;
+                    }
+                    if (*(int32_t *)(li_buf + 0x04) != 1 ) continue;
+                    if (*(int32_t *)(li_buf + 0x30) != 5 )        continue;
+                    if (*(int32_t *)(li_buf + 0x38) != 1 )     continue;
                     *(uint64_t *)(regs_buf + 0x88) = a;
                     ptrace_raw(PT_SETREGS, lwpids[i], regs_buf, 0);
                     hit = 1;
@@ -942,6 +1073,13 @@ int debug_step_thread_handle(int fd, struct cmd_packet *packet) {
     long rc;
     if (gp) {
         scePthreadMutexLock(&g_server_mutex);
+
+        int drain_status = 0;
+        int drain_count = 0;
+        while (drain_count < 64 && wait4(pid, &drain_status, 1, NULL) > 0) {
+            drain_count++;
+        }
+
         g_stepping_lwpid = gp->lwpid;
         rc = ptrace_elev(PT_STEP, (int)gp->lwpid, (void *)1, 0);
         scePthreadMutexUnlock(&g_server_mutex);
@@ -1017,6 +1155,38 @@ int dispatch_debug_events(void) {
         DDE_RETURN(1);
     }
 
+    if (*(int32_t *)(lwpi + 0x38) == 2 ) {
+        int      _abs_lwpid = (int)*(uint32_t *)lwpi;
+        uint64_t _abs_rip   = 0;
+        if (kern_get_rip_fast((int)DBGCTX()->pid, _abs_lwpid, &_abs_rip) == 0) {
+            uint64_t _abs_rm1  = _abs_rip - 1;
+            char    *_abs_base = (char *)curdbgctx + 0x10;
+            for (int _i = 0; _i < 30; _i++) {
+                uint64_t _a = *(uint64_t *)(_abs_base + _i * 0x18);
+                if (_a != 0 && _a == _abs_rm1) {
+                    ptrace_raw(PT_CONTINUE, (int)DBGCTX()->pid, (void *)1, 0);
+                    DDE_RETURN(0);
+                }
+            }
+        }
+    }
+
+    if (*(int32_t *)(lwpi + 0x38) == 1 ) {
+        int      _pabs_lwpid = (int)*(uint32_t *)lwpi;
+        uint64_t _pabs_rip   = 0;
+        if (kern_get_rip_fast((int)DBGCTX()->pid, _pabs_lwpid, &_pabs_rip) == 0) {
+            char *_pabs_base = (char *)curdbgctx + 0x10;
+            for (int _i = 0; _i < 30; _i++) {
+                uint64_t _a = *(uint64_t *)(_pabs_base + _i * 0x18);
+                if (_a != 0 && _a == _pabs_rip) {
+
+                    ptrace_raw(PT_CONTINUE, (int)DBGCTX()->pid, (void *)1, 0);
+                    DDE_RETURN(0);
+                }
+            }
+        }
+    }
+
     char pkt[1184];
     memset(pkt, 0, 1184);
     *(uint32_t *)(pkt + 0x000) = *(uint32_t *)lwpi;
@@ -1088,6 +1258,13 @@ int dispatch_debug_events(void) {
         if (pkt_dr[i] != 0 && pkt_dr[i] == pkt_rip) { matched_wp = i; break; }
     }
 
+    if (matched_bp_v34 != NULL &&
+        *(int32_t *)(lwpi + 0x38) == 2 ) {
+
+        ptrace_raw(PT_CONTINUE, (int)DBGCTX()->pid, (void *)1, 0);
+        DDE_RETURN(0);
+    }
+
     uint8_t length_buf[176];
 
     if (matched_wp >= 0) {
@@ -1118,7 +1295,7 @@ int dispatch_debug_events(void) {
                                 ptrace_raw(PT_STEP, lwpid, (void *)1, 0);
                                 int s2 = 0;
                                 while (wait4(pid, &s2, 1, NULL) == 0) {
-                                    sceKernelUsleep(100);
+                                    sceKernelUsleep(50);
                                 }
                                 pkt_dr[7] = saved_pkt_dr7;
                                 if (use_kernel) {
@@ -1148,7 +1325,7 @@ int dispatch_debug_events(void) {
                         ptrace_raw(PT_STEP, lwp, (void *)1, 0);
                         int s3 = 0;
                         while (wait4(pid, &s3, 1, NULL) == 0) {
-                            sceKernelUsleep(100);
+                            sceKernelUsleep(50);
                         }
                         *(uint64_t *)(small_dbreg + 0x38) = saved_thr_dr7;
                         if (use_kernel) {
@@ -1172,7 +1349,7 @@ int dispatch_debug_events(void) {
             }
             ptrace_raw(PT_STEP, lwpid, (void *)1, 0);
             int s4 = 0;
-            while (wait4(pid, &s4, 1, NULL) == 0) sceKernelUsleep(100);
+            while (wait4(pid, &s4, 1, NULL) == 0) sceKernelUsleep(50);
             pkt_dr[7] = saved_pkt_dr7;
             if (use_kernel) {
                 kern_set_dbregs(pid, lwpid, pkt + 0x420);
@@ -1186,34 +1363,104 @@ int dispatch_debug_events(void) {
         uint64_t bp_addr        = *(uint64_t *)(matched_bp_v34 + 8);
         char    *saved_byte_ptr =  matched_bp_v34 + 16;
         uint8_t  int3           = 0xCC;
+
+        uint64_t saved_authid_1 = 0;
+        int authid_bumped_1 = (authid_bump_safe(&saved_authid_1) == 0);
+
         sys_proc_rw_w1((uint64_t)pid, bp_addr, 1, saved_byte_ptr, 0);
         *(uint64_t *)(pkt + 0x030 + 0x88) -= 1;
+
         if (use_kernel) {
-            if (kern_apply_thread_dbgctx(pid, lwpid, pkt + 0x030) != 0) {
-                ptrace_raw(PT_SETREGS, lwpid, pkt + 0x030, 0);
+            uint64_t _new_rip = *(uint64_t *)(pkt + 0x030 + 0x88);
+            if (kern_set_rip_fast(pid, lwpid, _new_rip) != 0) {
+                if (kern_apply_thread_dbgctx(pid, lwpid, pkt + 0x030) != 0) {
+                    ptrace_raw(PT_SETREGS, lwpid, pkt + 0x030, 0);
+                }
             }
         } else {
             ptrace_raw(PT_SETREGS, lwpid, pkt + 0x030, 0);
         }
         ptrace_raw(PT_STEP, lwpid, (void *)1, 0);
+
+        if (authid_bumped_1) {
+            authid_restore_safe(saved_authid_1);
+            authid_bumped_1 = 0;
+        }
+
         int s_step = 0;
-        while (wait4(pid, &s_step, 1, NULL) == 0) sceKernelUsleep(100);
+        while (wait4(pid, &s_step, 1, NULL) == 0) sceKernelUsleep(50);
+
+        uint64_t saved_authid_2 = 0;
+        int authid_bumped_2 = (authid_bump_safe(&saved_authid_2) == 0);
+
+        int need_scan = 0;
+        int cons_lw   = -1;
         {
-            uint8_t li2[160];
-            errno = 0;
-            if (ptrace_raw(PT_LWPINFO, pid, li2, 160) == 0) {
-                int who_lwp = (int)*(uint32_t *)li2;
-                if (who_lwp != lwpid && who_lwp != 0) {
-                    uint8_t srb[176];
-                    if (ptrace_raw(PT_GETREGS, who_lwp, srb, 0) == 0 &&
-                        *(uint64_t *)(srb + 0x88) == bp_addr + 1) {
-                        *(uint64_t *)(srb + 0x88) = bp_addr;
-                        ptrace_raw(PT_SETREGS, who_lwp, srb, 0);
+            uint8_t lwpi_peek[160];
+            if (ptrace_raw(PT_LWPINFO, pid, lwpi_peek, 160) == 0) {
+                cons_lw = (int)*(uint32_t *)lwpi_peek;
+                if (cons_lw != 0 && cons_lw != lwpid) need_scan = 1;
+            } else {
+                need_scan = 1;
+            }
+        }
+
+        if (need_scan) {
+            uint64_t target_rip = bp_addr + 1;
+            int rewound = 0;
+
+            if (cons_lw > 0 && cons_lw != lwpid) {
+                uint64_t cons_rip = 0;
+                if (kern_get_rip_fast(pid, cons_lw, &cons_rip) == 0
+                    && cons_rip == target_rip) {
+                    uint8_t cons_li[160];
+                    if (ptrace_raw(PT_LWPINFO, cons_lw, cons_li, 160) == 0
+                        && *(int32_t *)(cons_li + 0x04) == 1
+                        && *(int32_t *)(cons_li + 0x30) == 5
+                        && *(int32_t *)(cons_li + 0x38) == 1 ) {
+                        uint8_t cons_regs[176];
+                        if (kern_get_proc_info_by_pid(pid, cons_lw, cons_regs) == 0
+                            && *(uint64_t *)(cons_regs + 0x88) == target_rip) {
+                            *(uint64_t *)(cons_regs + 0x88) = bp_addr;
+                            kern_apply_thread_dbgctx(pid, cons_lw, cons_regs);
+                            rewound = 1;
+                        }
+                    }
+                }
+            }
+
+            if (!rewound) {
+                uint32_t *sib_lwpids = NULL;
+                int sib_count = 0;
+                if (get_lwp_list_cached(pid, &sib_lwpids, &sib_count) == 0) {
+                    for (int i = 0; i < sib_count; i++) {
+                        int sib_lw = (int)sib_lwpids[i];
+                        if (sib_lw == lwpid) continue;
+                        if (sib_lw == cons_lw) continue;
+                        uint64_t sib_rip = 0;
+                        if (kern_get_rip_fast(pid, sib_lw, &sib_rip) != 0) continue;
+                        if (sib_rip != target_rip) continue;
+
+                        uint8_t sib_li[160];
+                        if (ptrace_raw(PT_LWPINFO, sib_lw, sib_li, 160) != 0)
+                            continue;
+                        if (*(int32_t *)(sib_li + 0x04) != 1 ) continue;
+                        if (*(int32_t *)(sib_li + 0x30) != 5 )        continue;
+                        if (*(int32_t *)(sib_li + 0x38) != 1 )     continue;
+
+                        uint8_t sib_regs[176];
+                        if (kern_get_proc_info_by_pid(pid, sib_lw, sib_regs) != 0) continue;
+                        if (*(uint64_t *)(sib_regs + 0x88) == target_rip) {
+                            *(uint64_t *)(sib_regs + 0x88) = bp_addr;
+                            kern_apply_thread_dbgctx(pid, sib_lw, sib_regs);
+                        }
                     }
                 }
             }
         }
         sys_proc_rw_w1((uint64_t)pid, bp_addr, 1, &int3, 0);
+
+        if (authid_bumped_2) authid_restore_safe(saved_authid_2);
     }
 
     uint32_t pkt_lwpid = *(uint32_t *)pkt;
@@ -1226,6 +1473,27 @@ int dispatch_debug_events(void) {
         *(uint64_t *)(pkt + 0x420 + 0x30) = 0;
     }
     g_stepping_lwpid = 0;
+
+    {
+        uint32_t  _final_lwpid = *(uint32_t *)pkt;
+        uint64_t  _final_rip   = *(uint64_t *)(pkt + 0x030 + 0x88);
+        uint8_t   _final_sig   = sig;
+        int       _is_fatal    = DBG_STORM_FATAL_SIGS(_final_sig);
+        int       _match_last  = (_final_lwpid == g_storm_lwpid) &&
+                                 (_final_rip   == g_storm_rip)   &&
+                                 (_final_sig   == g_storm_sig);
+        if (_is_fatal && _match_last) {
+            if (++g_storm_count > DBG_STORM_LIMIT) {
+
+                DDE_RETURN(0);
+            }
+        } else {
+            g_storm_count = 0;
+        }
+        g_storm_lwpid = _final_lwpid;
+        g_storm_rip   = _final_rip;
+        g_storm_sig   = _final_sig;
+    }
 
     net_send_all(DBGCTX()->dbgfd, pkt, 1184);
     resume_app_via_self_id((int)DBGCTX()->pid);

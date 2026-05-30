@@ -101,3 +101,14 @@ extern const uint8_t g_cmptype_needs_previous[16];
 extern uint32_t g_proc_auth_state;
 
 int sys_proc_vm_map(uint32_t pid, void **out_maps, int *out_count);
+
+struct proc_vm_map_entry;
+int proc_ptwalk_augment(uint32_t pid,
+                        struct proc_vm_map_entry *v, int v_count,
+                        struct proc_vm_map_entry **out_buf, int *out_count);
+
+int proc_ptwalk_read(uint32_t pid, uint64_t va, uint64_t len, void *dst);
+
+int proc_aux_range_contains(uint32_t pid, uint64_t addr, uint64_t len);
+
+void proc_read_mem(uint32_t pid, uint64_t addr, uint64_t len, void *buf);

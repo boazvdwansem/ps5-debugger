@@ -70,8 +70,9 @@ static int handle_client(struct server_client *svc) {
     fd_set sfd;
 
     while (1) {
+
         tv.tv_sec  = 0;
-        tv.tv_usec = 1000;
+        tv.tv_usec = 100;
         FD_ZERO(&sfd);
         FD_SET(fd, &sfd);
         errno = 0;
@@ -111,7 +112,17 @@ static int handle_client(struct server_client *svc) {
             }
 
             unsigned char client_idx = (unsigned char)((svc->active - 1) & 0xFFu);
+
+            int _needs_dbg_lock = ((packet.cmd & 0xFFFF0000u) == 0xBDBB0000u);
+            if (_needs_dbg_lock) {
+                scePthreadMutexLock(&g_proc_rw_mutex);
+                scePthreadMutexLock(&g_server_mutex);
+            }
             int rc = cmd_handler(fd, &packet, client_idx);
+            if (_needs_dbg_lock) {
+                scePthreadMutexUnlock(&g_server_mutex);
+                scePthreadMutexUnlock(&g_proc_rw_mutex);
+            }
             if (data) free(data);
             if (rc != 0) return rc;
 
