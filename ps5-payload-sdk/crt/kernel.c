@@ -66,6 +66,7 @@ const unsigned long KERNEL_OFFSET_UCRED_CR_RUID  = 0x08;
 const unsigned long KERNEL_OFFSET_UCRED_CR_SVUID = 0x0C;
 const unsigned long KERNEL_OFFSET_UCRED_CR_RGID  = 0x14;
 const unsigned long KERNEL_OFFSET_UCRED_CR_SVGID = 0x18;
+const unsigned long KERNEL_OFFSET_UCRED_CR_PRISON = 0x30;
 
 const unsigned long KERNEL_OFFSET_UCRED_CR_SCEAUTHID = 0x58;
 const unsigned long KERNEL_OFFSET_UCRED_CR_SCECAPS   = 0x60;
@@ -156,6 +157,8 @@ kernel_get_fw_version(void) {
   return version;
 }
 
+
+unsigned long kernel_get_ucred_prison(int pid);
 
 int
 __kernel_init(payload_args_t* args) {
@@ -394,6 +397,17 @@ __kernel_init(payload_args_t* args) {
     KERNEL_ADDRESS_ROOTVNODE        = KERNEL_ADDRESS_DATA_BASE + 0x30D7510;
     KERNEL_ADDRESS_BUS_DATA_DEVICES = KERNEL_ADDRESS_DATA_BASE + 0x20757E8;
     KERNEL_OFFSET_VMSPACE_P_ROOT    = 0x1d0;
+    break;
+
+  case 0x13000000:
+  case 0x13200000:
+    KERNEL_ADDRESS_TEXT_BASE        = KERNEL_ADDRESS_DATA_BASE - 0x0CB0000;
+    KERNEL_ADDRESS_ALLPROC          = KERNEL_ADDRESS_DATA_BASE + 0x28C5E00;
+    KERNEL_ADDRESS_SECURITY_FLAGS   = KERNEL_ADDRESS_DATA_BASE + 0x0D99064;
+    KERNEL_ADDRESS_ROOTVNODE        = KERNEL_ADDRESS_DATA_BASE + 0x3133510;
+    KERNEL_ADDRESS_BUS_DATA_DEVICES = KERNEL_ADDRESS_DATA_BASE + 0x20981E8;
+    KERNEL_OFFSET_VMSPACE_P_ROOT    = 0x1d0;
+    KERNEL_ADDRESS_PRISON0          = kernel_get_ucred_prison(0);
     break;
 	  
   default:
@@ -975,6 +989,24 @@ kernel_get_proc_ucred(int pid) {
   }
 
   return ucred;
+}
+
+
+unsigned long
+kernel_get_ucred_prison(int pid) {
+  unsigned long ucred = 0;
+  unsigned long prison = 0;
+
+  if(!(ucred=kernel_get_proc_ucred(pid))) {
+    return 0;
+  }
+
+  if(kernel_copyout(ucred + KERNEL_OFFSET_UCRED_CR_PRISON, &prison,
+		    sizeof(prison))) {
+    return 0;
+  }
+
+  return prison;
 }
 
 
