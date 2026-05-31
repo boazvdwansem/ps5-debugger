@@ -16,7 +16,8 @@ int proc_get_field_offsets(struct proc_field_offsets *out)
                  fw >= 0x7000000u  ? 0x5D4u :
                  fw >= 0x6000000u  ? 0x5C4u : 0x59Cu;
 
-        c.path = fw >= 0x10000000u ? 0x5FCu :
+        c.path = fw >= 0x12000000u ? 0x604u :
+		         fw >= 0x10000000u ? 0x5FCu :
                  fw >= 0x7000000u  ? 0x5F4u :
                  fw >= 0x6000000u  ? 0x5E4u : 0x5BCu;
 
