@@ -1,0 +1,17 @@
+# Line-ending policy.
+# Our own sources and docs are normalized to LF (stored in-repo as LF and
+# checked out as LF) so edits no longer produce spurious whole-file CRLF/LF
+# diffs across machines/editors.
+*.c       text eol=lf
+*.h       text eol=lf
+*.S       text eol=lf
+*.md      text eol=lf
+*.sh      text eol=lf
+*.py      text eol=lf
+Makefile  text eol=lf
+
+# Vendored trees are left exactly as committed (no EOL normalization), to keep
+# them byte-for-byte identical to upstream and protect byte-exact rebuilds.
+ps5-payload-sdk/**      -text
+third_party/**          -text
+debugger/third_party/** -text
