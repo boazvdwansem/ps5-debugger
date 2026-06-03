@@ -118,6 +118,8 @@ bool proc_scan_legacy_compareValues(unsigned char cmpType, unsigned char valType
     const unsigned char *pMem   = (const unsigned char *)memValue;
     const unsigned char *pExtra = (const unsigned char *)extraValue;
 
+    if (cmpType >= 4 && cmpType <= 10 && pExtra == NULL) return false;
+
     switch (cmpType) {
     case 0: {
         if (valueLength <= 1) return false;
@@ -189,6 +191,8 @@ bool proc_scan_compareValues(unsigned char cmpType, unsigned char valType,
     const unsigned char *pMem  = (const unsigned char *)memValue;
     const unsigned char *pPrev = (const unsigned char *)prevValue;
     const unsigned char *pMask = (const unsigned char *)mask;
+
+    if (cmpType >= 4 && cmpType <= 10 && pPrev == NULL) return false;
 
     switch (cmpType) {
     case 0: {

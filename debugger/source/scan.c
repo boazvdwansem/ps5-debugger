@@ -492,6 +492,7 @@ int proc_scan_count_handle(int fd, struct cmd_packet *packet) {
     int needs_previous_flag = g_cmptype_needs_previous[cp->compareType] != 0;
     int needs_scan_value    = needs_value_flag || needs_extra_flag;
     int is_arrbytes         = (cp->valueType == 10);
+    int is_between          = (cp->compareType == 4);
 
     uint64_t value_length = proc_scan_getSizeOfValueType(cp->valueType);
     if (value_length == 0) value_length = cp->lenData;
@@ -535,6 +536,9 @@ int proc_scan_count_handle(int fd, struct cmd_packet *packet) {
     if (pattern) net_recv_all(fd, pattern, (int)cp->lenData, 1);
     if (mask)    net_recv_all(fd, mask,    (int)value_length, 1);
 
+    const uint8_t *between_hi = (is_between && pattern && cp->lenData >= 2 * value_length)
+                                ? (pattern + value_length) : NULL;
+
     int      includes_prev = needs_previous_flag;
     uint64_t entry_size    = includes_prev ? (4 + value_length) : 4;
     uint64_t flush_thresh  = 0x3FFE8ULL - 2 * value_length;
@@ -566,7 +570,7 @@ int proc_scan_count_handle(int fd, struct cmd_packet *packet) {
         for (uint64_t off = 0; off + entry_size <= chunk_len; off += entry_size) {
             uint32_t entry_offset;
             memcpy(&entry_offset, chunk_buf + off, 4);
-            const uint8_t *prev_value_ptr = includes_prev ? (chunk_buf + off + 4) : NULL;
+            const uint8_t *prev_value_ptr = includes_prev ? (chunk_buf + off + 4) : between_hi;
             uint64_t addr = cp->base_address + entry_offset;
 
             if (addr >= window_end) {

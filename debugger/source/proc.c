@@ -428,9 +428,7 @@ void proc_read_mem(uint32_t pid, uint64_t addr, uint64_t len, void *buf) {
 }
 
 void proc_write_mem(uint32_t pid, uint64_t addr, uint64_t len, const void *buf) {
-    /* mdbg write op (0x13) is kernel-gated with EPERM starting at FW 8.40, so
-       route writes through the DMAP page-table walk on FW >= 8.40; mdbg stays
-       the path on < 8.40 and as a fallback. */
+
     static int s_fw_needs_dmap = -1;
     if (s_fw_needs_dmap < 0)
         s_fw_needs_dmap = ((kernel_get_fw_version() & 0xffff0000u) >= 0x08400000u) ? 1 : 0;
