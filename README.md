@@ -22,17 +22,17 @@ aborts cleanly.
 
 | Family | Point releases recognised                       | Status                                    |
 |--------|-------------------------------------------------|-------------------------------------------|
-| 3.xx   | 3.00, 3.10, 3.20, 3.21                          | Initial support added - testing required  |
+| 3.xx   | 3.00, 3.10, 3.20, 3.21                          | Fully Verified                            |
 | 4.xx   | 4.00, 4.02, 4.03, 4.50, 4.51                    | Fully Verified                            |
-| 5.xx   | 5.00, 5.02, 5.10, 5.50                          | Initial support added - testing required  |
+| 5.xx   | 5.00, 5.02, 5.10, 5.50                          | Fully Verified                            |
 | 6.xx   | 6.00, 6.02, 6.50                                | Fully Verified                            |
-| 7.xx   | 7.00, 7.01, 7.01.01, 7.20, 7.40, 7.60, 7.61     | Initial support added - testing required  |
+| 7.xx   | 7.00, 7.01, 7.01.01, 7.20, 7.40, 7.60, 7.61     | Fully Verified                            |
 | 8.xx   | 8.00, 8.20, 8.40, 8.60                          | Fully Verified                            |
 | 9.xx   | 9.00, 9.05, 9.20, 9.40, 9.60                    | Fully Verified                            |
 | 10.xx  | 10.00, 10.01, 10.20, 10.40, 10.60               | Fully Verified                            |
-| 11.xx  | 11.00, 11.20, 11.40, 11.60                      | Initial support added - testing required  |
+| 11.xx  | 11.00, 11.20, 11.40, 11.60                      | Fully Verified                            |
 | 12.xx  | 12.00, 12.02, 12.20, 12.40, 12.60, 12.70        | Fully Verified                            |
-| 13.xx  | 13.00, 13.20                                    | Initial support added - testing required  |
+| 13.xx  | 13.00, 13.20                                    | Fully Verified                            |
 
 The point releases above are the exact FW magic values recognised by the switch
 in [installer/source/main.c](installer/source/main.c); that file is the source
