@@ -595,6 +595,108 @@ int proc_write_handle(int fd, struct cmd_packet *packet) {
     return 0;
 }
 
+/* Like proc_write_mem but reports 0 on success / 1 on failure. Used only by
+   the bulk-write handler so it can fill an optional per-entry status array;
+   proc_write_mem and its breakpoint callers stay void. The signal is real:
+   proc_ptwalk_write returns 0/1, and the mdbg fallback exposes bytes-written
+   through its arg5 out-param (sys_proc_rw_inner sets it to length on success). */
+static int proc_write_mem_status(uint32_t pid, uint64_t addr, uint64_t len, const void *buf) {
+    static int s_fw_needs_dmap = -1;
+    if (s_fw_needs_dmap < 0)
+        s_fw_needs_dmap = ((kernel_get_fw_version() & 0xffff0000u) >= 0x08400000u) ? 1 : 0;
+
+    if (s_fw_needs_dmap && proc_ptwalk_write(pid, addr, len, buf) == 0)
+        return 0;
+
+    uint64_t wrote = 0;
+    sys_proc_rw_w1((uint64_t)pid, addr, len, (void *)buf, (uint64_t)(uintptr_t)&wrote);
+    return (wrote == len) ? 0 : 1;
+}
+
+int proc_write_multi_handle(int fd, struct cmd_packet *packet) {
+    struct cmd_proc_write_multi_packet *mp =
+        (struct cmd_proc_write_multi_packet *)packet->data;
+    if (!mp) {
+        net_send_int32(fd, CMD_DATA_NULL);
+        return 1;
+    }
+
+    uint32_t pid         = mp->pid;
+    uint32_t count       = mp->count;
+    int      want_status = (mp->flags & PROC_WRITE_MULTI_F_STATUS) ? 1 : 0;
+
+    if (count > PROC_WRITE_MULTI_MAX_COUNT) {
+        net_send_int32(fd, CMD_ERROR);
+        return 1;
+    }
+
+    uint8_t *buf = (uint8_t *)net_alloc_buffer(0x10000);
+    if (!buf) {
+        net_send_int32(fd, CMD_DATA_NULL);
+        return 1;
+    }
+
+    uint8_t *status = NULL;
+    if (want_status && count > 0) {
+        status = (uint8_t *)net_alloc_buffer(count);
+        if (!status) {
+            free(buf);
+            net_send_int32(fd, CMD_DATA_NULL);
+            return 1;
+        }
+    }
+
+    net_send_int32(fd, CMD_SUCCESS);
+
+    for (uint32_t i = 0; i < count; i++) {
+        uint8_t  hdr[12];
+        if (net_recv_all(fd, hdr, 12, 1) < 0) {
+            /* socket broken mid-stream; bail without further sends */
+            if (status) free(status);
+            free(buf);
+            return 1;
+        }
+        uint64_t addr;
+        uint32_t len32;
+        memcpy(&addr,  hdr,     8);
+        memcpy(&len32, hdr + 8, 4);
+
+        if (len32 > PROC_WRITE_MULTI_MAX_ENTRY) {
+            /* protocol violation: we can't know how many data bytes follow,
+               so the stream is no longer trustworthy - abort the command. */
+            if (status) free(status);
+            free(buf);
+            net_send_int32(fd, CMD_ERROR);
+            return 1;
+        }
+
+        uint64_t length = len32;
+        uint64_t a      = addr;
+        uint8_t  failed = 0;
+        while (length > 0) {
+            uint64_t to_recv = (length > 0x10000ULL) ? 0x10000ULL : length;
+            if (net_recv_all(fd, buf, (int)to_recv, 1) < 0) {
+                if (status) free(status);
+                free(buf);
+                return 1;
+            }
+            if (proc_write_mem_status(pid, a, to_recv, buf) != 0)
+                failed = 1;
+            a      += to_recv;
+            length -= to_recv;
+        }
+        if (status) status[i] = failed;
+    }
+
+    if (status) {
+        net_send_all(fd, status, (int)count);
+        free(status);
+    }
+    net_send_int32(fd, CMD_SUCCESS);
+    free(buf);
+    return 0;
+}
+
 int proc_maps_handle(int fd, struct cmd_packet *packet) {
 
     struct cmd_proc_maps_packet *mp = (struct cmd_proc_maps_packet *)packet->data;
@@ -966,6 +1068,7 @@ int proc_handle(int fd, struct cmd_packet *packet, unsigned char client_idx) {
     case 0xBDAA0023u: return proc_read_stack_handle(fd, packet);
     case 0xBDAA0024u: return proc_assemble_handle(fd, packet);
     case 0xBDAA0003u: return proc_write_handle(fd, packet);
+    case 0xBDAACC04u: return proc_write_multi_handle(fd, packet);
     case 0xBDAA0004u: return proc_maps_handle(fd, packet);
     case 0xBDAA0005u: return proc_install_handle(fd, packet);
     case 0xBDAA0006u: return proc_call_handle(fd, packet);

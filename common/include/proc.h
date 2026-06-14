@@ -13,6 +13,7 @@ int proc_list_handle(int fd, struct cmd_packet *packet);
 int proc_read_handle(int fd, struct cmd_packet *packet);
 int proc_read_stack_handle(int fd, struct cmd_packet *packet);
 int proc_write_handle(int fd, struct cmd_packet *packet);
+int proc_write_multi_handle(int fd, struct cmd_packet *packet);
 int proc_maps_handle(int fd, struct cmd_packet *packet);
 int proc_info_handle(int fd, struct cmd_packet *packet);
 int proc_protect_handle(int fd, struct cmd_packet *packet);

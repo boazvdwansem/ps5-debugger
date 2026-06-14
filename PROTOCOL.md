@@ -20,7 +20,7 @@ This document reflects `ps5debug-NG v1.2.6` (`common/include/version.h`,
 | Symbol             | Value                            | Source                                                   |
 |--------------------|----------------------------------|----------------------------------------------------------|
 | protocol version   | `"1.3"`                          | `meta.c` `handle_version` (local `char ver[]="1.3"`)     |
-| branding string    | `"ps5debug-NG by OSR v1.2.6"`    | `version.h` `PS5DEBUG_NG_BRAND_STR` via `meta.c` `handle_branding` |
+| branding string    | `"ps5debug-NG by OSR v1.2.8\01.0"` | `version.h` `PS5DEBUG_NG_BRAND_STR` via `meta.c` `handle_branding` (NUL-separated capability level appended - see 2.1) |
 | `PACKET_MAGIC`     | `0xFFAABBCC`                     | `main.c:50` (local `#define`)                            |
 | broadcast magic    | `0xFFFFAAAA`                     | `main.c` `broadcast_thread` (raw literal)                |
 | auth magic         | `0xBB40E64D`                     | `protocol.h:249` (`CMD_PROC_AUTH_MAGIC`)                 |
@@ -223,9 +223,17 @@ per-namespace `switch` statements. Three opcodes have no symbolic name at all:
 
 #### `CMD_BRANDING = 0xBD000501`
 - **Request body:** none.
-- **Response:** `uint32_t length`, then `length` bytes of the branding string
-  ("ps5debug-NG by OSR v1.2.6"). No status word precedes it. (The client calls
-  this `CMD_EXT_VERSION`.)
+- **Response:** `uint32_t length`, then `length` bytes: the human branding string
+  (`"ps5debug-NG by OSR v1.2.8"`), a single `NUL`, then a **capability level**
+  string (`"1.0"`), with no trailing NUL. No status word precedes it. (The client
+  calls this `CMD_EXT_VERSION`.)
+- **Capability level:** C-string clients read up to the first `NUL` and see only
+  the unchanged brand; capability-aware clients read the bytes past the `NUL` to
+  get the level. The level is bumped as the server gains negotiable features (so a
+  client can gate a feature on the server advertising at least a given level).
+  Built from `PS5DEBUG_NG_BRAND_STR "\0" "1.0"` in `meta.c` `handle_branding` -
+  the literals are split (`"\0" "1.0"`) so `\0` is a NUL byte, not the octal
+  escape `\01`.
 
 #### `CMD_PLATFORM_ID = 0xBD000502`
 - **Request body:** none.
@@ -259,6 +267,28 @@ data" is read from the socket by the handler after a leading `CMD_SUCCESS`.
 - **Response:** `CMD_SUCCESS` (before the data phase), then the server reads
   `length` bytes in 64 KiB chunks, then `CMD_SUCCESS` again. **Two** status
   words (see 8).
+
+#### `0xBDAACC04` (`proc_write_multi_handle`)
+Bulk write - the write counterpart to `0xBDAACC03` (bulk read). Collapses a
+freeze / multi-poke loop of N single `CMD_PROC_WRITE`s into one exchange. Dispatched
+by `proc_handle`; **not** auth-gated (mirrors single write).
+- **Request body:** `struct cmd_proc_write_multi_packet` (12 bytes,
+  `{ uint32_t pid; uint32_t count; uint32_t flags; }`). `flags` bit 0
+  (`PROC_WRITE_MULTI_F_STATUS`) requests a per-entry status array in the response.
+- **Trailing data:** after the server's first `CMD_SUCCESS`, the client streams
+  `count` entries, each `{ uint64_t address; uint32_t length; <length> bytes data }`
+  concatenated. Per-entry `length` is capped at `0x100000`; `count` at `0xFFFF`.
+- **Response:** `CMD_SUCCESS` (ack), then the server reads and applies each entry
+  (writing via the same DMAP / mdbg path as `CMD_PROC_WRITE`, in 64 KiB chunks).
+  If `flags` bit 0 was set, it then sends a `count`-byte status array (one byte per
+  entry, `0` = ok, `1` = write failed). Finally a trailing `CMD_SUCCESS`. **Two**
+  status words, plus the optional status array between them.
+- **Semantics:** best-effort and non-atomic - entries are applied in order and a
+  failed entry does not stop the rest. Without the status flag, individual write
+  failures are not reported (same as single `CMD_PROC_WRITE`, whose underlying
+  `proc_write_mem` is `void`). A `count`/`length` cap violation makes the server
+  reply `CMD_ERROR` and abort the command (the connection's stream is then
+  untrustworthy; well-behaved clients stay within the caps).
 
 #### `CMD_PROC_MAPS = 0xBDAA0004` (`proc.c:597`)
 - **Request body:** `struct cmd_proc_maps_packet` (4 bytes, `pid`).

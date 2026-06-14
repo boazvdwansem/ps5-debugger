@@ -112,6 +112,19 @@ struct cmd_proc_write_packet {
     uint32_t length;
 } __attribute__((packed));
 
+/* Bulk write / freeze batching (opcode 0xBDAACC04). Header body below is
+   followed by `count` streamed entries, each { uint64 address; uint32 length;
+   <length> bytes }. flags bit 0 asks the server for a per-entry status byte
+   array (0 = ok) sent just before the trailing CMD_SUCCESS. */
+struct cmd_proc_write_multi_packet {
+    uint32_t pid;
+    uint32_t count;
+    uint32_t flags;
+} __attribute__((packed));
+#define PROC_WRITE_MULTI_F_STATUS   0x1u
+#define PROC_WRITE_MULTI_MAX_COUNT  0xFFFFu
+#define PROC_WRITE_MULTI_MAX_ENTRY  0x100000u
+
 struct cmd_proc_maps_packet {
     uint32_t pid;
 } __attribute__((packed));
