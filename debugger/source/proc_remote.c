@@ -39,7 +39,9 @@ static void debugger_usleep(unsigned long us) { sceKernelUsleep((unsigned int)us
 extern long __crt_syscall(long sysno, ...);
 
 long ptrace_raw(int op, int pid, void *addr, int data) {
-    return __crt_syscall(26, op, pid, addr, data);
+    // ps5debug_syscall promotes op/pid/data (int) + addr (pointer) to long at the
+    // typed parameter boundary -> no undefined upper bits. Same syscall, same args.
+    return ps5debug_syscall(26 /*ptrace*/, (long)op, (long)pid, (long)addr, (long)data, 0L, 0L);
 }
 
 #if 0
@@ -188,7 +190,7 @@ int kern_ptrace_attach_and_wait(int pid)
 
     int wait_status = 0;
     *__error() = 0;
-    long wait_rc = __crt_syscall(7 , pid, &wait_status, 0, 0);
+    long wait_rc = ps5debug_syscall(7 /*wait4*/, (long)pid, (long)&wait_status, 0L, 0L, 0L, 0L);
     int  wait_errno = *__error();
 
     if (!s_first_w4_diag) {

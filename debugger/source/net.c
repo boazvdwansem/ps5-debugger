@@ -43,7 +43,11 @@ int net_send_int32(int fd, uint32_t value) {
 
 extern long __crt_syscall(long sysno, ...);
 int net_select(int fd, void *readfds, void *writefds, void *exceptfds, void *timeout) {
-    return (int)__crt_syscall(93, fd, readfds, writefds, exceptfds, timeout);
+    // ps5debug_syscall (typed long params) promotes every arg before the varargs hop,
+    // so int/pointer args can't arrive with garbage upper bits. Behavior-identical to
+    // the prior __crt_syscall(93, ...) for these already-clean values.
+    return (int)ps5debug_syscall(93 /*select*/, (long)fd, (long)readfds, (long)writefds,
+                                 (long)exceptfds, (long)timeout, 0L);
 }
 
 int net_get_ip_address(char *out) {

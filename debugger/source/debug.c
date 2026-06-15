@@ -570,7 +570,7 @@ int debug_attach_handle(int fd, struct cmd_packet *packet) {
 
     int wait_status = 0;
     *__error() = 0;
-    long wait_rc = __crt_syscall(7 , ap->pid, &wait_status, 0, 0);
+    long wait_rc = ps5debug_syscall(7 /*wait4*/, (long)ap->pid, (long)&wait_status, 0L, 0L, 0L, 0L);
     if (wait_rc == -1) {
         sceKernelUsleep(20000);
     }
