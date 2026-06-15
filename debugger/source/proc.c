@@ -1059,7 +1059,6 @@ int proc_alloc_hinted_handle(int fd, struct cmd_packet *packet) {
 }
 
 int proc_handle(int fd, struct cmd_packet *packet, unsigned char client_idx) {
-    (void)client_idx;
     uint32_t cmd = packet->cmd;
 
     switch (cmd) {
@@ -1090,6 +1089,13 @@ int proc_handle(int fd, struct cmd_packet *packet, unsigned char client_idx) {
     case 0xBDAACC01u: return proc_scan_start_handle(fd, packet);
     case 0xBDAACC02u: return proc_scan_count_handle(fd, packet);
     case 0xBDAACC03u: return proc_scan_get_handle(fd, packet);
+    case 0xBDAACC10u: return proc_turboscan_caps_handle(fd, packet);
+    case 0xBDAACC11u: return proc_turboscan_start_handle(fd, packet, client_idx);
+    case 0xBDAACC12u: return proc_turboscan_count_handle(fd, packet, client_idx);
+    case 0xBDAACC13u: return proc_turboscan_get_handle(fd, packet, client_idx);
+    case 0xBDAACC14u: return proc_turboscan_end_handle(fd, packet, client_idx);
+    case 0xBDAACC15u: return proc_turboscan_config_handle(fd, packet);
+    case 0xBDAACC16u: return proc_turboscan_regions_handle(fd, packet);
     }
 
     net_send_int32(fd, CMD_ERROR);

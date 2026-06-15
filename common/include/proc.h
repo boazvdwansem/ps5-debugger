@@ -63,6 +63,21 @@ int proc_scan_aob_multi_handle(int fd, struct cmd_packet *packet);
 int proc_scan_start_handle(int fd, struct cmd_packet *packet);
 int proc_scan_count_handle(int fd, struct cmd_packet *packet);
 int proc_scan_get_handle(int fd, struct cmd_packet *packet);
+int proc_turboscan_caps_handle(int fd, struct cmd_packet *packet);
+int proc_turboscan_config_handle(int fd, struct cmd_packet *packet);
+int proc_turboscan_start_handle(int fd, struct cmd_packet *packet, unsigned char client_idx);
+int proc_turboscan_count_handle(int fd, struct cmd_packet *packet, unsigned char client_idx);
+int proc_turboscan_get_handle(int fd, struct cmd_packet *packet, unsigned char client_idx);
+int proc_turboscan_end_handle(int fd, struct cmd_packet *packet, unsigned char client_idx);
+int proc_turboscan_regions_handle(int fd, struct cmd_packet *packet);
+/* free a connection's resident turbo-scan session (called from free_client on
+ * disconnect). idx is the g_clients slot index; out-of-range is a no-op. */
+void turboscan_session_free_idx(unsigned char client_idx);
+/* free a connection's persistent aliasing context (Phase 3 #1: the alias arena is
+ * reused across scans on one connection, freed here on disconnect). No-op if none. */
+void turboscan_alias_free_idx(unsigned char client_idx);
+/* unlink any orphaned /data snapshot files at server startup (crash recovery). */
+void turboscan_startup_cleanup(void);
 int proc_auth_handle(int fd, struct cmd_packet *packet);
 int proc_assemble_handle(int fd, struct cmd_packet *packet);
 
@@ -109,6 +124,20 @@ int proc_ptwalk_augment(uint32_t pid,
                         struct proc_vm_map_entry **out_buf, int *out_count);
 
 int proc_ptwalk_read(uint32_t pid, uint64_t va, uint64_t len, void *dst);
+
+uint64_t proc_ptwalk_dmap_base(void);
+int proc_ptwalk_probe(uint32_t pid, uint64_t va, uint64_t *out_phys,
+                      int *out_level, uint64_t *out_pagesize, uint64_t *out_pte);
+int proc_ptwalk_leaf_addr(uint32_t pid, uint64_t va, uint64_t *out_pte_kaddr,
+                          uint64_t *out_pte_val, int *out_level);
+// Unified per-2MB-span resolve for the aliasing engine (read-only). Walks CR3->PML4->
+// PDPT->PD ONCE for a 2MB-aligned `span2m`: superpage (PS set) -> *out_huge=1,
+// *out_phys_base = phys of span2m's first byte, *out_pte = the huge PTE; else 4K ->
+// *out_huge=0, *out_leaf_pt_kaddr = DMAP kaddr of the 512-entry leaf PT page (caller
+// bulk-reads it). Returns 0 on success; nonzero if any level not-present/out-of-range.
+int proc_ptwalk_span_resolve(uint32_t pid, uint64_t span2m, int *out_huge,
+                             uint64_t *out_phys_base, uint64_t *out_leaf_pt_kaddr,
+                             uint64_t *out_pte);
 
 int proc_ptwalk_write(uint32_t pid, uint64_t va, uint64_t len, const void *src);
 

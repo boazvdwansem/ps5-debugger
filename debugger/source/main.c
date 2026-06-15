@@ -22,6 +22,7 @@ static void run_init_array_once(void)
 extern void server_state_init(void);
 extern void *alloc_client(void);
 extern void free_client(void *svc);
+extern void turboscan_startup_cleanup(void);
 extern int  dispatch_debug_events(void);
 extern void *klog_server_thread(void *arg);
 extern int  g_klog_listen_fd;
@@ -218,6 +219,8 @@ static void *broadcast_thread(void *arg) {
 }
 
 static int start_server(void) {
+
+    turboscan_startup_cleanup();              /* reclaim any orphaned /data snapshot files */
 
     {
         ScePthread bcast_tid;

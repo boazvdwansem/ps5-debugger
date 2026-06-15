@@ -138,6 +138,15 @@ void *alloc_client(void) {
 
 void free_client(void *svc_) {
     struct server_client *svc = (struct server_client *)svc_;
+
+    // free any server-resident turbo-scan session + persistent aliasing arena for this
+    // connection (leak/UAF guard)
+    long slot = svc - g_clients;
+    if (slot >= 0 && slot < SERVER_MAXCLIENTS) {
+        turboscan_session_free_idx((unsigned char)slot);
+        turboscan_alias_free_idx((unsigned char)slot);
+    }
+
     svc->active = 0;
 
     close(svc->fd);
