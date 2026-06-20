@@ -58,7 +58,10 @@ the firmware as a decimal `uint16_t` (e.g. `900` for 9.00, `1240` for 12.40).
   return address into one response. Clients avoid paying many TCP round-trips
   per stack frame.
 - **Change memory protection** on arbitrary target regions.
-- **Allocate / free / hint-allocate** memory inside any target process.
+- **Allocate / free / hint-allocate** memory inside any target process. Plain
+  allocations are served from a server-side **per-pid arena** (one hijack per 16 MB
+  segment, then zero-hijack sub-allocation) so heavy concurrent allocation no longer
+  trips the thread-hijack crash; transparent to clients, toggleable via `0xBDAACC24`.
 
 ### In-target code execution
 - **Call arbitrary functions** with up to six SysV ABI register arguments and

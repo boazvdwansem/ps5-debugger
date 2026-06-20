@@ -348,6 +348,17 @@ Legacy single-pass scan. **No auth required.**
 - **Request body:** `struct cmd_proc_free_packet` (16 bytes, `{ pid, address, length }`).
 - **Response:** `CMD_SUCCESS`.
 
+> **Alloc arena (default ON).** A plain `CMD_PROC_ALLOC` is served from a server-side
+> per-pid 16 MB arena: one hijacking `mmap` per segment, then zero-hijack sub-allocation
+> (with `CMD_PROC_FREE` recycling the slice into a free-list). This avoids the thread-hijack
+> crash hazard that pathological concurrent allocation otherwise triggers. It is fully
+> transparent (same wire, valid target addresses); a freed sub-block is recycled rather than
+> `munmap`'d, and the segment is reclaimed when the game exits. `CMD_PROC_ALLOC_HINTED`
+> (which needs a specific address) bypasses the arena and allocates directly. The arena can
+> be toggled at runtime via the raw literal `0xBDAACC24` (`proc_arena_handle`): request body
+> `uint32_t` (`1` = enable, `0` = disable), response `CMD_SUCCESS` + `uint32_t len` + a text
+> status line.
+
 #### `0xBDAA000D` - first-map probe (`proc.c:901`, `proc_unknown_d_handle`)
 Raw literal, no `CMD_*` macro.
 - **Request body:** `struct cmd_proc_unknown_d_packet` (4 bytes, `pid`).

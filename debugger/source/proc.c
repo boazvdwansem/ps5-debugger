@@ -595,11 +595,6 @@ int proc_write_handle(int fd, struct cmd_packet *packet) {
     return 0;
 }
 
-/* Like proc_write_mem but reports 0 on success / 1 on failure. Used only by
-   the bulk-write handler so it can fill an optional per-entry status array;
-   proc_write_mem and its breakpoint callers stay void. The signal is real:
-   proc_ptwalk_write returns 0/1, and the mdbg fallback exposes bytes-written
-   through its arg5 out-param (sys_proc_rw_inner sets it to length on success). */
 static int proc_write_mem_status(uint32_t pid, uint64_t addr, uint64_t len, const void *buf) {
     static int s_fw_needs_dmap = -1;
     if (s_fw_needs_dmap < 0)
@@ -651,7 +646,7 @@ int proc_write_multi_handle(int fd, struct cmd_packet *packet) {
     for (uint32_t i = 0; i < count; i++) {
         uint8_t  hdr[12];
         if (net_recv_all(fd, hdr, 12, 1) < 0) {
-            /* socket broken mid-stream; bail without further sends */
+
             if (status) free(status);
             free(buf);
             return 1;
@@ -662,8 +657,7 @@ int proc_write_multi_handle(int fd, struct cmd_packet *packet) {
         memcpy(&len32, hdr + 8, 4);
 
         if (len32 > PROC_WRITE_MULTI_MAX_ENTRY) {
-            /* protocol violation: we can't know how many data bytes follow,
-               so the stream is no longer trustworthy - abort the command. */
+
             if (status) free(status);
             free(buf);
             net_send_int32(fd, CMD_ERROR);
@@ -1058,6 +1052,22 @@ int proc_alloc_hinted_handle(int fd, struct cmd_packet *packet) {
     return 0;
 }
 
+int proc_arena_handle(int fd, struct cmd_packet *packet) {
+    uint32_t on = 1;
+    if (packet->data && packet->datalen >= 4) on = *(uint32_t *)packet->data;
+    char *buf = (char *)net_alloc_buffer(512);
+    if (!buf) { net_send_int32(fd, CMD_DATA_NULL); return 1; }
+    int n = proc_arena_set((int)on, buf, 512);
+    if (n < 0) n = 0;
+    if (n > 512) n = 512;
+    net_send_int32(fd, CMD_SUCCESS);
+    uint32_t len = (uint32_t)n;
+    net_send_all(fd, &len, 4);
+    net_send_all(fd, buf, n);
+    free(buf);
+    return 0;
+}
+
 int proc_handle(int fd, struct cmd_packet *packet, unsigned char client_idx) {
     uint32_t cmd = packet->cmd;
 
@@ -1096,6 +1106,7 @@ int proc_handle(int fd, struct cmd_packet *packet, unsigned char client_idx) {
     case 0xBDAACC14u: return proc_turboscan_end_handle(fd, packet, client_idx);
     case 0xBDAACC15u: return proc_turboscan_config_handle(fd, packet);
     case 0xBDAACC16u: return proc_turboscan_regions_handle(fd, packet);
+    case 0xBDAACC24u: return proc_arena_handle(fd, packet);
     }
 
     net_send_int32(fd, CMD_ERROR);
