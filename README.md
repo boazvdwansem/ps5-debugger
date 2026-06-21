@@ -80,7 +80,8 @@ the firmware as a decimal `uint16_t` (e.g. `900` for 9.00, `1240` for 12.40).
 - **Hardware watchpoints** - up to **4** DR0-DR3 slots with read / write /
   read-write and 1/2/4/8-byte granularity.
 - **Thread control** - list, suspend, resume, single-step, per-thread step.
-- **Full register access** - general-purpose, FPU + YMM, and debug registers.
+- **Full register access** - general-purpose, FPU + YMM (AVX), debug registers,
+  and the FS/GS segment base addresses (TLS pointers).
 - **Continue / stop / halt** the whole process from one command.
 - **Asynchronous interrupt packets** delivered on a separate TCP connection so
   the client never polls.
@@ -303,11 +304,11 @@ citations.
 | Namespace     | Count | Examples                                                   |
 |---------------|-------|------------------------------------------------------------|
 | Info / ping   | 5     | `VERSION`, `FW_VERSION`, `BRANDING`, `PLATFORM_ID`, `NOP`  |
-| Process       | 32    | `READ`, `WRITE`, `MAPS`, `CALL`, `SCAN_*`, `TURBOSCAN_*`, `DISASM_*` |
-| Debug         | 18    | `ATTACH`, `SET_BREAKPOINT`, `GETREGS`, `STEP`, `CONTINUE`  |
+| Process       | 35    | `READ`, `WRITE`, `MAPS`, `CALL`, `SCAN_*`, `TURBOSCAN_*`, `DISASM_*` |
+| Debug         | 20    | `ATTACH`, `SET_BREAKPOINT`, `GETREGS`, `GET_FSGS_BASE`, `STEP`, `CONTINUE` |
 | Kernel R/W    | 3     | `KERN_BASE`, `KERN_READ`, `KERN_WRITE`                     |
 | Console       | 6     | `NOTIFY`, `PRINT`, `REBOOT`, `INFO`, `END`, `FOREGROUND_APP` |
-| **Total**     | **64**|                                                            |
+| **Total**     | **69**|                                                            |
 
 ---
 

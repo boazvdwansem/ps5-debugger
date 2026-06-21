@@ -182,11 +182,16 @@ extern int  kern_proc_install_dbregs(int pid, int lwpid, void *fpu_buf);
 extern int  kern_get_proc_info_by_pid(int pid, int lwpid, void *regs_buf);
 extern int  kern_apply_thread_dbgctx(int pid, int lwpid, void *regs_buf);
 extern int  kern_get_lwp_full_state(int pid, int lwpid, void *regs, void *dbreg, void *fpu);
+extern int  kern_get_fpregs(int pid, int lwpid, void *fpu_buf);
+extern int  kern_set_fpregs(int pid, int lwpid, const void *fpu_buf);
+extern int  kern_get_fsgsbase(int pid, int lwpid, void *out16);
+extern int  kern_set_fsgsbase(int pid, int lwpid, const void *in16);
 extern void kern_thread_cache_flush(void);
 
-#define REG_BLOB_SIZE     0xB0
-#define FPREG_BLOB_SIZE   0x340
-#define DBREG_BLOB_SIZE   0x80
+#define REG_BLOB_SIZE      0xB0
+#define FPREG_BLOB_SIZE    0x340
+#define DBREG_BLOB_SIZE    0x80
+#define FSGSBASE_BLOB_SIZE 0x10
 
 struct cmd_debug_lwp_packet {
     uint32_t lwpid;
@@ -570,7 +575,7 @@ int debug_attach_handle(int fd, struct cmd_packet *packet) {
 
     int wait_status = 0;
     *__error() = 0;
-    long wait_rc = ps5debug_syscall(7 /*wait4*/, (long)ap->pid, (long)&wait_status, 0L, 0L, 0L, 0L);
+    long wait_rc = ps5debug_syscall(7 , (long)ap->pid, (long)&wait_status, 0L, 0L, 0L, 0L);
     if (wait_rc == -1) {
         sceKernelUsleep(20000);
     }
@@ -878,7 +883,10 @@ int debug_getfpregs_handle(int fd, struct cmd_packet *packet) {
     if (!gp) { net_send_int32(fd, CMD_DATA_NULL); return 1; }
 
     memset(buf, 0, FPREG_BLOB_SIZE);
-    if (ptrace_elev(PT_GETFPREGS, gp->lwpid, buf, 0) == -1 && errno != 0) goto err;
+
+    if (kern_get_fpregs(pid, gp->lwpid, buf) != 0) {
+        if (ptrace_elev(PT_GETFPREGS, gp->lwpid, buf, 0) == -1 && errno != 0) goto err;
+    }
 
     net_send_int32(fd, CMD_SUCCESS);
     net_send_all(fd, buf, FPREG_BLOB_SIZE);
@@ -896,11 +904,18 @@ int debug_setfpregs_handle(int fd, struct cmd_packet *packet) {
 
     struct cmd_debug_setreg_packet *sp = (struct cmd_debug_setreg_packet *)packet->data;
     if (!sp) goto err;
+    if (sp->length > FPREG_BLOB_SIZE) goto err;
 
+    memset(buf, 0, FPREG_BLOB_SIZE);
     net_send_int32(fd, CMD_SUCCESS);
-    net_recv_all(fd, buf, sp->length, 1);
+    if (net_recv_all(fd, buf, sp->length, 1) < 0) goto err;
 
-    if (ptrace_elev(PT_SETFPREGS, pid, buf, 0) == -1 && errno != 0) goto err;
+    int applied = 0;
+    if (sp->length == FPREG_BLOB_SIZE)
+        applied = (kern_set_fpregs(pid, sp->lwpid, buf) == 0);
+    if (!applied) {
+        if (ptrace_elev(PT_SETFPREGS, pid, buf, 0) == -1 && errno != 0) goto err;
+    }
 
     net_send_int32(fd, CMD_SUCCESS);
     return 0;
@@ -966,6 +981,50 @@ int debug_setdbregs_handle(int fd, struct cmd_packet *packet) {
 
     resume_app_via_self_id(pid);
     ptrace_elev(PT_CONTINUE, pid, (void *)1, 0);
+
+    net_send_int32(fd, CMD_SUCCESS);
+    return 0;
+err:
+    net_send_int32(fd, CMD_ERROR);
+    return 1;
+}
+
+int debug_getfsgsbase_handle(int fd, struct cmd_packet *packet) {
+    char buf[FSGSBASE_BLOB_SIZE];
+    if (!g_debug_attached) goto err;
+    int pid = DBGCTX()->pid;
+    if (pid == 0) goto err;
+
+    struct cmd_debug_lwp_packet *gp = (struct cmd_debug_lwp_packet *)packet->data;
+    if (!gp) { net_send_int32(fd, CMD_DATA_NULL); return 1; }
+
+    memset(buf, 0, FSGSBASE_BLOB_SIZE);
+
+    if (kern_get_fsgsbase(pid, gp->lwpid, buf) != 0) goto err;
+
+    net_send_int32(fd, CMD_SUCCESS);
+    net_send_all(fd, buf, FSGSBASE_BLOB_SIZE);
+    return 0;
+err:
+    net_send_int32(fd, CMD_ERROR);
+    return 1;
+}
+
+int debug_setfsgsbase_handle(int fd, struct cmd_packet *packet) {
+    char buf[FSGSBASE_BLOB_SIZE];
+    if (!g_debug_attached) goto err;
+    int pid = DBGCTX()->pid;
+    if (pid == 0) goto err;
+
+    struct cmd_debug_setreg_packet *sp = (struct cmd_debug_setreg_packet *)packet->data;
+    if (!sp) goto err;
+    if (sp->length != FSGSBASE_BLOB_SIZE) goto err;
+
+    memset(buf, 0, FSGSBASE_BLOB_SIZE);
+    net_send_int32(fd, CMD_SUCCESS);
+    if (net_recv_all(fd, buf, sp->length, 1) < 0) goto err;
+
+    if (kern_set_fsgsbase(pid, sp->lwpid, buf) != 0) goto err;
 
     net_send_int32(fd, CMD_SUCCESS);
     return 0;
@@ -1542,6 +1601,8 @@ int debug_handle(int fd, struct cmd_packet *packet) {
     case 0xBDBB000Bu: return debug_setfpregs_handle(fd, packet);
     case 0xBDBB000Cu: return debug_getdbregs_handle(fd, packet);
     case 0xBDBB000Du: return debug_setdbregs_handle(fd, packet);
+    case 0xBDBB000Eu: return debug_getfsgsbase_handle(fd, packet);
+    case 0xBDBB000Fu: return debug_setfsgsbase_handle(fd, packet);
     case 0xBDBB0010u: return debug_continue_handle(fd, packet);
     case 0xBDBB0011u: return debug_thread_info_handle(fd, packet);
     case 0xBDBB0012u: return debug_step_handle(fd, packet);

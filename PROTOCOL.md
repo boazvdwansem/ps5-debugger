@@ -201,7 +201,7 @@ intentional.
 
 ## 2. Command reference
 
-64 opcodes have handlers. Only a handful are given `CMD_*` macros in
+69 opcodes have handlers. Only a handful are given `CMD_*` macros in
 `protocol.h` (`CMD_VERSION`, `CMD_FW_VERSION`, `CMD_BRANDING`, `CMD_PLATFORM_ID`,
 `CMD_PROC_NOP`, `CMD_DEBUG_ATTACH`, `CMD_DEBUG_SET_BREAKPOINT`,
 `CMD_DEBUG_SET_WATCHPOINT`); the rest are bare hex literals inside the
@@ -797,14 +797,14 @@ For the `valueType` / `compareType` values, see 7.
 
 ---
 
-### 2.3 Debug commands - dispatched by `debug_handle` (`debug.c:1529-1552`)
+### 2.3 Debug commands - dispatched by `debug_handle` (`debug.c:1594-1619`)
 
 Most handlers check `g_debug_attached` (and a non-zero pid) themselves and reply
 `CMD_ERROR` if no session is active (`CMD_DEBUG_PROCESS_STOP` is the exception -
 it works without a session). An unknown debug opcode replies `CMD_ERROR`. The
 dispatcher does not silently drop.
 
-#### `CMD_DEBUG_ATTACH = 0xBDBB0001` (`debug.c:544`, `debug_attach_handle`)
+#### `CMD_DEBUG_ATTACH = 0xBDBB0001` (`debug.c:549`, `debug_attach_handle`)
 This is the real attach handler (there is no stub / `_svc` variant).
 - **Request body:** `struct cmd_debug_attach_packet` (**4 bytes**, `{ uint32_t pid; }`).
   The client's IP comes from the connection slot recorded in 1.5, not from the
@@ -814,12 +814,12 @@ This is the real attach handler (there is no stub / `_svc` variant).
 - **Response:** `CMD_SUCCESS`, or `CMD_ALREADY_DEBUG` / `CMD_DATA_NULL` /
   `CMD_ERROR`.
 
-#### `CMD_DEBUG_DETACH = 0xBDBB0002` (`debug.c:604`)
+#### `CMD_DEBUG_DETACH = 0xBDBB0002` (`debug.c:609`)
 - **Request body:** none.
 - **Response:** `CMD_SUCCESS`. Runs `debug_full_teardown` (clears breakpoints /
   watchpoints, resumes, detaches, closes the 755 connection).
 
-#### `CMD_DEBUG_SET_BREAKPOINT = 0xBDBB0003` (`debug.c:613`)
+#### `CMD_DEBUG_SET_BREAKPOINT = 0xBDBB0003` (`debug.c:618`)
 - **Request body:** `struct cmd_debug_breakpt_packet` (16 bytes, `{ index, enabled, address }`).
 - **Response:** `CMD_SUCCESS`, or `CMD_INVALID_INDEX` if `index > 29`.
 - **Backend:** software breakpoint - writes `0xCC` via `proc_write_mem` (which
@@ -827,7 +827,7 @@ This is the real attach handler (there is no stub / `_svc` variant).
   `MAX_BREAKPOINTS = 30` (`protocol.h:273`). (The CheaterNG client caps its own
   index at 10.)
 
-#### `CMD_DEBUG_SET_WATCHPOINT = 0xBDBB0004` (`debug.c:671`)
+#### `CMD_DEBUG_SET_WATCHPOINT = 0xBDBB0004` (`debug.c:676`)
 - **Request body:** `struct cmd_debug_watchpt_packet` (24 bytes):
   `{ index, enabled, length, breaktype, address }`.
 - **Response:** `CMD_SUCCESS`, or `CMD_INVALID_INDEX` if `index > 3`.
@@ -835,69 +835,95 @@ This is the real attach handler (there is no stub / `_svc` variant).
   dbreg path on firmwares that need it). `MAX_WATCHPOINTS = 4` (`protocol.h:274`).
   `breaktype` and `length` use the x86 DR7 encodings in 7.3.
 
-#### `CMD_DEBUG_GET_THREAD_LIST = 0xBDBB0005` (`debug.c:764`)
+#### `CMD_DEBUG_GET_THREAD_LIST = 0xBDBB0005` (`debug.c:769`)
 - **Request body:** none.
 - **Response:** `CMD_SUCCESS`, `uint32_t num`, then `num` x `uint32_t lwpid`.
 
-#### `CMD_DEBUG_SUSPEND_THREAD = 0xBDBB0006` (`debug.c:804`)
+#### `CMD_DEBUG_SUSPEND_THREAD = 0xBDBB0006` (`debug.c:809`)
 - **Request body:** `struct cmd_debug_stopthr_packet` (4 bytes, `lwpid`).
 - **Response:** `CMD_SUCCESS` or `CMD_ERROR` (`PT_SUSPEND`).
 
-#### `CMD_DEBUG_RESUME_THREAD = 0xBDBB0007` (`debug.c:817`)
+#### `CMD_DEBUG_RESUME_THREAD = 0xBDBB0007` (`debug.c:822`)
 - **Request body:** `struct cmd_debug_resumethr_packet` (4 bytes, `lwpid`).
 - **Response:** `CMD_SUCCESS` or `CMD_ERROR` (`PT_RESUME`).
 
-#### `CMD_DEBUG_GETREGS = 0xBDBB0008` (`debug.c:830`)
+#### `CMD_DEBUG_GETREGS = 0xBDBB0008` (`debug.c:835`)
 - **Request body:** `{ uint32_t lwpid; }` (4 bytes).
 - **Response:** `CMD_SUCCESS`, then a **176-byte** GP-register blob (FreeBSD
   amd64 `struct reg`).
 
-#### `CMD_DEBUG_SETREGS = 0xBDBB0009` (`debug.c:850`)
+#### `CMD_DEBUG_SETREGS = 0xBDBB0009` (`debug.c:855`)
 - **Request body:** `struct cmd_debug_setregs_packet` (8 bytes, `{ lwpid, length }`).
 - **Response:** `CMD_SUCCESS` (ack), reads `length` bytes (must be 176), then
   `CMD_SUCCESS`. **Two** status words.
 
-#### `CMD_DEBUG_GETFPREGS = 0xBDBB000A` (`debug.c:871`)
+#### `CMD_DEBUG_GETFPREGS = 0xBDBB000A` (`debug.c:876`)
 - **Request body:** `{ uint32_t lwpid; }` (4 bytes).
 - **Response:** `CMD_SUCCESS`, then an **832-byte** FPU/YMM blob.
+- The handler reads the thread's full xsave image from the kernel
+  (`kern_get_fpregs`, the thread's `pcb_save` area) so the **YMM (AVX) upper
+  halves are populated**, not just the 512-byte FXSAVE/XMM legacy region.
+  If the kernel path is unavailable it falls back to `PT_GETFPREGS`, which
+  fills only the first 512 bytes and leaves the YMM tail zero.
 
-#### `CMD_DEBUG_SETFPREGS = 0xBDBB000B` (`debug.c:891`)
+#### `CMD_DEBUG_SETFPREGS = 0xBDBB000B` (`debug.c:901`)
 - **Request body:** `{ uint32_t lwpid; uint32_t length; }` (8 bytes).
 - **Response:** `CMD_SUCCESS` (ack), reads `length` bytes (832), then
   `CMD_SUCCESS`. **Two** status words.
+- A full **832-byte** image is written back to the kernel xsave area
+  (`kern_set_fpregs`), so **YMM (AVX) state is applied**. A client must send a
+  complete xsave image (typically round-tripped from `GETFPREGS`) so the
+  xstate header stays valid. A legacy **512-byte** blob is applied via
+  `PT_SETFPREGS` instead (FXSAVE only), leaving YMM untouched.
 
-#### `CMD_DEBUG_GETDBREGS = 0xBDBB000C` (`debug.c:912`)
+#### `CMD_DEBUG_GETFSGSBASE = 0xBDBB000E` (`debug.c:997`)
+- **Request body:** `{ uint32_t lwpid; }` (4 bytes).
+- **Response:** `CMD_SUCCESS`, then a **16-byte** blob
+  `{ uint64_t fs_base; uint64_t gs_base }`.
+- The 64-bit FS/GS segment **base** addresses (TLS / per-thread pointers).
+  These are not part of `struct reg` (`GETREGS` carries only the 16-bit
+  selectors), so they are read from the thread's `pcb` via the kernel R/W
+  primitive. **Kernel-path only** - no ptrace fallback; returns `CMD_ERROR`
+  if the thread cannot be resolved.
+
+#### `CMD_DEBUG_SETFSGSBASE = 0xBDBB000F` (`debug.c:1019`)
+- **Request body:** `{ uint32_t lwpid; uint32_t length; }` (8 bytes).
+- **Response:** `CMD_SUCCESS` (ack), reads `length` bytes (must be **16**),
+  then `CMD_SUCCESS`. **Two** status words. Writes `fs_base`/`gs_base` into
+  the thread's `pcb`; takes effect when the stopped thread is resumed.
+
+#### `CMD_DEBUG_GETDBREGS = 0xBDBB000C` (`debug.c:932`)
 - **Request body:** `{ uint32_t lwpid; }` (4 bytes).
 - **Response:** `CMD_SUCCESS`, then a **128-byte** debug-register blob.
 
-#### `CMD_DEBUG_SETDBREGS = 0xBDBB000D` (`debug.c:949`)
+#### `CMD_DEBUG_SETDBREGS = 0xBDBB000D` (`debug.c:969`)
 - **Request body:** `{ uint32_t lwpid; uint32_t length; }` (8 bytes).
 - **Response:** `CMD_SUCCESS` (ack), reads `length` bytes (128), then
   `CMD_SUCCESS`. **Two** status words.
 
-#### `CMD_DEBUG_CONTINUE = 0xBDBB0010` (`debug.c:977`)
+#### `CMD_DEBUG_CONTINUE = 0xBDBB0010` (`debug.c:1042`)
 - **Request body:** `struct cmd_debug_stopgo_packet` (4 bytes); the first byte is
   the action.
 - `0` -> resume; `1` -> stop (`SIGSTOP`); `2` -> kill (`SIGKILL`) - routed
   through `debug_stopgo_handle`. (Client name: `CMD_DEBUG_STOPGO`.)
 - **Response:** `CMD_SUCCESS`.
 
-#### `CMD_DEBUG_THREAD_INFO = 0xBDBB0011` (`debug.c:1022`)
+#### `CMD_DEBUG_THREAD_INFO = 0xBDBB0011` (`debug.c:1087`)
 - **Request body:** `struct cmd_debug_thrinfo_packet` (4 bytes, `lwpid`).
 - **Response:** `CMD_SUCCESS`, `struct dbg_thrinfo_response` (40 bytes,
   `{ uint32_t lwpid; uint32_t priority; char tdname[32]; }`).
 
-#### `CMD_DEBUG_STEP = 0xBDBB0012` (`debug.c:1050`)
+#### `CMD_DEBUG_STEP = 0xBDBB0012` (`debug.c:1115`)
 - **Request body:** none.
 - **Response:** `CMD_SUCCESS`. `PT_STEP` on the whole process. (Client name:
   `CMD_DEBUG_SINGLESTEP`.)
 
-#### `CMD_DEBUG_STEP_THREAD = 0xBDBB0013` (`debug.c:1066`)
+#### `CMD_DEBUG_STEP_THREAD = 0xBDBB0013` (`debug.c:1131`)
 - **Request body:** `struct cmd_debug_stopthr_packet` (4 bytes, `lwpid`).
 - **Response:** `CMD_SUCCESS` or `CMD_ERROR`. `PT_STEP` on a single LWP.
   (Server-only; not invoked by the CheaterNG client.)
 
-#### `CMD_DEBUG_PROCESS_STOP = 0xBDBB0500` (`debug.c:526`)
+#### `CMD_DEBUG_PROCESS_STOP = 0xBDBB0500` (`debug.c:531`)
 - **Request body:** 5 raw bytes: `uint32_t pid; uint8_t state;`. Returns
   `CMD_ERROR` if `state > 2` or `pid == 0`. (Client name: `CMD_DEBUG_EXT`.)
 - **Response:** `CMD_SUCCESS`, `CMD_DATA_NULL`, or `CMD_ERROR`.
@@ -1035,11 +1061,15 @@ Auth = requires `g_proc_auth_state & 2` (set via `CMD_PROC_AUTH`).
 | `0xBDAACC01` | `proc_scan_start_handle`         | `scan.c`                 | bit 1 |
 | `0xBDAACC02` | `proc_scan_count_handle`         | `scan.c`                 | bit 1 |
 | `0xBDAACC03` | `proc_scan_get_handle`           | `scan.c`                 | bit 1 |
+| `0xBDAACC04` | `proc_write_multi_handle`        | `proc.c`                 |       |
 | `0xBDAACC10` | `proc_turboscan_caps_handle`      | `scan_turbo.c`            |       |
 | `0xBDAACC11` | `proc_turboscan_start_handle`     | `scan_turbo.c`            | bit 1 |
 | `0xBDAACC12` | `proc_turboscan_count_handle`     | `scan_turbo.c`            | bit 1 |
 | `0xBDAACC13` | `proc_turboscan_get_handle`       | `scan_turbo.c`            | bit 1 |
 | `0xBDAACC14` | `proc_turboscan_end_handle`       | `scan_turbo.c`            | bit 1 |
+| `0xBDAACC15` | `proc_turboscan_config_handle`    | `scan_turbo.c`            | bit 1 |
+| `0xBDAACC16` | `proc_turboscan_regions_handle`   | `scan_turbo.c`            | bit 1 |
+| `0xBDAACC24` | `proc_arena_handle`              | `proc.c`                 |       |
 | `0xBDBB0001` | `debug_attach_handle`            | `debug.c`                |       |
 | `0xBDBB0002` | `debug_detach_handle`            | `debug.c`                |       |
 | `0xBDBB0003` | `debug_set_breakpoint_handle`    | `debug.c`                |       |
@@ -1053,6 +1083,8 @@ Auth = requires `g_proc_auth_state & 2` (set via `CMD_PROC_AUTH`).
 | `0xBDBB000B` | `debug_setfpregs_handle`         | `debug.c`                |       |
 | `0xBDBB000C` | `debug_getdbregs_handle`         | `debug.c`                |       |
 | `0xBDBB000D` | `debug_setdbregs_handle`         | `debug.c`                |       |
+| `0xBDBB000E` | `debug_getfsgsbase_handle`       | `debug.c`                |       |
+| `0xBDBB000F` | `debug_setfsgsbase_handle`       | `debug.c`                |       |
 | `0xBDBB0010` | `debug_continue_handle`          | `debug.c`                |       |
 | `0xBDBB0011` | `debug_thread_info_handle`       | `debug.c`                |       |
 | `0xBDBB0012` | `debug_step_handle`              | `debug.c`                |       |

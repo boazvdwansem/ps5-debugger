@@ -167,6 +167,70 @@ int kern_proc_install_dbregs(int pid, int lwpid, void *fpu_buf) {
     return (rc < 0) ? 1 : 0;
 }
 
+int kern_get_fpregs(int pid, int lwpid, void *fpu_buf) {
+    if (pid == 0)        return 1;
+    if (!fpu_buf)        return 1;
+
+    intptr_t kthread = kern_thread_addr(pid, lwpid);
+    if (!kthread)        return 6;
+
+    intptr_t pcb_addr;
+    if (kernel_copyout_fast(kthread + 0x3f8, &pcb_addr, 8) < 0) return 1;
+
+    intptr_t kfpu_addr;
+    if (kernel_copyout_fast(pcb_addr + 0x148, &kfpu_addr, 8) < 0) return 1;
+    if (!kfpu_addr)      return 1;
+
+    if (kernel_copyout_fast(kfpu_addr, fpu_buf, 0x340) < 0) return 1;
+    return 0;
+}
+
+int kern_set_fpregs(int pid, int lwpid, const void *fpu_buf) {
+    if (pid == 0)        return 1;
+    if (!fpu_buf)        return 1;
+
+    intptr_t kthread = kern_thread_addr(pid, lwpid);
+    if (!kthread)        return 6;
+
+    intptr_t pcb_addr;
+    if (kernel_copyout_fast(kthread + 0x3f8, &pcb_addr, 8) < 0) return 1;
+
+    intptr_t kfpu_addr;
+    if (kernel_copyout_fast(pcb_addr + 0x148, &kfpu_addr, 8) < 0) return 1;
+    if (!kfpu_addr)      return 1;
+
+    if (kernel_copyin_fast(fpu_buf, kfpu_addr, 0x340) < 0) return 1;
+    return 0;
+}
+
+int kern_get_fsgsbase(int pid, int lwpid, void *out16) {
+    if (pid == 0)        return 1;
+    if (!out16)          return 1;
+
+    intptr_t kthread = kern_thread_addr(pid, lwpid);
+    if (!kthread)        return 6;
+
+    intptr_t pcb_addr;
+    if (kernel_copyout_fast(kthread + 0x3f8, &pcb_addr, 8) < 0) return 1;
+
+    if (kernel_copyout_fast(pcb_addr + 0x40, out16, 16) < 0) return 1;
+    return 0;
+}
+
+int kern_set_fsgsbase(int pid, int lwpid, const void *in16) {
+    if (pid == 0)        return 1;
+    if (!in16)           return 1;
+
+    intptr_t kthread = kern_thread_addr(pid, lwpid);
+    if (!kthread)        return 6;
+
+    intptr_t pcb_addr;
+    if (kernel_copyout_fast(kthread + 0x3f8, &pcb_addr, 8) < 0) return 1;
+
+    if (kernel_copyin_fast(in16, pcb_addr + 0x40, 16) < 0) return 1;
+    return 0;
+}
+
 int kern_get_proc_info_by_pid(int pid, int lwpid, void *regs_buf) {
     if (pid == 0)        return 1;
     if (!regs_buf)       return 1;
