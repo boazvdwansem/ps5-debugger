@@ -58,7 +58,10 @@ the firmware as a decimal `uint16_t` (e.g. `900` for 9.00, `1240` for 12.40).
   return address into one response. Clients avoid paying many TCP round-trips
   per stack frame.
 - **Change memory protection** on arbitrary target regions.
-- **Allocate / free / hint-allocate** memory inside any target process.
+- **Allocate / free / hint-allocate** memory inside any target process. Plain
+  allocations are served from a server-side **per-pid arena** (one hijack per 16 MB
+  segment, then zero-hijack sub-allocation) so heavy concurrent allocation no longer
+  trips the thread-hijack crash; transparent to clients, toggleable via `0xBDAACC24`.
 
 ### In-target code execution
 - **Call arbitrary functions** with up to six SysV ABI register arguments and
@@ -77,7 +80,8 @@ the firmware as a decimal `uint16_t` (e.g. `900` for 9.00, `1240` for 12.40).
 - **Hardware watchpoints** - up to **4** DR0-DR3 slots with read / write /
   read-write and 1/2/4/8-byte granularity.
 - **Thread control** - list, suspend, resume, single-step, per-thread step.
-- **Full register access** - general-purpose, FPU + YMM, and debug registers.
+- **Full register access** - general-purpose, FPU + YMM (AVX), debug registers,
+  and the FS/GS segment base addresses (TLS pointers).
 - **Continue / stop / halt** the whole process from one command.
 - **Asynchronous interrupt packets** delivered on a separate TCP connection so
   the client never polls.
@@ -124,6 +128,67 @@ itself.
 - **Auth-gated** - only the iterative scan trio (`SCAN_START` / `SCAN_COUNT` /
   `SCAN_GET`) requires a prior `CMD_PROC_AUTH` handshake; the value scan and the
   AOB scans do not.
+
+### Turbo scan family (v1.3.0, additive + capability-gated)
+A faster, opt-in scan path (`CMD_PROC_TURBOSCAN_*`, `0xBDAACC10`-`0xBDAACC16`) that
+runs alongside the legacy and iterative scanners, which are byte-for-byte
+unchanged. A client detects it via `CMD_PROC_TURBOSCAN_CAPS` and falls back to the
+iterative trio when it (or a specific engine) is absent. Result format mirrors the
+iterative scan, so clients reuse one parser.
+- **SIMD comparator** - typed AVX2 (256-bit) exact-match inner loop, ~25-32x the
+  per-element compare of the legacy path (`TSE_SIMD_COMPARE`).
+- **Server-resident result sets** (`TSE_SERVER_RESIDENT`) - the survivor set can
+  live in a per-connection server buffer instead of being re-uploaded each pass;
+  rescans refresh each survivor's baseline so "since last scan" deltas work without
+  the client holding state. `CMD_PROC_TURBOSCAN_GET` fetches values on demand.
+- **Unknown-initial-value scans** (`TSE_SNAPSHOT`) - a membership bitmap + value
+  snapshot (RAM, or an NVMe `/data` file for large regions) drives
+  increased/decreased/changed narrowing with no known starting value, materialising
+  to a compact record list once survivors get sparse. By default the seed **drops
+  all-zero slots** (most memory is zeroed and rarely useful); `TS_SNAPSHOT_INCLUDE_ZEROS`
+  keeps them.
+- **Multi-segment scans** (`TSE_SNAPSHOT_SEGMENTS`) - a single session can cover a
+  list of disjoint regions (`TS_SNAPSHOT_SEGMENTS` + a trailing segment list) instead
+  of one contiguous range, for both an unknown-value snapshot (`TS_SNAPSHOT`) and a
+  known-value server-resident scan (`TS_SERVER_RESIDENT`). The slot/record space spans
+  only the mapped segments, so unmapped gaps between selected modules/sections are never
+  read and storage scales with the selected bytes - letting a scattered selection use
+  the turbo server-side path instead of falling back to per-section streaming. (When a
+  segmented resident scan overflows the server buffer it declines with an empty result
+  stream and the client streams per-section itself.)
+- **Snapshot storage tuning** (`TSE_SNAPSHOT_CONFIG`, `CMD_PROC_TURBOSCAN_CONFIG`) - the
+  client can set the **RAM threshold** (how large the value store may be before it spills
+  to disk; default 512 MiB) and the **spill directory** (default `/data`; the encrypted
+  internal partition can be slow, so an extended NVMe `/mnt/ext1` or USB `/mnt/usb0` is
+  often much faster). Spill writes use 16 MiB chunks.
+- **Aliasing read engine** (`TSE_ALIASING`, opt-in, default off) - maps the
+  target's physical pages into the server's address space via guarded page-table
+  writes so the scan reads in place at DRAM bandwidth instead of copying.
+  Layout-agnostic (4K / 2MB / 1GB pages); enabled per request with
+  `TS_USE_ALIASING`, and always falls back to the normal read path on any
+  guard/verify miss (mdbg is the floor).
+- **Parallel compare** (`TSE_PARALLEL_COMPARE`, opt-in, default off) - with
+  `TS_PARALLEL_COMPARE` on an aliased exact-match streaming scan, the server splits
+  the scan across worker threads. This is for **single-connection** clients: a
+  multi-connection client parallelizes better by opening more connections (the server
+  threads per connection) and should leave this clear. Don't set both - they
+  over-subscribe. Same wire result either way.
+- **Rescan aliasing** (`TSE_RESCAN_ALIASING`, opt-in, default off) - with
+  `TS_RESCAN_ALIASING` on a `COUNT` rescan, full-size (gap-bridged, contiguous)
+  survivor windows read via the aliasing engine instead of mdbg (~2-3x on
+  dense/moderate-density rescans; the win grows as survivors stay dense). Tiny
+  scattered windows and any alias miss stay on mdbg. The survivor set is
+  per-connection, so it is single-connection by nature; a multi-connection client
+  must not enable it across many connections at once. Same wire result either way.
+- **Region classify** (`0xBDAACC16`) - returns every readable region with its cache
+  attribute (uncached `PCD` leaf-PTE bit) and a measured read throughput, so the client
+  can offer the user a per-region "exclude uncached/slow" choice (e.g. the GPU/Garlic
+  blob, which reads ~40 MB/s and is rarely worth scanning). The server never drops
+  anything - exclusion is the client's opt-in, user-overridable decision, default scan
+  everything. The opcode is a raw literal (no `CMD_*` macro) so the enumerated `CMD_*`
+  set stays unchanged.
+- **Auth-gated** - `TURBOSCAN_START` / `_COUNT` / `_GET` / `_END` require the
+  `CMD_PROC_AUTH` handshake (like the iterative trio); `TURBOSCAN_CAPS` does not.
 
 ### System UI integration
 - **Push notifications** to the user's screen with arbitrary UTF-8 text.
@@ -239,11 +304,11 @@ citations.
 | Namespace     | Count | Examples                                                   |
 |---------------|-------|------------------------------------------------------------|
 | Info / ping   | 5     | `VERSION`, `FW_VERSION`, `BRANDING`, `PLATFORM_ID`, `NOP`  |
-| Process       | 26    | `READ`, `WRITE`, `MAPS`, `CALL`, `SCAN_*`, `DISASM_*`      |
-| Debug         | 18    | `ATTACH`, `SET_BREAKPOINT`, `GETREGS`, `STEP`, `CONTINUE`  |
+| Process       | 35    | `READ`, `WRITE`, `MAPS`, `CALL`, `SCAN_*`, `TURBOSCAN_*`, `DISASM_*` |
+| Debug         | 20    | `ATTACH`, `SET_BREAKPOINT`, `GETREGS`, `GET_FSGS_BASE`, `STEP`, `CONTINUE` |
 | Kernel R/W    | 3     | `KERN_BASE`, `KERN_READ`, `KERN_WRITE`                     |
 | Console       | 6     | `NOTIFY`, `PRINT`, `REBOOT`, `INFO`, `END`, `FOREGROUND_APP` |
-| **Total**     | **58**|                                                            |
+| **Total**     | **69**|                                                            |
 
 ---
 
@@ -281,7 +346,7 @@ elfldr from etaHEN-class loaders).
 You should see a system notification confirming the payload is alive:
 
 ```
-ps5debug-NG by OSR v1.2.6 loaded!
+ps5debug-NG by OSR v1.3.0 loaded!
 Firmware: 9.00
 Coded by OpenSourcereR
 Special thanks to

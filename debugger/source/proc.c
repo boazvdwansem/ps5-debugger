@@ -595,6 +595,102 @@ int proc_write_handle(int fd, struct cmd_packet *packet) {
     return 0;
 }
 
+static int proc_write_mem_status(uint32_t pid, uint64_t addr, uint64_t len, const void *buf) {
+    static int s_fw_needs_dmap = -1;
+    if (s_fw_needs_dmap < 0)
+        s_fw_needs_dmap = ((kernel_get_fw_version() & 0xffff0000u) >= 0x08400000u) ? 1 : 0;
+
+    if (s_fw_needs_dmap && proc_ptwalk_write(pid, addr, len, buf) == 0)
+        return 0;
+
+    uint64_t wrote = 0;
+    sys_proc_rw_w1((uint64_t)pid, addr, len, (void *)buf, (uint64_t)(uintptr_t)&wrote);
+    return (wrote == len) ? 0 : 1;
+}
+
+int proc_write_multi_handle(int fd, struct cmd_packet *packet) {
+    struct cmd_proc_write_multi_packet *mp =
+        (struct cmd_proc_write_multi_packet *)packet->data;
+    if (!mp) {
+        net_send_int32(fd, CMD_DATA_NULL);
+        return 1;
+    }
+
+    uint32_t pid         = mp->pid;
+    uint32_t count       = mp->count;
+    int      want_status = (mp->flags & PROC_WRITE_MULTI_F_STATUS) ? 1 : 0;
+
+    if (count > PROC_WRITE_MULTI_MAX_COUNT) {
+        net_send_int32(fd, CMD_ERROR);
+        return 1;
+    }
+
+    uint8_t *buf = (uint8_t *)net_alloc_buffer(0x10000);
+    if (!buf) {
+        net_send_int32(fd, CMD_DATA_NULL);
+        return 1;
+    }
+
+    uint8_t *status = NULL;
+    if (want_status && count > 0) {
+        status = (uint8_t *)net_alloc_buffer(count);
+        if (!status) {
+            free(buf);
+            net_send_int32(fd, CMD_DATA_NULL);
+            return 1;
+        }
+    }
+
+    net_send_int32(fd, CMD_SUCCESS);
+
+    for (uint32_t i = 0; i < count; i++) {
+        uint8_t  hdr[12];
+        if (net_recv_all(fd, hdr, 12, 1) < 0) {
+
+            if (status) free(status);
+            free(buf);
+            return 1;
+        }
+        uint64_t addr;
+        uint32_t len32;
+        memcpy(&addr,  hdr,     8);
+        memcpy(&len32, hdr + 8, 4);
+
+        if (len32 > PROC_WRITE_MULTI_MAX_ENTRY) {
+
+            if (status) free(status);
+            free(buf);
+            net_send_int32(fd, CMD_ERROR);
+            return 1;
+        }
+
+        uint64_t length = len32;
+        uint64_t a      = addr;
+        uint8_t  failed = 0;
+        while (length > 0) {
+            uint64_t to_recv = (length > 0x10000ULL) ? 0x10000ULL : length;
+            if (net_recv_all(fd, buf, (int)to_recv, 1) < 0) {
+                if (status) free(status);
+                free(buf);
+                return 1;
+            }
+            if (proc_write_mem_status(pid, a, to_recv, buf) != 0)
+                failed = 1;
+            a      += to_recv;
+            length -= to_recv;
+        }
+        if (status) status[i] = failed;
+    }
+
+    if (status) {
+        net_send_all(fd, status, (int)count);
+        free(status);
+    }
+    net_send_int32(fd, CMD_SUCCESS);
+    free(buf);
+    return 0;
+}
+
 int proc_maps_handle(int fd, struct cmd_packet *packet) {
 
     struct cmd_proc_maps_packet *mp = (struct cmd_proc_maps_packet *)packet->data;
@@ -956,8 +1052,23 @@ int proc_alloc_hinted_handle(int fd, struct cmd_packet *packet) {
     return 0;
 }
 
+int proc_arena_handle(int fd, struct cmd_packet *packet) {
+    uint32_t on = 1;
+    if (packet->data && packet->datalen >= 4) on = *(uint32_t *)packet->data;
+    char *buf = (char *)net_alloc_buffer(512);
+    if (!buf) { net_send_int32(fd, CMD_DATA_NULL); return 1; }
+    int n = proc_arena_set((int)on, buf, 512);
+    if (n < 0) n = 0;
+    if (n > 512) n = 512;
+    net_send_int32(fd, CMD_SUCCESS);
+    uint32_t len = (uint32_t)n;
+    net_send_all(fd, &len, 4);
+    net_send_all(fd, buf, n);
+    free(buf);
+    return 0;
+}
+
 int proc_handle(int fd, struct cmd_packet *packet, unsigned char client_idx) {
-    (void)client_idx;
     uint32_t cmd = packet->cmd;
 
     switch (cmd) {
@@ -966,6 +1077,7 @@ int proc_handle(int fd, struct cmd_packet *packet, unsigned char client_idx) {
     case 0xBDAA0023u: return proc_read_stack_handle(fd, packet);
     case 0xBDAA0024u: return proc_assemble_handle(fd, packet);
     case 0xBDAA0003u: return proc_write_handle(fd, packet);
+    case 0xBDAACC04u: return proc_write_multi_handle(fd, packet);
     case 0xBDAA0004u: return proc_maps_handle(fd, packet);
     case 0xBDAA0005u: return proc_install_handle(fd, packet);
     case 0xBDAA0006u: return proc_call_handle(fd, packet);
@@ -987,6 +1099,14 @@ int proc_handle(int fd, struct cmd_packet *packet, unsigned char client_idx) {
     case 0xBDAACC01u: return proc_scan_start_handle(fd, packet);
     case 0xBDAACC02u: return proc_scan_count_handle(fd, packet);
     case 0xBDAACC03u: return proc_scan_get_handle(fd, packet);
+    case 0xBDAACC10u: return proc_turboscan_caps_handle(fd, packet);
+    case 0xBDAACC11u: return proc_turboscan_start_handle(fd, packet, client_idx);
+    case 0xBDAACC12u: return proc_turboscan_count_handle(fd, packet, client_idx);
+    case 0xBDAACC13u: return proc_turboscan_get_handle(fd, packet, client_idx);
+    case 0xBDAACC14u: return proc_turboscan_end_handle(fd, packet, client_idx);
+    case 0xBDAACC15u: return proc_turboscan_config_handle(fd, packet);
+    case 0xBDAACC16u: return proc_turboscan_regions_handle(fd, packet);
+    case 0xBDAACC24u: return proc_arena_handle(fd, packet);
     }
 
     net_send_int32(fd, CMD_ERROR);

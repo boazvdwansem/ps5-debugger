@@ -465,3 +465,159 @@ int proc_ptwalk_read(uint32_t pid, uint64_t va, uint64_t len, void *dst) {
     }
     return 0;
 }
+
+// --- benchmark/diagnostic accessors (read-only) ---
+
+uint64_t proc_ptwalk_dmap_base(void) { return g_ptw_dmap; }
+
+// Return the kernel (DMAP) address where the 4K leaf PTE for `va` LIVES, plus
+// its current value. Mirrors the proven ptw_walk_leaf exactly. For aliasing
+// (caller overwrites the leaf PTE). Return: 0 = 4K leaf addr returned (value may
+// be not-present, which is expected for an untouched window page); 2 = an upper
+// level was not present (PT not allocated - touch a sibling first); 3 = huge
+// page (no 4K leaf); 1 = error.
+int proc_ptwalk_leaf_addr(uint32_t pid, uint64_t va, uint64_t *out_pte_kaddr,
+                          uint64_t *out_pte_val, int *out_level) {
+    if ((int32_t)pid <= 0) return 1;
+    if (ptw_discover() != 1) return 1;
+
+    intptr_t kproc = kernel_get_proc_fast((pid_t)pid);
+    if (!kproc) return 1;
+
+    uint64_t vmspace = 0;
+    if (kernel_copyout_fast((intptr_t)(kproc + PTW_PROC_VMSPACE_OFF),
+                            &vmspace, 8) != 0 || !vmspace)
+        return 1;
+
+    uint64_t pair[2];
+    if (kernel_copyout_fast((intptr_t)(vmspace + g_ptw_pmap_off),
+                            pair, sizeof(pair)) != 0)
+        return 1;
+
+    uint64_t cr3 = pair[1];
+    if (cr3 == 0 || (cr3 & 0xFFF) || cr3 >= PTW_PHYS_BOUND) return 1;
+    if (pair[0] - cr3 != g_ptw_dmap) return 1;
+
+    uint64_t table = cr3 & PTW_PHYS_MASK;
+    for (int level = 0; level < 4; level++) {
+        if (table >= PTW_PHYS_BOUND) return 1;
+        int      shift     = 39 - level * 9;
+        uint64_t idx       = (va >> shift) & 0x1FF;
+        uint64_t ent_kaddr = g_ptw_dmap + table + idx * 8;
+        uint64_t e = 0;
+        if (kernel_copyout_fast((intptr_t)ent_kaddr, &e, 8) != 0) return 1;
+
+        if (level == 3) {
+            if (out_pte_kaddr) *out_pte_kaddr = ent_kaddr;
+            if (out_pte_val)   *out_pte_val   = e;
+            if (out_level)     *out_level     = 3;
+            return 0;
+        }
+        if (!(e & PTW_PTE_PRESENT)) return 2;
+        if ((level == 1 || level == 2) && (e & PTW_PTE_PS)) return 3;
+        table = e & PTW_PHYS_MASK;
+    }
+    return 1;
+}
+
+// Resolve one VA to its leaf phys + page size (4K/2M/1G). For benchmarking the
+// DMAP read path: lets the caller find a huge-page-backed VA and copyout from
+// g_ptw_dmap+phys directly.
+int proc_ptwalk_probe(uint32_t pid, uint64_t va, uint64_t *out_phys,
+                      int *out_level, uint64_t *out_pagesize, uint64_t *out_pte) {
+    if ((int32_t)pid <= 0) return 1;
+    if (ptw_discover() != 1) return 1;
+
+    intptr_t kproc = kernel_get_proc_fast((pid_t)pid);
+    if (!kproc) return 1;
+
+    uint64_t vmspace = 0;
+    if (kernel_copyout_fast((intptr_t)(kproc + PTW_PROC_VMSPACE_OFF),
+                            &vmspace, 8) != 0 || !vmspace)
+        return 1;
+
+    uint64_t pair[2];
+    if (kernel_copyout_fast((intptr_t)(vmspace + g_ptw_pmap_off),
+                            pair, sizeof(pair)) != 0)
+        return 1;
+
+    uint64_t cr3 = pair[1];
+    if (cr3 == 0 || (cr3 & 0xFFF) || cr3 >= PTW_PHYS_BOUND) return 1;
+    if (pair[0] - cr3 != g_ptw_dmap) return 1;
+
+    uint64_t e = 0;
+    int      lvl = -1;
+    if (ptw_walk_leaf(g_ptw_dmap, cr3, va, &e, &lvl) != 0) return 1;
+    if (!(e & PTW_PTE_PRESENT)) return 1;
+
+    uint64_t page_size = (lvl == 3) ? 0x1000ULL
+                       : (lvl == 2) ? 0x200000ULL
+                       : (lvl == 1) ? 0x40000000ULL : 0;
+    if (!page_size) return 1;
+
+    uint64_t page_mask = page_size - 1;
+    if (out_phys)     *out_phys     = ((e & PTW_PHYS_MASK) & ~page_mask) + (va & page_mask);
+    if (out_level)    *out_level    = lvl;
+    if (out_pagesize) *out_pagesize = page_size;
+    if (out_pte)      *out_pte      = e;
+    return 0;
+}
+
+// Unified per-2MB-span resolve for the aliasing read engine (read-only). One PD-walk
+// (PML4->PDPT->PD, ~3 kernel reads) for a 2MB-aligned `span2m`, then branch on the PS
+// bit: a 1GB (PDPT PS) or 2MB (PD PS) superpage returns is_huge + the phys of span2m's
+// first byte (the 2MB span is phys-contiguous inside any superpage) + the huge PTE; a
+// non-PS PD entry returns is_huge=0 + the DMAP kaddr of the 512-entry leaf PT page (the
+// caller bulk-reads it once and indexes per 4K page). ~256-512x cheaper than per-4K-page
+// proc_ptwalk_probe on 4K-paged targets; identical on huge. Mirrors ptw_walk_leaf's reads.
+int proc_ptwalk_span_resolve(uint32_t pid, uint64_t span2m, int *out_huge,
+                             uint64_t *out_phys_base, uint64_t *out_leaf_pt_kaddr,
+                             uint64_t *out_pte) {
+    if ((int32_t)pid <= 0) return 1;
+    if (ptw_discover() != 1) return 1;
+
+    intptr_t kproc = kernel_get_proc_fast((pid_t)pid);
+    if (!kproc) return 1;
+
+    uint64_t vmspace = 0;
+    if (kernel_copyout_fast((intptr_t)(kproc + PTW_PROC_VMSPACE_OFF),
+                            &vmspace, 8) != 0 || !vmspace)
+        return 1;
+
+    uint64_t pair[2];
+    if (kernel_copyout_fast((intptr_t)(vmspace + g_ptw_pmap_off),
+                            pair, sizeof(pair)) != 0)
+        return 1;
+
+    uint64_t cr3 = pair[1];
+    if (cr3 == 0 || (cr3 & 0xFFF) || cr3 >= PTW_PHYS_BOUND) return 1;
+    if (pair[0] - cr3 != g_ptw_dmap) return 1;
+
+    uint64_t table = cr3 & PTW_PHYS_MASK;
+    for (int level = 0; level < 3; level++) {               // PML4(0) -> PDPT(1) -> PD(2)
+        if (table >= PTW_PHYS_BOUND) return 1;
+        int      shift = 39 - level * 9;
+        uint64_t idx   = (span2m >> shift) & 0x1FF;
+        uint64_t e = 0;
+        if (kernel_copyout_fast((intptr_t)(g_ptw_dmap + table + idx * 8), &e, 8) != 0)
+            return 1;
+        if (!(e & PTW_PTE_PRESENT)) return 1;
+        if ((level == 1 || level == 2) && (e & PTW_PTE_PS)) { // 1GB or 2MB superpage
+            uint64_t pgsz = (level == 1) ? (1ULL << 30) : (1ULL << 21);
+            uint64_t base = (e & PTW_PHYS_MASK) & ~(pgsz - 1);
+            if (out_huge)          *out_huge          = 1;
+            if (out_phys_base)     *out_phys_base     = base + (span2m & (pgsz - 1));
+            if (out_pte)           *out_pte           = e;
+            if (out_leaf_pt_kaddr) *out_leaf_pt_kaddr = 0;
+            return 0;
+        }
+        table = e & PTW_PHYS_MASK;                          // descend
+    }
+    // PD entry was a non-PS pointer -> `table` is now the leaf PT page's phys.
+    if (table >= PTW_PHYS_BOUND) return 1;
+    if (out_huge)          *out_huge          = 0;
+    if (out_leaf_pt_kaddr) *out_leaf_pt_kaddr = g_ptw_dmap + table;
+    if (out_phys_base)     *out_phys_base     = 0;
+    if (out_pte)           *out_pte           = 0;
+    return 0;
+}

@@ -19,9 +19,9 @@ int find_proc_pid_by_name(const char *name)
         mib[2] = 1;
         mib[3] = pid;
 
-        if (__crt_syscall(202, (long)(intptr_t)mib, 4,
-                          (long)(intptr_t)kinfo,
-                          (long)(intptr_t)&outlen, 0, 0) != 0)
+        if (ps5debug_syscall(202 /*sysctl*/, (long)(intptr_t)mib, 4L /*namelen*/,
+                             (long)(intptr_t)kinfo,
+                             (long)(intptr_t)&outlen, 0L, 0L) != 0)
             continue;
 
         char comm[0x14];

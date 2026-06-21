@@ -7,7 +7,7 @@ the sources under `debugger/source/`, `common/`, and the client
 value and the on-the-wire value differ (see the bit-swap note in 1.6), both are
 given.
 
-This document reflects `ps5debug-NG v1.2.6` (`common/include/version.h`,
+This document reflects `ps5debug-NG v1.3.0` (`common/include/version.h`,
 `PS5DEBUG_NG_VERSION_STR`). The on-wire **protocol** version reported by
 `CMD_VERSION` is a separate string, currently `"1.3"`.
 
@@ -20,7 +20,7 @@ This document reflects `ps5debug-NG v1.2.6` (`common/include/version.h`,
 | Symbol             | Value                            | Source                                                   |
 |--------------------|----------------------------------|----------------------------------------------------------|
 | protocol version   | `"1.3"`                          | `meta.c` `handle_version` (local `char ver[]="1.3"`)     |
-| branding string    | `"ps5debug-NG by OSR v1.2.6"`    | `version.h` `PS5DEBUG_NG_BRAND_STR` via `meta.c` `handle_branding` |
+| branding string    | `"ps5debug-NG by OSR v1.3.0\01.0"` | `version.h` `PS5DEBUG_NG_BRAND_STR` via `meta.c` `handle_branding` (NUL-separated capability level appended - see 2.1) |
 | `PACKET_MAGIC`     | `0xFFAABBCC`                     | `main.c:50` (local `#define`)                            |
 | broadcast magic    | `0xFFFFAAAA`                     | `main.c` `broadcast_thread` (raw literal)                |
 | auth magic         | `0xBB40E64D`                     | `protocol.h:249` (`CMD_PROC_AUTH_MAGIC`)                 |
@@ -201,7 +201,7 @@ intentional.
 
 ## 2. Command reference
 
-58 opcodes have handlers. Only a handful are given `CMD_*` macros in
+69 opcodes have handlers. Only a handful are given `CMD_*` macros in
 `protocol.h` (`CMD_VERSION`, `CMD_FW_VERSION`, `CMD_BRANDING`, `CMD_PLATFORM_ID`,
 `CMD_PROC_NOP`, `CMD_DEBUG_ATTACH`, `CMD_DEBUG_SET_BREAKPOINT`,
 `CMD_DEBUG_SET_WATCHPOINT`); the rest are bare hex literals inside the
@@ -223,9 +223,17 @@ per-namespace `switch` statements. Three opcodes have no symbolic name at all:
 
 #### `CMD_BRANDING = 0xBD000501`
 - **Request body:** none.
-- **Response:** `uint32_t length`, then `length` bytes of the branding string
-  ("ps5debug-NG by OSR v1.2.6"). No status word precedes it. (The client calls
-  this `CMD_EXT_VERSION`.)
+- **Response:** `uint32_t length`, then `length` bytes: the human branding string
+  (`"ps5debug-NG by OSR v1.3.0"`), a single `NUL`, then a **capability level**
+  string (`"1.0"`), with no trailing NUL. No status word precedes it. (The client
+  calls this `CMD_EXT_VERSION`.)
+- **Capability level:** C-string clients read up to the first `NUL` and see only
+  the unchanged brand; capability-aware clients read the bytes past the `NUL` to
+  get the level. The level is bumped as the server gains negotiable features (so a
+  client can gate a feature on the server advertising at least a given level).
+  Built from `PS5DEBUG_NG_BRAND_STR "\0" "1.0"` in `meta.c` `handle_branding` -
+  the literals are split (`"\0" "1.0"`) so `\0` is a NUL byte, not the octal
+  escape `\01`.
 
 #### `CMD_PLATFORM_ID = 0xBD000502`
 - **Request body:** none.
@@ -259,6 +267,28 @@ data" is read from the socket by the handler after a leading `CMD_SUCCESS`.
 - **Response:** `CMD_SUCCESS` (before the data phase), then the server reads
   `length` bytes in 64 KiB chunks, then `CMD_SUCCESS` again. **Two** status
   words (see 8).
+
+#### `0xBDAACC04` (`proc_write_multi_handle`)
+Bulk write - the write counterpart to `0xBDAACC03` (bulk read). Collapses a
+freeze / multi-poke loop of N single `CMD_PROC_WRITE`s into one exchange. Dispatched
+by `proc_handle`; **not** auth-gated (mirrors single write).
+- **Request body:** `struct cmd_proc_write_multi_packet` (12 bytes,
+  `{ uint32_t pid; uint32_t count; uint32_t flags; }`). `flags` bit 0
+  (`PROC_WRITE_MULTI_F_STATUS`) requests a per-entry status array in the response.
+- **Trailing data:** after the server's first `CMD_SUCCESS`, the client streams
+  `count` entries, each `{ uint64_t address; uint32_t length; <length> bytes data }`
+  concatenated. Per-entry `length` is capped at `0x100000`; `count` at `0xFFFF`.
+- **Response:** `CMD_SUCCESS` (ack), then the server reads and applies each entry
+  (writing via the same DMAP / mdbg path as `CMD_PROC_WRITE`, in 64 KiB chunks).
+  If `flags` bit 0 was set, it then sends a `count`-byte status array (one byte per
+  entry, `0` = ok, `1` = write failed). Finally a trailing `CMD_SUCCESS`. **Two**
+  status words, plus the optional status array between them.
+- **Semantics:** best-effort and non-atomic - entries are applied in order and a
+  failed entry does not stop the rest. Without the status flag, individual write
+  failures are not reported (same as single `CMD_PROC_WRITE`, whose underlying
+  `proc_write_mem` is `void`). A `count`/`length` cap violation makes the server
+  reply `CMD_ERROR` and abort the command (the connection's stream is then
+  untrustworthy; well-behaved clients stay within the caps).
 
 #### `CMD_PROC_MAPS = 0xBDAA0004` (`proc.c:597`)
 - **Request body:** `struct cmd_proc_maps_packet` (4 bytes, `pid`).
@@ -317,6 +347,17 @@ Legacy single-pass scan. **No auth required.**
 #### `CMD_PROC_FREE = 0xBDAA000C` (`proc.c:880`)
 - **Request body:** `struct cmd_proc_free_packet` (16 bytes, `{ pid, address, length }`).
 - **Response:** `CMD_SUCCESS`.
+
+> **Alloc arena (default ON).** A plain `CMD_PROC_ALLOC` is served from a server-side
+> per-pid 16 MB arena: one hijacking `mmap` per segment, then zero-hijack sub-allocation
+> (with `CMD_PROC_FREE` recycling the slice into a free-list). This avoids the thread-hijack
+> crash hazard that pathological concurrent allocation otherwise triggers. It is fully
+> transparent (same wire, valid target addresses); a freed sub-block is recycled rather than
+> `munmap`'d, and the segment is reclaimed when the game exits. `CMD_PROC_ALLOC_HINTED`
+> (which needs a specific address) bypasses the arena and allocates directly. The arena can
+> be toggled at runtime via the raw literal `0xBDAACC24` (`proc_arena_handle`): request body
+> `uint32_t` (`1` = enable, `0` = disable), response `CMD_SUCCESS` + `uint32_t len` + a text
+> status line.
 
 #### `0xBDAA000D` - first-map probe (`proc.c:901`, `proc_unknown_d_handle`)
 Raw literal, no `CMD_*` macro.
@@ -485,18 +526,285 @@ Bulk memory fetch for a candidate list. (Client name: `CMD_PROC_READ_MULTI`.)
   concatenated in order, then a `0xFFFFFFFFFFFFFFFF` sentinel. (Returns raw
   memory, not addresses.)
 
+#### TURBOSCAN family - `0xBDAACC10`-`0xBDAACC16` (`scan_turbo.c`)
+
+Additive turbo-scan path (v1.3.0). The legacy (`0xBDAA0009`), AOB
+(`0501`/`0502`), and iterative (`CC01`/`02`/`03`) scans are unchanged; a client
+detects TURBOSCAN via `CMD_PROC_TURBOSCAN_CAPS` and falls back to the iterative
+trio when it (or a specific engine bit) is absent. Result blocks reuse the
+iterative `(offset, value)` shape so clients reuse one parser. IDs, engine bits,
+and request flags are in `protocol.h:22-37`.
+
+**Engine bits** (`CAPS` `engines` field):
+
+| Bit    | Name                  | Meaning                                         |
+|--------|-----------------------|-------------------------------------------------|
+| `0x01` | `TSE_SIMD_COMPARE`    | typed AVX2 (256-bit) comparator                 |
+| `0x02` | `TSE_ALIASING`        | physical-page aliasing read engine (opt-in)     |
+| `0x04` | `TSE_SERVER_RESIDENT` | server-side survivor sets                       |
+| `0x08` | `TSE_SNAPSHOT`        | unknown-initial-value bitmap + snapshot scans   |
+| `0x10` | `TSE_SNAPSHOT_SEGMENTS` | trailing segment list of disjoint regions in one session (snapshot or resident `START`) |
+| `0x20` | `TSE_SNAPSHOT_CONFIG`   | `CMD_PROC_TURBOSCAN_CONFIG` supported (RAM threshold + spill dir) |
+| `0x40` | `TSE_SNAPSHOT_FIRST`    | `TS_SNAPSHOT_KEEP_FIRST` + CC13 GET returns the first-scan value (3-value records) |
+| `0x80` | `TSE_SNAPSHOT_PREVIOUS` | `TS_SNAPSHOT_KEEP_PREVIOUS`: CC13 GET `previous` carries the prior-scan value (not the last-scan value) |
+| `0x100` | `TSE_PARALLEL_COMPARE` | `TS_PARALLEL_COMPARE` supported (server-side multi-thread for the aliased SIMD exact-match streaming scan) |
+| `0x200` | `TSE_RESCAN_ALIASING`  | `TS_RESCAN_ALIASING` supported (CC12 rescan reads full-size survivor windows via the aliasing engine) |
+
+**Per-request flags** (`START` / `COUNT` `flags` field):
+
+| Bit    | Name                 | Meaning                                                |
+|--------|----------------------|--------------------------------------------------------|
+| `0x01` | `TS_USE_ALIASING`    | use the aliasing read engine for this scan (default 0) |
+| `0x02` | `TS_SERVER_RESIDENT` | keep / rescan the survivor set server-side             |
+| `0x04` | `TS_SNAPSHOT`        | unknown-initial-value snapshot scan (`START` only)     |
+| `0x08` | `TS_SNAPSHOT_INCLUDE_ZEROS` | snapshot: seed all-zero slots too - **default drops them** (`START` only) |
+| `0x10` | `TS_SNAPSHOT_SEGMENTS` | scan covers a trailing segment list of disjoint regions, not `[address, length)` (`START` with `TS_SNAPSHOT` or `TS_SERVER_RESIDENT`) |
+| `0x20` | `TS_SNAPSHOT_KEEP_FIRST` | retain an immutable first-scan value store so CC13 GET can return `first` (`START` + `TS_SNAPSHOT` only) |
+| `0x40` | `TS_SNAPSHOT_KEEP_PREVIOUS` | retain a prior-scan value store so CC13 GET `previous` = value at the previous scan, not the just-matched one (`START` + `TS_SNAPSHOT` only) |
+| `0x80` | `TS_PARALLEL_COMPARE` | split the scan across worker threads server-side - `START` + `TS_USE_ALIASING`, exact-match (compareType 0) streaming only. For **single-connection** clients; a multi-connection client should parallelize by opening more connections instead (the server threads per connection), and must **not** also set this (the two compose to over-subscription, which is slower). Ignored on any non-qualifying scan. |
+| `0x100` | `TS_RESCAN_ALIASING` | `COUNT` rescans read full-size (gap-bridged, contiguous) survivor windows via the aliasing read engine instead of mdbg; tiny scattered windows and any alias failure fall back to mdbg (the floor). ~2-3x faster on dense/moderate-density rescans (the win grows as survivors stay dense; past ~32KB inter-survivor gaps windows fragment and it stays mdbg). Applies to all three CC12 rescan paths (snapshot-resident, list-resident, client-driven). The survivor set is **per-connection**, so this is single-connection by nature - a multi-connection client must **not** enable it on many connections at once (over-subscribes the aliasing setup, same caveat as `TS_PARALLEL_COMPARE`). |
+
+##### `CMD_PROC_TURBOSCAN_CAPS = 0xBDAACC10` (`proc_turboscan_caps_handle`)
+Capability probe. **No auth required.**
+- **Request body:** none.
+- **Response:** `CMD_SUCCESS`, then `struct cmd_proc_turboscan_caps_response`
+  (16 bytes): `{ u32 version; u32 engines; u32 max_threads; u32 reserved; }`.
+  `version = 1`; `engines` is the OR of the supported `TSE_*` bits; `max_threads`
+  is the compare stage's worker count. An old server without TURBOSCAN never
+  answers this opcode (or replies `CMD_ERROR`) - the client's fallback signal.
+
+##### `CMD_PROC_TURBOSCAN_START = 0xBDAACC11` (`proc_turboscan_start_handle`) - **requires auth bit 1**
+First scan; mirrors `CMD_PROC_SCAN_START` plus a trailing `flags` field and the
+optional resident / snapshot / aliasing modes.
+- **Request body:** `struct cmd_proc_turboscan_start_packet` (27 bytes):
+  `{ u32 pid; u64 address; u32 length; u8 valueType; u8 compareType; u8 alignment; u32 lenData; u32 flags; }`.
+- **Trailing data:** the seed value(s) when the compare type needs them, plus a
+  mask when `valueType == 10` (as `SCAN_START`). `TS_SNAPSHOT` needs no seed. When
+  `TS_SNAPSHOT_SEGMENTS` is set (with either `TS_SNAPSHOT` or `TS_SERVER_RESIDENT`),
+  a segment list follows the value/mask (see the snapshot sub-protocol for the exact
+  wire format; the resident variant reuses it verbatim).
+- **Response (default, or `TS_USE_ALIASING`):** `CMD_SUCCESS` (ack), reads
+  value/mask, `CMD_SUCCESS` again, then streams `(offset, value)` result blocks
+  (`u64 block_len`-prefixed) terminated by a `0xFFFFFFFFFFFFFFFF` sentinel, then a
+  final `CMD_SUCCESS` - the same shape as `SCAN_START`. `TS_USE_ALIASING` only
+  changes how the server **reads** target memory (in place vs copied); the wire
+  result is identical, and the engine silently falls back to the normal read path
+  on any page it cannot alias. `TS_PARALLEL_COMPARE` (with `TS_USE_ALIASING`, exact-match
+  streaming) additionally splits the scan across server worker threads - intended for
+  single-connection clients; multi-connection clients should instead open more connections
+  (the server threads per connection) and leave this flag clear. The wire result is identical
+  either way.
+- **Response (`TS_SERVER_RESIDENT`):** after the two acks the server stores
+  survivors server-side and replies `struct cmd_proc_turboscan_resident_summary`
+  (12 bytes): `{ u32 resident_stored; u64 count; }`, streaming **no** result
+  blocks. If storage fails (overflow / too-wide value / mmap fail) it replies
+  `resident_stored = 0` and then streams the full result set the normal way
+  (transparent fallback). Closes with `CMD_SUCCESS`.
+- **Response (`TS_SERVER_RESIDENT | TS_SNAPSHOT_SEGMENTS`, `TS_SNAPSHOT` clear):**
+  multi-segment resident. After the two acks the server reads the trailing segment
+  list (`u32 segment_count`, then `segment_count` x `cmd_proc_turboscan_snap_segment`,
+  the **same** wire format and `1 .. 1048576` bound as the snapshot sub-protocol; the
+  packet `address`/`length` are ignored), scans each disjoint segment, and appends all
+  matches into the one resident session buffer (`count` accumulates across segments).
+  Reply shape is unchanged: the 12-byte summary with `resident_stored = 1` and
+  `count` = total matches, then `CMD_SUCCESS`. Survivors are stored as absolute
+  `{ u64 addr; value }` records, so `CC12` narrow and `CC13` GET are unaffected by the
+  segmentation. **Decline (no stream fallback):** if storage overflows
+  `TS_RESIDENT_CAP`, the segment count is malformed, or an allocation fails, the server
+  replies `resident_stored = 0, count = 0` followed by an **empty** result stream (an
+  immediate `0xFFFFFFFFFFFFFFFF` sentinel, i.e. zero result blocks) and `CMD_SUCCESS` -
+  byte-identical framing to the single-range transparent fallback, just with no blocks.
+  A transparent server stream is **not** used here because a `u32` block offset cannot
+  carry the absolute addresses of `>4 GiB`-scattered segments; the client treats
+  `resident_stored = 0` on a segmented request as "server declined" and falls back to
+  its own per-section streaming.
+- **Response (`TS_SNAPSHOT`):** (with `TS_SNAPSHOT_SEGMENTS`, reads the trailing
+  segment list first) streams the snapshot plan / progress / summary (see the
+  snapshot sub-protocol below), then `CMD_SUCCESS`. If `TS_SNAPSHOT_KEEP_FIRST` is set,
+  the server also writes an immutable **first-scan** value store at create (a spill-only
+  file, never updated by narrowing) so CC13 GET can return the `first` column; it is
+  needed for the count-only resident path where the client never saw the first-scan
+  per-result values (a large unknown-value scan). It roughly doubles the value-store
+  *disk* footprint (not RAM, since it is spill-only) and is freed when the session
+  materialises to a list or ends. On first-store creation failure the snapshot still
+  succeeds and GET falls back to the 2-value shape. If `TS_SNAPSHOT_KEEP_PREVIOUS` is set,
+  the server also keeps a **prior-scan** value store (another spill-only file, rewritten
+  each rescan with the baseline it held *before* that rescan), so CC13 GET's `previous`
+  reflects the value at the scan before the most recent one (matching console/async
+  semantics) instead of the just-matched value. Without it, `previous` is the last-scan
+  value store (~= `current`). It is the costliest of the three stores (written every
+  narrow); freed on materialise/end; degrades to the legacy `previous` on create failure.
+
+##### `CMD_PROC_TURBOSCAN_COUNT = 0xBDAACC12` (`proc_turboscan_count_handle`) - **requires auth bit 1**
+Rescan. Mirrors `CMD_PROC_SCAN_COUNT` (client-driven candidate chunks) unless
+`TS_SERVER_RESIDENT` is set, in which case it rescans the server-resident set in
+place (no candidate upload) and refreshes each survivor's baseline (so the next
+rescan is "since last scan"). With `TS_RESCAN_ALIASING` set, full-size survivor
+windows are read via the aliasing engine instead of mdbg (mdbg floor on small
+windows / alias failure); wire format and results are unchanged.
+- **Request body:** `struct cmd_proc_turboscan_count_packet` (22 bytes):
+  `{ u32 pid; u64 base_address; u8 valueType; u8 compareType; u32 lenData; u32 flags; }`.
+- **Trailing data:** value/mask as for `START` when needed; then, in the
+  **client-driven** mode only, the same chunked candidate loop as `SCAN_COUNT`
+  (`u32 chunk_len` + entries; `0xFFFFFFFF` ends it).
+- **Response (client-driven):** identical to `SCAN_COUNT` - per-chunk
+  `(offset, value)` blocks + per-chunk `0xFFFFFFFFFFFFFFFF` sentinel, then a final
+  `CMD_SUCCESS`.
+- **Response (`TS_SERVER_RESIDENT`):** **mode-independent** - both a list session and a
+  snapshot session reply with the same shape: a **progress stream** - repeated
+  `u64 slots_scanned` records (cumulative bitmap-walk index, relative to the session's
+  `slot_count` from the create plan; throttled to <=256 records, evenly spaced) terminated
+  by an 8-byte `0xFFFFFFFFFFFFFFFF` sentinel - then the `u64 new_survivor_count`, then
+  `CMD_SUCCESS`. A snapshot session narrows the bitmap and streams real progress records;
+  a list session has no progress to stream and so sends an **immediate sentinel (zero
+  records)** before the count. The empty case for a snapshot (value-width mismatch) also
+  sends the sentinel with zero records. Because the wire shape is identical either way,
+  the client parses any resident narrow without knowing the session mode - which matters
+  because once a snapshot's survivors get sparse the server transparently materialises it
+  into a compact record list, flipping the session to list mode mid-stream.
+
+##### `CMD_PROC_TURBOSCAN_GET = 0xBDAACC13` (`proc_turboscan_get_handle`) - **requires auth bit 1**
+Fetch a window of the server-resident survivor set with live current values, plus the
+stored last-scan (`previous`) value and - when the session retained it - the first-scan
+(`first`) value.
+- **Request body:** `struct cmd_proc_turboscan_get_packet` (12 bytes):
+  `{ u32 start_index; u32 count; u32 flags; }`.
+- **Response:** `CMD_SUCCESS`, then `u32 hdr`, then `(hdr & 0x7FFFFFFF)` records, then
+  `CMD_SUCCESS`. The header's low 31 bits are `actual_count` (`<= count`); **bit 31** flags
+  the 3-value record shape so the client picks the stride before reading:
+    - **bit 31 clear:** `{ u64 addr; value current; value previous }` - `8 + 2*value_length`.
+    - **bit 31 set:**   `{ u64 addr; value current; value previous; value first }` - `8 + 3*value_length`.
+
+  `current` is the **matched** value - the value the most recent scan read/matched (the
+  session value store), **not** a live re-read - so it agrees with the scan and matches every
+  other scan path (the client gets live values via its Refresh); `previous` is the **prior-scan**
+  value (the value at the scan before the most recent one) when the session was started with
+  `TS_SNAPSHOT_KEEP_PREVIOUS`,
+  otherwise the last-matched value (~= `current`, the legacy default); `first` is the value
+  at snapshot create and is present (bit 31 set) **only** for a session started with
+  `TS_SNAPSHOT_KEEP_FIRST` whose first store was created successfully (it degrades to the
+  2-value shape otherwise). The shape is uniform across single-range,
+  multi-segment, list-mode and snapshot-mode sessions. `valueType` / `value_length` come
+  from the session, not the request.
+
+##### `CMD_PROC_TURBOSCAN_END = 0xBDAACC14` (`proc_turboscan_end_handle`) - **requires auth bit 1**
+Free this connection's server-resident / snapshot session (also freed
+automatically on disconnect).
+- **Request body:** none.
+- **Response:** `CMD_SUCCESS`.
+
+##### `CMD_PROC_TURBOSCAN_CONFIG = 0xBDAACC15` (`proc_turboscan_config_handle`) - **requires auth bit 1**
+Tune the snapshot value-store backing for subsequent snapshot scans (advertised via
+`TSE_SNAPSHOT_CONFIG`). Lets the client trade RAM for speed and choose where a too-large
+snapshot spills. Settings are global (snapshots run on a single connection) and apply to
+the next `CC11 + TS_SNAPSHOT` create.
+- **Request body:** `struct cmd_proc_turboscan_config_packet` (8 bytes):
+  `{ u32 ram_thresh_mb; u32 spill_path_len; }`, then `spill_path_len` bytes of a spill
+  **directory** path (no NUL, `<= 63` bytes).
+- **Semantics:**
+  - `ram_thresh_mb` - how much of the value store is **fully committed to RAM** (anon
+    `mmap`). `0` resets to the **512 MiB** default. The cap is now a RAM-cache size, not an
+    all-or-nothing switch:
+    - store `<=` cap -> **pure anon RAM** (committed up front, fastest).
+    - store `>` cap -> **hybrid**: the first `cap` bytes (whole slots) are cached in anon
+      RAM and only the overflow spills to the file; the kernel page cache may keep
+      additional spill pages warm opportunistically, so RAM caching is no longer
+      all-or-nothing and a too-large scan never goes 100% to disk.
+
+    Raising it commits more of the console's shared memory while a game runs (a client-
+    chosen tradeoff); if the RAM commit/cache fails, the server degrades safely to the
+    pure-file path. (File-backed `mmap` is **not** used - faulting a `MAP_SHARED` file page
+    sleeps under a held VM lock and panics PS5 - so the spill is explicit `pread`/`pwrite`.)
+  - spill directory - where the spill file (`ps5dbg_snap_NN.bin`) is written when it
+    doesn't fit in RAM. Empty resets to `/data`. The internal user partition (`/data`,
+    `/user`) is encrypted and can be slow (HW-measured ~35-240 MB/s depending on console
+    state); an extended NVMe (`/mnt/ext1`) or USB (`/mnt/usb0`) is typically faster
+    (~240 / ~550 MB/s) when present. The spill write itself uses 16 MiB chunks.
+- **Response:** `CMD_SUCCESS` (or `CMD_DATA_NULL` on a malformed body / `spill_path_len > 63`).
+
+##### `0xBDAACC16` - region classify (`proc_turboscan_regions_handle`) - **requires auth bit 1**
+Enumerate every **readable** region of the target with its cache attribute and a
+**measured** read throughput, so the client can offer the user a per-region "exclude
+uncached/slow" choice (e.g. the PS5 GPU/Garlic blob: a large region that is uncached
+and reads ~40 MB/s, usually not worth scanning - but **the server never drops anything**,
+exclusion is the client's opt-in, user-overridable decision; the default is to scan
+everything). The opcode is deliberately a raw literal (no `CMD_*` macro) so the published
+`CMD_*` set that some clients enumerate stays unchanged.
+- **Request body:** `struct cmd_proc_turboscan_regions_packet` (16 bytes):
+  `{ u32 pid; u32 max; u32 probe_bytes; u32 reserved; }`.
+  - `max` - cap on regions returned (`0` => server default 1024; hard cap 8192).
+  - `probe_bytes` - bytes probe-read per region to time the MB/s measure (`0` => 64 KiB;
+    capped at 1 MiB). The measure is **always** taken (one `proc_read_mem` per region).
+- **Response:** `CMD_SUCCESS`, then `u32 count`, then `count` x
+  `struct cmd_proc_turboscan_region_info` (32 bytes each), then `CMD_SUCCESS`.
+  Each record: `{ u64 start; u64 end; u32 prot; u32 flags; u32 mbps; u32 reserved; }`
+  where `flags` bit0 = leaf-PTE `PCD=1` (uncached) and `mbps` is the measured whole-MB/s
+  read throughput of the region. Read-only; no aliasing / PTE writes.
+
+##### Snapshot sub-protocol (`CC11 + TS_SNAPSHOT`, narrowed by `CC12 + TS_SERVER_RESIDENT`)
+For unknown-initial-value scans. **By default the seed drops all-zero slots** (most
+memory is zeroed and rarely a useful target), so `survivor_count` reflects only the
+nonzero slots kept; pass `TS_SNAPSHOT_INCLUDE_ZEROS` to seed every slot instead.
+
+**Single range vs. multi-segment.** By default the snapshot covers the single
+`[address, address+length)` range from the `START` packet. With
+`TS_SNAPSHOT_SEGMENTS` set (server must advertise `TSE_SNAPSHOT_SEGMENTS`), the
+snapshot instead covers a client-supplied list of disjoint segments in **one**
+resident session: right after the value/mask trailing data (and before the plan),
+the client streams `u32 segment_count`, then `segment_count` x
+`struct cmd_proc_turboscan_snap_segment` (12 bytes: `{ u64 address; u32 length; }`).
+The packet's `address`/`length` are ignored in this mode. The slot space is the
+concatenation of the segments, so unmapped gaps between them are never read and
+storage scales with the selected bytes, not the bounding span - this is the correct
+way to scan a scattered module/section selection (the alternative, spanning
+`[minStart, maxEnd)` as one range, reads and stores the gaps too). Survivor
+addresses are absolute, so `slot_count`/progress, `CC12` narrow, `CC13` GET, and
+materialize are all unaffected by the segmentation. `segment_count` must be in
+`1 .. 1048576` (an overflow guard, far beyond any real layout); outside that, or on
+a server-side allocation failure, the server replies `snapshot_ok = 0` and the
+client falls back to its own path.
+
+After the two leading `CMD_SUCCESS` acks (and the segment list when
+`TS_SNAPSHOT_SEGMENTS` is set), `CC11 + TS_SNAPSHOT` streams:
+1. `struct cmd_proc_turboscan_snap_plan` (16 bytes): `{ u64 slot_count; u64 total_bytes; }`
+   (`total_bytes` = sum of the segment lengths in multi-segment mode).
+2. progress: repeated `u64 bytes_done` records, terminated by an 8-byte
+   `0xFFFFFFFFFFFFFFFF`.
+3. `struct cmd_proc_turboscan_snap_summary` (12 bytes):
+   `{ u32 snapshot_ok; u64 survivor_count; }` - `snapshot_ok = 0` means
+   ENOSPC / too large, and the client falls back to its own unknown-value path.
+4. a final `CMD_SUCCESS`.
+
+Subsequent narrowing uses `CC12 + TS_SERVER_RESIDENT` (rescans the snapshot in
+place, since-last-scan) - which streams its own throttled `u64 slots_scanned` progress
+records (relative to `slot_count`), terminated by the same sentinel, before the survivor
+count (see CC12 above; the reply shape is mode-independent, so once the survivors get
+sparse and the session materialises into a list, later narrows still parse identically) -
+and `CC13 GET` fetches survivors. The value snapshot is **RAM-backed when it fits under
+the RAM threshold** (default 512 MiB, tunable via `CC15`); a larger store is **hybrid** -
+the first threshold bytes (whole slots) stay in anon RAM and only the overflow goes to a
+`ps5dbg_snap_NN.bin` file under the spill directory (default `/data`, also `CC15`-tunable
+to e.g. `/mnt/ext1` or `/mnt/usb0`). The spill is accessed by windowed `pread`/`pwrite`
+**written in 16 MiB chunks** (amortizes the per-`write()` FS overhead - HW-measured ~1.5x
+over 1 MiB); file-backed `mmap` is avoided because faulting a `MAP_SHARED` page sleeps
+under a held VM lock and panics the console. The store is read/written sequentially, so
+at most one create-chunk / narrow-window straddles the RAM/file boundary (split
+transparently), and the membership bitmap is always RAM. The file is unlinked on `END` / disconnect / new scan,
+and `/data` is swept at startup (spill files left on a removable/expansion mount are not
+swept, but are bounded to one per client slot and truncated on reuse).
+
 For the `valueType` / `compareType` values, see 7.
 
 ---
 
-### 2.3 Debug commands - dispatched by `debug_handle` (`debug.c:1529-1552`)
+### 2.3 Debug commands - dispatched by `debug_handle` (`debug.c:1594-1619`)
 
 Most handlers check `g_debug_attached` (and a non-zero pid) themselves and reply
 `CMD_ERROR` if no session is active (`CMD_DEBUG_PROCESS_STOP` is the exception -
 it works without a session). An unknown debug opcode replies `CMD_ERROR`. The
 dispatcher does not silently drop.
 
-#### `CMD_DEBUG_ATTACH = 0xBDBB0001` (`debug.c:544`, `debug_attach_handle`)
+#### `CMD_DEBUG_ATTACH = 0xBDBB0001` (`debug.c:549`, `debug_attach_handle`)
 This is the real attach handler (there is no stub / `_svc` variant).
 - **Request body:** `struct cmd_debug_attach_packet` (**4 bytes**, `{ uint32_t pid; }`).
   The client's IP comes from the connection slot recorded in 1.5, not from the
@@ -506,12 +814,12 @@ This is the real attach handler (there is no stub / `_svc` variant).
 - **Response:** `CMD_SUCCESS`, or `CMD_ALREADY_DEBUG` / `CMD_DATA_NULL` /
   `CMD_ERROR`.
 
-#### `CMD_DEBUG_DETACH = 0xBDBB0002` (`debug.c:604`)
+#### `CMD_DEBUG_DETACH = 0xBDBB0002` (`debug.c:609`)
 - **Request body:** none.
 - **Response:** `CMD_SUCCESS`. Runs `debug_full_teardown` (clears breakpoints /
   watchpoints, resumes, detaches, closes the 755 connection).
 
-#### `CMD_DEBUG_SET_BREAKPOINT = 0xBDBB0003` (`debug.c:613`)
+#### `CMD_DEBUG_SET_BREAKPOINT = 0xBDBB0003` (`debug.c:618`)
 - **Request body:** `struct cmd_debug_breakpt_packet` (16 bytes, `{ index, enabled, address }`).
 - **Response:** `CMD_SUCCESS`, or `CMD_INVALID_INDEX` if `index > 29`.
 - **Backend:** software breakpoint - writes `0xCC` via `proc_write_mem` (which
@@ -519,7 +827,7 @@ This is the real attach handler (there is no stub / `_svc` variant).
   `MAX_BREAKPOINTS = 30` (`protocol.h:273`). (The CheaterNG client caps its own
   index at 10.)
 
-#### `CMD_DEBUG_SET_WATCHPOINT = 0xBDBB0004` (`debug.c:671`)
+#### `CMD_DEBUG_SET_WATCHPOINT = 0xBDBB0004` (`debug.c:676`)
 - **Request body:** `struct cmd_debug_watchpt_packet` (24 bytes):
   `{ index, enabled, length, breaktype, address }`.
 - **Response:** `CMD_SUCCESS`, or `CMD_INVALID_INDEX` if `index > 3`.
@@ -527,69 +835,95 @@ This is the real attach handler (there is no stub / `_svc` variant).
   dbreg path on firmwares that need it). `MAX_WATCHPOINTS = 4` (`protocol.h:274`).
   `breaktype` and `length` use the x86 DR7 encodings in 7.3.
 
-#### `CMD_DEBUG_GET_THREAD_LIST = 0xBDBB0005` (`debug.c:764`)
+#### `CMD_DEBUG_GET_THREAD_LIST = 0xBDBB0005` (`debug.c:769`)
 - **Request body:** none.
 - **Response:** `CMD_SUCCESS`, `uint32_t num`, then `num` x `uint32_t lwpid`.
 
-#### `CMD_DEBUG_SUSPEND_THREAD = 0xBDBB0006` (`debug.c:804`)
+#### `CMD_DEBUG_SUSPEND_THREAD = 0xBDBB0006` (`debug.c:809`)
 - **Request body:** `struct cmd_debug_stopthr_packet` (4 bytes, `lwpid`).
 - **Response:** `CMD_SUCCESS` or `CMD_ERROR` (`PT_SUSPEND`).
 
-#### `CMD_DEBUG_RESUME_THREAD = 0xBDBB0007` (`debug.c:817`)
+#### `CMD_DEBUG_RESUME_THREAD = 0xBDBB0007` (`debug.c:822`)
 - **Request body:** `struct cmd_debug_resumethr_packet` (4 bytes, `lwpid`).
 - **Response:** `CMD_SUCCESS` or `CMD_ERROR` (`PT_RESUME`).
 
-#### `CMD_DEBUG_GETREGS = 0xBDBB0008` (`debug.c:830`)
+#### `CMD_DEBUG_GETREGS = 0xBDBB0008` (`debug.c:835`)
 - **Request body:** `{ uint32_t lwpid; }` (4 bytes).
 - **Response:** `CMD_SUCCESS`, then a **176-byte** GP-register blob (FreeBSD
   amd64 `struct reg`).
 
-#### `CMD_DEBUG_SETREGS = 0xBDBB0009` (`debug.c:850`)
+#### `CMD_DEBUG_SETREGS = 0xBDBB0009` (`debug.c:855`)
 - **Request body:** `struct cmd_debug_setregs_packet` (8 bytes, `{ lwpid, length }`).
 - **Response:** `CMD_SUCCESS` (ack), reads `length` bytes (must be 176), then
   `CMD_SUCCESS`. **Two** status words.
 
-#### `CMD_DEBUG_GETFPREGS = 0xBDBB000A` (`debug.c:871`)
+#### `CMD_DEBUG_GETFPREGS = 0xBDBB000A` (`debug.c:876`)
 - **Request body:** `{ uint32_t lwpid; }` (4 bytes).
 - **Response:** `CMD_SUCCESS`, then an **832-byte** FPU/YMM blob.
+- The handler reads the thread's full xsave image from the kernel
+  (`kern_get_fpregs`, the thread's `pcb_save` area) so the **YMM (AVX) upper
+  halves are populated**, not just the 512-byte FXSAVE/XMM legacy region.
+  If the kernel path is unavailable it falls back to `PT_GETFPREGS`, which
+  fills only the first 512 bytes and leaves the YMM tail zero.
 
-#### `CMD_DEBUG_SETFPREGS = 0xBDBB000B` (`debug.c:891`)
+#### `CMD_DEBUG_SETFPREGS = 0xBDBB000B` (`debug.c:901`)
 - **Request body:** `{ uint32_t lwpid; uint32_t length; }` (8 bytes).
 - **Response:** `CMD_SUCCESS` (ack), reads `length` bytes (832), then
   `CMD_SUCCESS`. **Two** status words.
+- A full **832-byte** image is written back to the kernel xsave area
+  (`kern_set_fpregs`), so **YMM (AVX) state is applied**. A client must send a
+  complete xsave image (typically round-tripped from `GETFPREGS`) so the
+  xstate header stays valid. A legacy **512-byte** blob is applied via
+  `PT_SETFPREGS` instead (FXSAVE only), leaving YMM untouched.
 
-#### `CMD_DEBUG_GETDBREGS = 0xBDBB000C` (`debug.c:912`)
+#### `CMD_DEBUG_GETFSGSBASE = 0xBDBB000E` (`debug.c:997`)
+- **Request body:** `{ uint32_t lwpid; }` (4 bytes).
+- **Response:** `CMD_SUCCESS`, then a **16-byte** blob
+  `{ uint64_t fs_base; uint64_t gs_base }`.
+- The 64-bit FS/GS segment **base** addresses (TLS / per-thread pointers).
+  These are not part of `struct reg` (`GETREGS` carries only the 16-bit
+  selectors), so they are read from the thread's `pcb` via the kernel R/W
+  primitive. **Kernel-path only** - no ptrace fallback; returns `CMD_ERROR`
+  if the thread cannot be resolved.
+
+#### `CMD_DEBUG_SETFSGSBASE = 0xBDBB000F` (`debug.c:1019`)
+- **Request body:** `{ uint32_t lwpid; uint32_t length; }` (8 bytes).
+- **Response:** `CMD_SUCCESS` (ack), reads `length` bytes (must be **16**),
+  then `CMD_SUCCESS`. **Two** status words. Writes `fs_base`/`gs_base` into
+  the thread's `pcb`; takes effect when the stopped thread is resumed.
+
+#### `CMD_DEBUG_GETDBREGS = 0xBDBB000C` (`debug.c:932`)
 - **Request body:** `{ uint32_t lwpid; }` (4 bytes).
 - **Response:** `CMD_SUCCESS`, then a **128-byte** debug-register blob.
 
-#### `CMD_DEBUG_SETDBREGS = 0xBDBB000D` (`debug.c:949`)
+#### `CMD_DEBUG_SETDBREGS = 0xBDBB000D` (`debug.c:969`)
 - **Request body:** `{ uint32_t lwpid; uint32_t length; }` (8 bytes).
 - **Response:** `CMD_SUCCESS` (ack), reads `length` bytes (128), then
   `CMD_SUCCESS`. **Two** status words.
 
-#### `CMD_DEBUG_CONTINUE = 0xBDBB0010` (`debug.c:977`)
+#### `CMD_DEBUG_CONTINUE = 0xBDBB0010` (`debug.c:1042`)
 - **Request body:** `struct cmd_debug_stopgo_packet` (4 bytes); the first byte is
   the action.
 - `0` -> resume; `1` -> stop (`SIGSTOP`); `2` -> kill (`SIGKILL`) - routed
   through `debug_stopgo_handle`. (Client name: `CMD_DEBUG_STOPGO`.)
 - **Response:** `CMD_SUCCESS`.
 
-#### `CMD_DEBUG_THREAD_INFO = 0xBDBB0011` (`debug.c:1022`)
+#### `CMD_DEBUG_THREAD_INFO = 0xBDBB0011` (`debug.c:1087`)
 - **Request body:** `struct cmd_debug_thrinfo_packet` (4 bytes, `lwpid`).
 - **Response:** `CMD_SUCCESS`, `struct dbg_thrinfo_response` (40 bytes,
   `{ uint32_t lwpid; uint32_t priority; char tdname[32]; }`).
 
-#### `CMD_DEBUG_STEP = 0xBDBB0012` (`debug.c:1050`)
+#### `CMD_DEBUG_STEP = 0xBDBB0012` (`debug.c:1115`)
 - **Request body:** none.
 - **Response:** `CMD_SUCCESS`. `PT_STEP` on the whole process. (Client name:
   `CMD_DEBUG_SINGLESTEP`.)
 
-#### `CMD_DEBUG_STEP_THREAD = 0xBDBB0013` (`debug.c:1066`)
+#### `CMD_DEBUG_STEP_THREAD = 0xBDBB0013` (`debug.c:1131`)
 - **Request body:** `struct cmd_debug_stopthr_packet` (4 bytes, `lwpid`).
 - **Response:** `CMD_SUCCESS` or `CMD_ERROR`. `PT_STEP` on a single LWP.
   (Server-only; not invoked by the CheaterNG client.)
 
-#### `CMD_DEBUG_PROCESS_STOP = 0xBDBB0500` (`debug.c:526`)
+#### `CMD_DEBUG_PROCESS_STOP = 0xBDBB0500` (`debug.c:531`)
 - **Request body:** 5 raw bytes: `uint32_t pid; uint8_t state;`. Returns
   `CMD_ERROR` if `state > 2` or `pid == 0`. (Client name: `CMD_DEBUG_EXT`.)
 - **Response:** `CMD_SUCCESS`, `CMD_DATA_NULL`, or `CMD_ERROR`.
@@ -727,6 +1061,15 @@ Auth = requires `g_proc_auth_state & 2` (set via `CMD_PROC_AUTH`).
 | `0xBDAACC01` | `proc_scan_start_handle`         | `scan.c`                 | bit 1 |
 | `0xBDAACC02` | `proc_scan_count_handle`         | `scan.c`                 | bit 1 |
 | `0xBDAACC03` | `proc_scan_get_handle`           | `scan.c`                 | bit 1 |
+| `0xBDAACC04` | `proc_write_multi_handle`        | `proc.c`                 |       |
+| `0xBDAACC10` | `proc_turboscan_caps_handle`      | `scan_turbo.c`            |       |
+| `0xBDAACC11` | `proc_turboscan_start_handle`     | `scan_turbo.c`            | bit 1 |
+| `0xBDAACC12` | `proc_turboscan_count_handle`     | `scan_turbo.c`            | bit 1 |
+| `0xBDAACC13` | `proc_turboscan_get_handle`       | `scan_turbo.c`            | bit 1 |
+| `0xBDAACC14` | `proc_turboscan_end_handle`       | `scan_turbo.c`            | bit 1 |
+| `0xBDAACC15` | `proc_turboscan_config_handle`    | `scan_turbo.c`            | bit 1 |
+| `0xBDAACC16` | `proc_turboscan_regions_handle`   | `scan_turbo.c`            | bit 1 |
+| `0xBDAACC24` | `proc_arena_handle`              | `proc.c`                 |       |
 | `0xBDBB0001` | `debug_attach_handle`            | `debug.c`                |       |
 | `0xBDBB0002` | `debug_detach_handle`            | `debug.c`                |       |
 | `0xBDBB0003` | `debug_set_breakpoint_handle`    | `debug.c`                |       |
@@ -740,6 +1083,8 @@ Auth = requires `g_proc_auth_state & 2` (set via `CMD_PROC_AUTH`).
 | `0xBDBB000B` | `debug_setfpregs_handle`         | `debug.c`                |       |
 | `0xBDBB000C` | `debug_getdbregs_handle`         | `debug.c`                |       |
 | `0xBDBB000D` | `debug_setdbregs_handle`         | `debug.c`                |       |
+| `0xBDBB000E` | `debug_getfsgsbase_handle`       | `debug.c`                |       |
+| `0xBDBB000F` | `debug_setfsgsbase_handle`       | `debug.c`                |       |
 | `0xBDBB0010` | `debug_continue_handle`          | `debug.c`                |       |
 | `0xBDBB0011` | `debug_thread_info_handle`       | `debug.c`                |       |
 | `0xBDBB0012` | `debug_step_handle`              | `debug.c`                |       |
@@ -781,6 +1126,9 @@ All structs are `__attribute__((packed))`; most are defined in
 | `cmd_proc_scan_aob_multi_packet`        | 21   | `u32 pid; u64 address; u32 length; u8 stop_flag; u32 patterns_length;`    |
 | `cmd_proc_auth_packet`                  | 8    | `u32 magic (0xBB40E64D); u32 flags;`                                      |
 | `cmd_proc_scan_get_packet`              | 8    | `u32 pid; u32 count;`                                                     |
+| `cmd_proc_turboscan_start_packet`        | 27   | `u32 pid; u64 address; u32 length; u8 valueType, compareType, alignment; u32 lenData; u32 flags;` |
+| `cmd_proc_turboscan_count_packet`        | 22   | `u32 pid; u64 base_address; u8 valueType, compareType; u32 lenData; u32 flags;` |
+| `cmd_proc_turboscan_get_packet`          | 12   | `u32 start_index; u32 count; u32 flags;`                                  |
 | `cmd_proc_info_packet`                  | 4    | `u32 pid;`                                                                |
 | `cmd_proc_alloc_packet`                 | 8    | `u32 pid; u32 length;`                                                    |
 | `cmd_proc_alloc_hinted_packet`          | 16   | `u32 pid; u64 hint; u32 length;`                                          |
@@ -808,6 +1156,12 @@ All structs are `__attribute__((packed))`; most are defined in
 | `proc_list_entry` (streamed)            | 36   | `char name[32]; int32_t pid;`                                            |
 | `proc_vm_map_entry` (streamed)          | 58   | `char name[32]; u64 start; u64 end; u64 offset; u16 prot;`               |
 | `cmd_proc_call_response`                | 12   | `u32 pid; u64 rpc_rax;`                                                   |
+| `cmd_proc_turboscan_caps_response`       | 16   | `u32 version; u32 engines; u32 max_threads; u32 reserved;`               |
+| `cmd_proc_turboscan_regions_packet`      | 16   | `u32 pid; u32 max; u32 probe_bytes; u32 reserved;`                       |
+| `cmd_proc_turboscan_region_info` (streamed)| 32 | `u64 start; u64 end; u32 prot; u32 flags; u32 mbps; u32 reserved;`       |
+| `cmd_proc_turboscan_resident_summary`    | 12   | `u32 resident_stored; u64 count;`                                        |
+| `cmd_proc_turboscan_snap_plan`           | 16   | `u64 slot_count; u64 total_bytes;`                                       |
+| `cmd_proc_turboscan_snap_summary`        | 12   | `u32 snapshot_ok; u64 survivor_count;`                                   |
 | `cmd_proc_elf_rpc_response`             | 8    | `u64 entry;`                                                             |
 | `cmd_proc_alloc_response`               | 8    | `u64 address;`                                                           |
 | `cmd_proc_info_response`                | 188  | `u32 pid; char name[40], path[64], titleid[16], contentid[64];`          |
@@ -944,7 +1298,7 @@ Documented so a developer does not mistake them for bugs:
 
 ---
 
-*This document reflects the `ps5debug-NG v1.2.6` payload
+*This document reflects the `ps5debug-NG v1.3.0` payload
 (`common/include/version.h`). Line numbers cite the sources as of this writing
 and may drift; the source under `common/include/protocol.h`,
 `debugger/source/`, and `common/source/` is the authoritative reference.*

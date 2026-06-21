@@ -13,6 +13,7 @@ int proc_list_handle(int fd, struct cmd_packet *packet);
 int proc_read_handle(int fd, struct cmd_packet *packet);
 int proc_read_stack_handle(int fd, struct cmd_packet *packet);
 int proc_write_handle(int fd, struct cmd_packet *packet);
+int proc_write_multi_handle(int fd, struct cmd_packet *packet);
 int proc_maps_handle(int fd, struct cmd_packet *packet);
 int proc_info_handle(int fd, struct cmd_packet *packet);
 int proc_protect_handle(int fd, struct cmd_packet *packet);
@@ -50,6 +51,7 @@ long ptrace_raw (int op, int pid, void *addr, int data);
 long ptrace_elev(int op, int pid, void *addr, int data);
 int  elev_save_and_set(struct elev_state *st);
 void elev_restore     (struct elev_state *st);
+int  proc_arena_set(int on, char *buf, int bufsz);
 
 long sys_proc_rw_w0(uint64_t pid, uint64_t address, uint64_t length,
                     void *data, uint64_t arg5);
@@ -62,6 +64,19 @@ int proc_scan_aob_multi_handle(int fd, struct cmd_packet *packet);
 int proc_scan_start_handle(int fd, struct cmd_packet *packet);
 int proc_scan_count_handle(int fd, struct cmd_packet *packet);
 int proc_scan_get_handle(int fd, struct cmd_packet *packet);
+int proc_turboscan_caps_handle(int fd, struct cmd_packet *packet);
+int proc_turboscan_config_handle(int fd, struct cmd_packet *packet);
+int proc_turboscan_start_handle(int fd, struct cmd_packet *packet, unsigned char client_idx);
+int proc_turboscan_count_handle(int fd, struct cmd_packet *packet, unsigned char client_idx);
+int proc_turboscan_get_handle(int fd, struct cmd_packet *packet, unsigned char client_idx);
+int proc_turboscan_end_handle(int fd, struct cmd_packet *packet, unsigned char client_idx);
+int proc_turboscan_regions_handle(int fd, struct cmd_packet *packet);
+
+void turboscan_session_free_idx(unsigned char client_idx);
+
+void turboscan_alias_free_idx(unsigned char client_idx);
+
+void turboscan_startup_cleanup(void);
 int proc_auth_handle(int fd, struct cmd_packet *packet);
 int proc_assemble_handle(int fd, struct cmd_packet *packet);
 
@@ -108,6 +123,16 @@ int proc_ptwalk_augment(uint32_t pid,
                         struct proc_vm_map_entry **out_buf, int *out_count);
 
 int proc_ptwalk_read(uint32_t pid, uint64_t va, uint64_t len, void *dst);
+
+uint64_t proc_ptwalk_dmap_base(void);
+int proc_ptwalk_probe(uint32_t pid, uint64_t va, uint64_t *out_phys,
+                      int *out_level, uint64_t *out_pagesize, uint64_t *out_pte);
+int proc_ptwalk_leaf_addr(uint32_t pid, uint64_t va, uint64_t *out_pte_kaddr,
+                          uint64_t *out_pte_val, int *out_level);
+
+int proc_ptwalk_span_resolve(uint32_t pid, uint64_t span2m, int *out_huge,
+                             uint64_t *out_phys_base, uint64_t *out_leaf_pt_kaddr,
+                             uint64_t *out_pte);
 
 int proc_ptwalk_write(uint32_t pid, uint64_t va, uint64_t len, const void *src);
 

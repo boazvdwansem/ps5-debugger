@@ -39,7 +39,8 @@ static void debugger_usleep(unsigned long us) { sceKernelUsleep((unsigned int)us
 extern long __crt_syscall(long sysno, ...);
 
 long ptrace_raw(int op, int pid, void *addr, int data) {
-    return __crt_syscall(26, op, pid, addr, data);
+
+    return ps5debug_syscall(26 , (long)op, (long)pid, (long)addr, (long)data, 0L, 0L);
 }
 
 #if 0
@@ -188,7 +189,7 @@ int kern_ptrace_attach_and_wait(int pid)
 
     int wait_status = 0;
     *__error() = 0;
-    long wait_rc = __crt_syscall(7 , pid, &wait_status, 0, 0);
+    long wait_rc = ps5debug_syscall(7 , (long)pid, (long)&wait_status, 0L, 0L, 0L, 0L);
     int  wait_errno = *__error();
 
     if (!s_first_w4_diag) {
@@ -513,51 +514,147 @@ int sys_proc_call(int pid, struct sys_proc_call_args *args)
     return rc ? -1 : 0;
 }
 
-int proc_remote_alloc(uint32_t pid, uint64_t *out_addr,
-                       uint64_t length, uint64_t hint)
-{
-    mutex_lock();
+#define ARENA_ALIGN  0x4000ULL
+#define ARENA_CHUNK  (16ULL * 1024 * 1024)
+#define ARENA_NPID   4
 
+#define ALLOC_FILL_RETRIES  5
+
+struct arena_seg { uint64_t base, size, used; struct arena_seg *next; };
+struct arena_blk { uint64_t addr, size;       struct arena_blk *next; };
+struct arena_pid {
+    int               inuse;
+    uint32_t          pid;
+    struct arena_seg *segs;
+    struct arena_blk *freelist;
+};
+static struct arena_pid g_arenas[ARENA_NPID];
+static int g_arena_enabled = 1;
+
+static uint64_t arena_round(uint64_t n) { return (n + (ARENA_ALIGN - 1)) & ~(ARENA_ALIGN - 1); }
+
+static struct arena_pid *arena_get(uint32_t pid) {
+    int slot = -1;
+    for (int i = 0; i < ARENA_NPID; i++) {
+        if (g_arenas[i].inuse && g_arenas[i].pid == pid) return &g_arenas[i];
+        if (!g_arenas[i].inuse && slot < 0) slot = i;
+    }
+    if (slot < 0) slot = 0;
+    struct arena_pid *ap = &g_arenas[slot];
+    for (struct arena_seg *s = ap->segs; s; ) { struct arena_seg *n = s->next; free(s); s = n; }
+    for (struct arena_blk *b = ap->freelist; b; ) { struct arena_blk *n = b->next; free(b); b = n; }
+    ap->inuse = 1; ap->pid = pid; ap->segs = 0; ap->freelist = 0;
+    return ap;
+}
+
+static struct arena_pid *arena_find(uint32_t pid) {
+    for (int i = 0; i < ARENA_NPID; i++)
+        if (g_arenas[i].inuse && g_arenas[i].pid == pid) return &g_arenas[i];
+    return 0;
+}
+
+static int do_real_alloc(uint32_t pid, uint64_t *out, uint64_t length, uint64_t hint) {
     void *p = (void *)(uintptr_t)hint;
     int rc = sys_proc_alloc(pid, &p, length);
     if (rc != 0) {
         p = (void *)(uintptr_t)hint;
         debugger_usleep(40000);
-        int retries = 100;
+        int retries = ALLOC_FILL_RETRIES;
         for (;;) {
             rc = sys_proc_alloc(pid, &p, length);
             if (rc == 0) break;
             p = (void *)(uintptr_t)hint;
             debugger_usleep(40000);
-            if (--retries == 0) {
-                mutex_unlock();
-                *out_addr = (uint64_t)(uintptr_t)p;
-                return rc;
-            }
+            if (--retries == 0) { *out = (uint64_t)(uintptr_t)p; return rc; }
         }
     }
-
-    mutex_unlock();
-    *out_addr = (uint64_t)(uintptr_t)p;
+    *out = (uint64_t)(uintptr_t)p;
     return 0;
 }
 
-int proc_remote_free(uint32_t pid, uint64_t addr, uint64_t length)
-{
-    mutex_lock();
-
+static int do_real_free(uint32_t pid, uint64_t addr, uint64_t length) {
     int rc = sys_proc_free(pid, (void *)(uintptr_t)addr, length);
     if (rc < 0) {
         int retries = 11;
         do {
             debugger_usleep(40000);
-            if (sys_proc_free(pid, (void *)(uintptr_t)addr, length) >= 0) {
-                rc = 0;
-                break;
-            }
+            if (sys_proc_free(pid, (void *)(uintptr_t)addr, length) >= 0) { rc = 0; break; }
         } while (--retries > 0);
     }
+    return rc;
+}
 
+static int arena_alloc(uint32_t pid, uint64_t length, uint64_t *out) {
+    uint64_t size = arena_round(length ? length : ARENA_ALIGN);
+    struct arena_pid *ap = arena_get(pid);
+
+    struct arena_blk **pp = &ap->freelist;
+    for (struct arena_blk *b = ap->freelist; b; pp = &b->next, b = b->next) {
+        if (b->size >= size) {
+            if (b->size >= size + ARENA_ALIGN) { *out = b->addr; b->addr += size; b->size -= size; }
+            else { *out = b->addr; *pp = b->next; free(b); }
+            return 0;
+        }
+    }
+
+    for (struct arena_seg *s = ap->segs; s; s = s->next)
+        if (s->size - s->used >= size) { *out = s->base + s->used; s->used += size; return 0; }
+
+    uint64_t seg_size = (size > ARENA_CHUNK) ? size : ARENA_CHUNK;
+    uint64_t base = 0;
+    if (do_real_alloc(pid, &base, seg_size, 0x4000) != 0) return -1;
+    struct arena_seg *s = (struct arena_seg *)malloc(sizeof(*s));
+    if (!s) { *out = base; return 0; }
+    s->base = base; s->size = seg_size; s->used = size; s->next = ap->segs; ap->segs = s;
+    *out = base;
+    return 0;
+}
+
+static int arena_free(uint32_t pid, uint64_t addr, uint64_t length) {
+    struct arena_pid *ap = arena_find(pid);
+    if (!ap) return -1;
+    int owned = 0;
+    for (struct arena_seg *s = ap->segs; s; s = s->next)
+        if (addr >= s->base && addr < s->base + s->size) { owned = 1; break; }
+    if (!owned) return -1;
+    uint64_t size = arena_round(length ? length : ARENA_ALIGN);
+    struct arena_blk *b = (struct arena_blk *)malloc(sizeof(*b));
+    if (b) { b->addr = addr; b->size = size; b->next = ap->freelist; ap->freelist = b; }
+    return 0;
+}
+
+int proc_arena_set(int on, char *buf, int bufsz) {
+    g_arena_enabled = on ? 1 : 0;
+    int n = snprintf(buf, (size_t)bufsz,
+        "arena %s (1 hijack per %lluMB segment, sub-alloc 0 hijacks; PLAIN alloc only, hinted passes through)\n",
+        g_arena_enabled ? "ENABLED" : "disabled", (unsigned long long)(ARENA_CHUNK >> 20));
+    if (n < 0) n = 0;
+    if (n > bufsz) n = bufsz;
+    klog_puts(buf);
+    return n;
+}
+
+int proc_remote_alloc(uint32_t pid, uint64_t *out_addr,
+                       uint64_t length, uint64_t hint)
+{
+    mutex_lock();
+    int rc;
+    if (g_arena_enabled && hint == 0x4000)
+        rc = arena_alloc(pid, length, out_addr);
+    else
+        rc = do_real_alloc(pid, out_addr, length, hint);
+    mutex_unlock();
+    return rc;
+}
+
+int proc_remote_free(uint32_t pid, uint64_t addr, uint64_t length)
+{
+    mutex_lock();
+    int rc;
+    if (g_arena_enabled && arena_free(pid, addr, length) == 0)
+        rc = 0;
+    else
+        rc = do_real_free(pid, addr, length);
     mutex_unlock();
     return rc;
 }
