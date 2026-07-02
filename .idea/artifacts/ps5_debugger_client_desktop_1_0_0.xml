@@ -1,0 +1,8 @@
+<component name="ArtifactManager">
+  <artifact type="jar" name="ps5-debugger-client-desktop-1.0.0">
+    <output-path>$PROJECT_DIR$/client/build/libs</output-path>
+    <root id="archive" name="ps5-debugger-client-desktop-1.0.0.jar">
+      <element id="module-output" name="ps5-debugger-client.desktopMain" />
+    </root>
+  </artifact>
+</component>
