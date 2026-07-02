@@ -64,15 +64,26 @@ class Ps5Connection {
     /**
      * Executes a command block safely while holding the lock.
      */
-    suspend fun <T> execute(block: suspend (InputStream, OutputStream) -> T): T = withContext(Dispatchers.IO) {
+    suspend fun <T> execute(readTimeoutMs: Int? = null, block: suspend (InputStream, OutputStream) -> T): T = withContext(Dispatchers.IO) {
         mutex.withLock {
+            val activeSocket = socket ?: throw IllegalStateException("Not connected")
             val inStr = inputStream ?: throw IllegalStateException("Not connected")
             val outStr = outputStream ?: throw IllegalStateException("Not connected")
+            val previousTimeoutMs = activeSocket.soTimeout
             try {
+                if (readTimeoutMs != null) {
+                    activeSocket.soTimeout = readTimeoutMs
+                }
                 block(inStr, outStr)
             } catch (e: Exception) {
                 cleanup()
                 throw e
+            } finally {
+                if (isConnected && readTimeoutMs != null) {
+                    try {
+                        activeSocket.soTimeout = previousTimeoutMs
+                    } catch (_: Exception) {}
+                }
             }
         }
     }

@@ -24,6 +24,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.InputStream
 
+private const val ScanReadTimeoutMs = 5 * 60 * 1000
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MemoryScannerView(
@@ -43,7 +45,7 @@ fun MemoryScannerView(
     var isScanning by remember { mutableStateOf(false) }
     var progress by remember { mutableStateOf(0f) }
     val scanResults = remember { mutableStateListOf<Ps5ScanResult>() }
-    var totalMatchesCount by remember { mutableStateOf(0) }
+    var totalMatchesCount by remember { mutableStateOf(0L) }
     
     var isRescanMode by remember { mutableStateOf(false) }
 
@@ -147,7 +149,8 @@ fun MemoryScannerView(
                                 try {
                                     DebuggerService.log("SCAN", "Starting scan in range 0x${activeMap.start.toString(16)} to 0x${activeMap.end.toString(16)}", DebuggerService.LogEntry.Level.INFO)
                                     
-                                    val startPayload = BinaryBuffer(23 + bytes.size).apply {
+                                    val turboFlags = ProtocolConstants.TS_SERVER_RESIDENT
+                                    val startPayload = BinaryBuffer(27 + bytes.size).apply {
                                         writeInt(pid)
                                         writeLong(activeMap.start)
                                         writeInt((activeMap.end - activeMap.start).toInt())
@@ -155,46 +158,91 @@ fun MemoryScannerView(
                                         writeByte(ctVal.toByte())
                                         writeByte(alignment.toByte())
                                         writeInt(bytes.size)
+                                        writeInt(turboFlags)
                                         writeBytes(bytes)
                                     }.bytes
 
-                                    client.connection.execute { inStr, outStr ->
-                                        client.connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_SCAN_START, startPayload)
+                                    client.connection.execute(readTimeoutMs = ScanReadTimeoutMs) { inStr, outStr ->
+                                        DebuggerService.log("SCAN", "Using turbo server-resident scan", DebuggerService.LogEntry.Level.INFO)
+                                        client.connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_TURBOSCAN_START, startPayload)
                                         var status = client.connection.receiveStatus(inStr)
                                         if (status != ProtocolConstants.CMD_SUCCESS) {
-                                            throw java.io.IOException("Scan start failed status: 0x${status.toString(16)}")
+                                            throw java.io.IOException("Turbo scan start failed status: 0x${status.toString(16)}")
                                         }
 
                                         // Read ack of data
                                         status = client.connection.receiveStatus(inStr)
                                         if (status != ProtocolConstants.CMD_SUCCESS) {
-                                            throw java.io.IOException("Scan start ack failed")
+                                            throw java.io.IOException("Turbo scan start ack failed")
                                         }
 
-                                        // Stream matching block results
                                         val valSize = bytes.size
-                                        var count = 0
-                                        while (true) {
-                                            val lenBytes = client.connection.readExactly(inStr, 8)
-                                            val blockLen = BinaryBuffer(lenBytes).readLong()
-                                            if (blockLen == -1L) {
-                                                break // Sentinel reached
+                                        val summaryBytes = client.connection.readExactly(inStr, 12)
+                                        val summaryBuf = BinaryBuffer(summaryBytes)
+                                        val residentStored = summaryBuf.readInt()
+                                        val residentCount = summaryBuf.readLong()
+
+                                        if (residentStored == 1) {
+                                            totalMatchesCount = residentCount
+                                            status = client.connection.receiveStatus(inStr)
+                                            if (status != ProtocolConstants.CMD_SUCCESS) {
+                                                throw java.io.IOException("Turbo scan final status failed")
                                             }
 
-                                            val blockBytes = client.connection.readExactly(inStr, blockLen.toInt())
-                                            val blockBuf = BinaryBuffer(blockBytes)
-                                            while (blockBuf.hasRemaining()) {
-                                                val offset = blockBuf.readInt().toLong()
-                                                val valBytes = blockBuf.readBytes(valSize)
-                                                count++
-                                                if (count <= 1000) {
-                                                    scanResults.add(Ps5ScanResult(offset, valBytes))
+                                            val getCount = residentCount.coerceAtMost(1000L).toInt()
+                                            if (getCount > 0) {
+                                                val getPayload = BinaryBuffer(12).apply {
+                                                    writeInt(0)
+                                                    writeInt(getCount)
+                                                    writeInt(0)
+                                                }.bytes
+                                                client.connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_TURBOSCAN_GET, getPayload)
+                                                status = client.connection.receiveStatus(inStr)
+                                                if (status != ProtocolConstants.CMD_SUCCESS) {
+                                                    throw java.io.IOException("Turbo scan get failed")
+                                                }
+
+                                                val header = BinaryBuffer(client.connection.readExactly(inStr, 4)).readInt()
+                                                val actualCount = header and 0x7FFFFFFF
+                                                val hasFirstValue = (header and Int.MIN_VALUE) != 0
+                                                val recordSize = 8 + valSize * if (hasFirstValue) 3 else 2
+                                                val records = client.connection.readExactly(inStr, actualCount * recordSize)
+                                                val recordsBuf = BinaryBuffer(records)
+                                                repeat(actualCount) {
+                                                    val absoluteAddress = recordsBuf.readLong()
+                                                    val currentValue = recordsBuf.readBytes(valSize)
+                                                    recordsBuf.readBytes(valSize)
+                                                    if (hasFirstValue) recordsBuf.readBytes(valSize)
+                                                    scanResults.add(Ps5ScanResult(absoluteAddress - activeMap.start, currentValue))
+                                                }
+
+                                                status = client.connection.receiveStatus(inStr)
+                                                if (status != ProtocolConstants.CMD_SUCCESS) {
+                                                    throw java.io.IOException("Turbo scan get final status failed")
                                                 }
                                             }
+                                        } else {
+                                            var count = 0L
+                                            while (true) {
+                                                val lenBytes = client.connection.readExactly(inStr, 8)
+                                                val blockLen = BinaryBuffer(lenBytes).readLong()
+                                                if (blockLen == -1L) break
+
+                                                val blockBytes = client.connection.readExactly(inStr, blockLen.toInt())
+                                                val blockBuf = BinaryBuffer(blockBytes)
+                                                while (blockBuf.hasRemaining()) {
+                                                    val offset = blockBuf.readInt().toLong()
+                                                    val valBytes = blockBuf.readBytes(valSize)
+                                                    count++
+                                                    if (count <= 1000) {
+                                                        scanResults.add(Ps5ScanResult(offset, valBytes))
+                                                    }
+                                                }
+                                            }
+                                            totalMatchesCount = count
+                                            client.connection.receiveStatus(inStr)
                                         }
-                                        totalMatchesCount = count
-                                        client.connection.receiveStatus(inStr) // read final status
-                                        DebuggerService.log("SCAN", "Scan finished. Found $count matches.", DebuggerService.LogEntry.Level.INFO)
+                                        DebuggerService.log("SCAN", "Scan finished. Found $totalMatchesCount matches.", DebuggerService.LogEntry.Level.INFO)
                                     }
                                     isRescanMode = true
                                 } catch (e: Exception) {
@@ -214,7 +262,7 @@ fun MemoryScannerView(
                         onClick = {
                             isRescanMode = false
                             scanResults.clear()
-                            totalMatchesCount = 0
+                            totalMatchesCount = 0L
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                     ) {

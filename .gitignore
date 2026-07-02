@@ -22,3 +22,8 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+# client
+/client/.kotlin
+/client/.gradle
+/client/build

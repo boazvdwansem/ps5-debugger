@@ -35,6 +35,12 @@ set APP_HOME=%DIRNAME%
 @rem Resolve any "." and ".." in APP_HOME to make it shorter.
 for %%i in ("%APP_HOME%") do set APP_HOME=%%~fi
 
+@rem Kotlin 2.0.0 cannot run under newer Java versions such as 26.
+@rem Prefer the project-pinned JDK 21 when it is present on this machine.
+if exist "%USERPROFILE%\.gradle\jdks\jetbrains_s_r_o_-21-amd64-windows.2\bin\java.exe" (
+    set JAVA_HOME=%USERPROFILE%\.gradle\jdks\jetbrains_s_r_o_-21-amd64-windows.2
+)
+
 @rem Add default JVM options here. You can also use JAVA_OPTS and GRADLE_OPTS to pass JVM options to this script.
 set DEFAULT_JVM_OPTS=-Dfile.encoding=UTF-8 "-Xmx64m" "-Xms64m"
 
