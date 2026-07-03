@@ -28,7 +28,9 @@ Thumbs.db
 /client/.gradle
 /client/build
 
-/.agents
-/.idea
 /client/last_log.txt
 /client/prev_log.txt
+/client/local.properties
+
+/.agents
+/.idea
