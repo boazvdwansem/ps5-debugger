@@ -17,6 +17,7 @@ import androidx.compose.ui.input.key.*
 import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -64,6 +65,9 @@ fun getFromClipboard(): String {
     }
 }
 
+private val hexViewerScrollPositions = mutableMapOf<Long, Long>()
+private var lastActiveMapStart: Long? = null
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun HexViewer(
@@ -94,7 +98,14 @@ fun HexViewer(
             val nonGridHeight = 100.dp
             ((maxHeight - nonGridHeight) / 24.dp).toInt().coerceAtLeast(1)
         }
-        var scrollPosition by remember { mutableStateOf(0L) } // row index offset
+        val mapKey = activeMap?.start ?: 0L
+        var scrollPosition by remember(mapKey) { 
+            mutableStateOf(hexViewerScrollPositions[mapKey] ?: 0L) 
+        } // row index offset
+        
+        LaunchedEffect(scrollPosition, mapKey) {
+            hexViewerScrollPositions[mapKey] = scrollPosition
+        }
         
         // Selection range
         var selectionStart by remember { mutableStateOf<Long?>(null) }
@@ -112,6 +123,7 @@ fun HexViewer(
         var isMouseDown by remember { mutableStateOf(false) }
 
         val keyboardController = LocalSoftwareKeyboardController.current
+        val focusManager = LocalFocusManager.current
         val keyboardFocusRequester = remember { FocusRequester() }
         var keyboardInputText by remember { mutableStateOf("") }
         var lastTapTime by remember { mutableStateOf(0L) }
@@ -120,8 +132,10 @@ fun HexViewer(
         var touchStartPos by remember { mutableStateOf<androidx.compose.ui.geometry.Offset?>(null) }
         var touchStartScroll by remember { mutableStateOf(0L) }
         var isDraggingToScroll by remember { mutableStateOf(false) }
+        var isDraggingToSelect by remember { mutableStateOf(false) }
         var isLongPressSelection by remember { mutableStateOf(false) }
         var longPressJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+        var isSecondaryClick by remember { mutableStateOf(false) }
 
         // Global context menu popup positions
         var clickedArea by remember { mutableStateOf<ClickedArea?>(null) }
@@ -134,7 +148,10 @@ fun HexViewer(
                 startAddress = activeMap.start
                 endAddress = activeMap.end
                 memoryCache.clear()
-                scrollPosition = 0L
+                if (activeMap.start != lastActiveMapStart) {
+                    scrollPosition = 0L
+                    lastActiveMapStart = activeMap.start
+                }
                 selectionStart = null
                 selectionEnd = null
                 pendingEdits.clear()
@@ -369,32 +386,72 @@ fun HexViewer(
         }
     }
 
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .padding(8.dp)
-            .focusRequester(focusRequester)
-            .focusable()
-            .pointerInput(Unit) {
-                detectTapGestures(onTap = { focusRequester.requestFocus() })
-            }
-            .onKeyEvent(handleKeyEvent)
+    Box(
+        modifier = Modifier
+            .offset(y = (-1000).dp)
+            .size(100.dp)
     ) {
         BasicTextField(
             value = keyboardInputText,
             onValueChange = { text ->
                 if (text.isNotEmpty()) {
-                    handleHexInput(text.last())
+                    val char = text.last()
+                    if (clickedArea == ClickedArea.ASCII && isEditingUnlocked) {
+                        if (char.code in 32..126) {
+                            val cursor = selectionEnd
+                            if (cursor != null) {
+                                pendingEdits[cursor] = char.code.toByte()
+                                if (cursor + 1 < endAddress) {
+                                    selectionEnd = cursor + 1
+                                    if (selectionStart == cursor) {
+                                        selectionStart = cursor + 1
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        handleHexInput(char)
+                    }
                 }
                 keyboardInputText = ""
             },
+            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                imeAction = androidx.compose.ui.text.input.ImeAction.Done,
+                keyboardType = androidx.compose.ui.text.input.KeyboardType.Ascii
+            ),
+            keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                onDone = {
+                    focusManager.clearFocus()
+                }
+            ),
             modifier = Modifier
                 .focusRequester(keyboardFocusRequester)
                 .focusable()
-                .size(1.dp)
-                .alpha(0f)
+                .fillMaxSize()
                 .onKeyEvent(handleKeyEvent)
         )
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(
+                start = 8.dp,
+                end = 8.dp,
+                top = if (isMobile) 0.dp else 8.dp,
+                bottom = 8.dp
+            )
+            .focusRequester(focusRequester)
+            .focusable()
+            .pointerInput(Unit) {
+                detectTapGestures(onTap = { 
+                    if (!isMobile) {
+                        focusRequester.requestFocus() 
+                    }
+                })
+            }
+            .onKeyEvent(handleKeyEvent)
+    ) {
         // Toolbar
         if (isMobile) {
             Column(
@@ -403,7 +460,7 @@ fun HexViewer(
             ) {
                 // Row 1: Go Address OutlinedTextField and Go Button
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Max),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
@@ -424,9 +481,16 @@ fun HexViewer(
                             } else {
                                 AppContainer.debuggerUseCase.log("HEX", "Address out of range or invalid", com.osr.ps5debugger.domain.model.LogEntry.Level.WARN)
                             }
-                        }
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = PS5ThemeColors.AccentCyan,
+                            contentColor = Color.Black
+                        ),
+                        modifier = Modifier.align(Alignment.CenterVertically).height(40.dp).width(64.dp),
+                        contentPadding = PaddingValues(0.dp)
                     ) {
-                        Text("Go")
+                        Text("Go", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                     }
                 }
 
@@ -498,11 +562,15 @@ fun HexViewer(
                                     }
                                 },
                                 enabled = isEditingUnlocked && pendingEdits.isNotEmpty(),
-                                colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.AccentCyan),
+                                shape = RoundedCornerShape(8.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = PS5ThemeColors.AccentCyan,
+                                    contentColor = Color.Black
+                                ),
                                 contentPadding = PaddingValues(horizontal = 8.dp),
                                 modifier = Modifier.height(36.dp)
                             ) {
-                                Text("Inject (${pendingEdits.size})", color = Color.Black, fontSize = 12.sp)
+                                Text("Inject (${pendingEdits.size})", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                             }
                         }
                     }
@@ -531,7 +599,7 @@ fun HexViewer(
             }
         } else {
             Row(
-                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Max).padding(bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -554,9 +622,16 @@ fun HexViewer(
                             } else {
                                 AppContainer.debuggerUseCase.log("HEX", "Address out of range or invalid", com.osr.ps5debugger.domain.model.LogEntry.Level.WARN)
                             }
-                        }
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = PS5ThemeColors.AccentCyan,
+                            contentColor = Color.Black
+                        ),
+                        modifier = Modifier.align(Alignment.CenterVertically).height(40.dp).width(64.dp),
+                        contentPadding = PaddingValues(0.dp)
                     ) {
-                        Text("Go")
+                        Text("Go", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                     }
                 }
                 
@@ -630,10 +705,14 @@ fun HexViewer(
                             }
                         },
                         enabled = isEditingUnlocked && pendingEdits.isNotEmpty(),
-                        colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.AccentCyan)
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = PS5ThemeColors.AccentCyan,
+                            contentColor = Color.Black
+                        )
                     ) {
                         Text("Inject" +
-                                " (${pendingEdits.size})", color = Color.Black)
+                                " (${pendingEdits.size})", fontWeight = FontWeight.Bold)
                     }
                 }
                 
@@ -677,7 +756,7 @@ fun HexViewer(
                     modifier = Modifier
                         .widthIn(max = gridWidth)
                         .fillMaxHeight()
-                        .horizontalScroll(horizontalScrollState)
+                        .horizontalScroll(horizontalScrollState, enabled = !isMouseDown)
                 ) {
                     Column(
                         modifier = Modifier
@@ -754,15 +833,20 @@ fun HexViewer(
                                                     scrollPosition = (scrollPosition + rows).coerceIn(0L, currentMax)
                                                 }
                                                 PointerEventType.Press -> {
-                                                    focusRequester.requestFocus()
+                                                    isMouseDown = true
+                                                    if (!isMobile) {
+                                                        focusRequester.requestFocus()
+                                                    }
                                                     touchStartPos = position
                                                     touchStartScroll = scrollPosition
                                                     isDraggingToScroll = false
+                                                    isDraggingToSelect = false
                                                     isLongPressSelection = false
+                                                    isSecondaryClick = event.buttons.isSecondaryPressed
                                                     
                                                     val clickResult = getAddressAtOffset(position.x, position.y, size.height.toFloat(), size.width.toFloat())
                                                     
-                                                    if (event.buttons.isSecondaryPressed) {
+                                                    if (isSecondaryClick) {
                                                         if (clickResult != null) {
                                                             val (addr, area) = clickResult
                                                             clickedArea = area
@@ -780,14 +864,17 @@ fun HexViewer(
                                                         if (clickResult != null) {
                                                             val (addr, area) = clickResult
                                                             longPressJob?.cancel()
+                                                            if (!isMobile && (area == ClickedArea.HEX || area == ClickedArea.ASCII)) {
+                                                                clickedArea = area
+                                                                selectionStart = addr
+                                                                selectionEnd = addr
+                                                                hexInputBuffer = ""
+                                                            }
+                                                            isLongPressSelection = false
                                                             longPressJob = coroutineScope.launch {
                                                                 delay(400)
-                                                                if (!isDraggingToScroll) {
+                                                                if (!isDraggingToScroll && !isDraggingToSelect) {
                                                                     isLongPressSelection = true
-                                                                    clickedArea = area
-                                                                    selectionStart = addr
-                                                                    selectionEnd = addr
-                                                                    hexInputBuffer = ""
                                                                 }
                                                             }
                                                         }
@@ -797,8 +884,41 @@ fun HexViewer(
                                                     val startPos = touchStartPos
                                                     if (startPos != null) {
                                                         val dragY = position.y - startPos.y
+                                                        val dragX = position.x - startPos.x
+                                                        val dragDistance = kotlin.math.sqrt(dragX * dragX + dragY * dragY)
+                                                        val dragThreshold = if (isMobile) 24f * density else 8f * density
                                                         
-                                                        if (isLongPressSelection) {
+                                                        val pressClickResult = getAddressAtOffset(startPos.x, startPos.y, size.height.toFloat(), size.width.toFloat())
+                                                        val isSelectionArea = pressClickResult != null && (pressClickResult.second == ClickedArea.HEX || pressClickResult.second == ClickedArea.ASCII)
+                                                        
+                                                        if (!isDraggingToScroll && !isDraggingToSelect && dragDistance > dragThreshold) {
+                                                            if (isMobile) {
+                                                                if (isSelectionArea && kotlin.math.abs(dragX) > kotlin.math.abs(dragY) * 1.5f) {
+                                                                    isDraggingToSelect = true
+                                                                    longPressJob?.cancel()
+                                                                    val startClick = getAddressAtOffset(startPos.x, startPos.y, size.height.toFloat(), size.width.toFloat())
+                                                                    if (startClick != null) {
+                                                                        clickedArea = startClick.second
+                                                                        selectionStart = startClick.first
+                                                                        selectionEnd = startClick.first
+                                                                        hexInputBuffer = ""
+                                                                    }
+                                                                } else {
+                                                                    isDraggingToScroll = true
+                                                                    longPressJob?.cancel()
+                                                                }
+                                                            } else {
+                                                                if (isSelectionArea) {
+                                                                    isDraggingToSelect = true
+                                                                    longPressJob?.cancel()
+                                                                } else {
+                                                                    isDraggingToScroll = true
+                                                                    longPressJob?.cancel()
+                                                                }
+                                                            }
+                                                        }
+                                                        
+                                                        if (isDraggingToSelect) {
                                                             val clickResult = getAddressAtOffset(position.x, position.y, size.height.toFloat(), size.width.toFloat())
                                                             if (clickResult != null) {
                                                                 val (addr, area) = clickResult
@@ -811,51 +931,60 @@ fun HexViewer(
                                                             } else if (position.y < 0f) {
                                                                 scrollPosition = (scrollPosition - 1L).coerceIn(0L, maxScrollPosition)
                                                             }
-                                                        } else {
-                                                            val dragThreshold = 8f * density
-                                                            if (isDraggingToScroll || kotlin.math.abs(dragY) > dragThreshold) {
-                                                                isDraggingToScroll = true
-                                                                longPressJob?.cancel()
-                                                                val rowDelta = (-dragY / (24f * density)).toLong()
-                                                                scrollPosition = (touchStartScroll + rowDelta).coerceIn(0L, maxScrollPosition)
-                                                            }
+                                                        } else if (isDraggingToScroll) {
+                                                            val rowDelta = (-dragY / (24f * density)).toLong()
+                                                            scrollPosition = (touchStartScroll + rowDelta).coerceIn(0L, maxScrollPosition)
                                                         }
                                                     }
                                                 }
                                                 PointerEventType.Release -> {
                                                     longPressJob?.cancel()
                                                     val startPos = touchStartPos
-                                                    if (startPos != null && !isDraggingToScroll) {
+                                                    if (startPos != null && !isSecondaryClick) {
+                                                        val dragY = position.y - startPos.y
+                                                        val dragX = position.x - startPos.x
+                                                        val dragDistance = kotlin.math.sqrt(dragX * dragX + dragY * dragY)
+                                                        val dragThreshold = if (isMobile) 24f * density else 8f * density
+                                                        val hasDragged = dragDistance > dragThreshold
+                                                        
                                                         val clickResult = getAddressAtOffset(position.x, position.y, size.height.toFloat(), size.width.toFloat())
                                                         if (clickResult != null) {
                                                             val (addr, area) = clickResult
-                                                            if (isLongPressSelection) {
+                                                            
+                                                            if (isDraggingToSelect) {
+                                                                if (isMobile) {
+                                                                    clickedArea = area
+                                                                    contextMenuAddr = addr
+                                                                    contextMenuOffset = DpOffset(position.x.dp / density, position.y.dp / density)
+                                                                    showContextMenu = true
+                                                                }
+                                                            } else if (isLongPressSelection) {
                                                                 clickedArea = area
                                                                 contextMenuAddr = addr
                                                                 contextMenuOffset = DpOffset(position.x.dp / density, position.y.dp / density)
                                                                 showContextMenu = true
-                                                            } else {
-                                                                clickedArea = area
-                                                                selectionStart = addr
-                                                                selectionEnd = addr
-                                                                hexInputBuffer = ""
+                                                            } else if (!isDraggingToScroll) {
+                                                                if (area == ClickedArea.HEX || area == ClickedArea.ASCII) {
+                                                                    clickedArea = area
+                                                                    selectionStart = addr
+                                                                    selectionEnd = addr
+                                                                    hexInputBuffer = ""
+                                                                }
                                                                 
-                                                                // Double tap to edit (requests focus & opens soft keyboard)
+                                                                 // Double tap to edit (requests focus & opens soft keyboard)
                                                                  val currentTime = System.currentTimeMillis()
                                                                  println("Release event: addr=$addr, area=$area, timeDiff=${currentTime - lastTapTime}ms, isEditingUnlocked=$isEditingUnlocked")
                                                                  if (currentTime - lastTapTime < 500) {
-                                                                     println("Double-tap detected! Unlocking editing.")
-                                                                     isEditingUnlocked = true
-                                                                     if (area == ClickedArea.HEX || area == ClickedArea.ASCII) {
-                                                                         if (isMobile) {
+                                                                     println("Double-tap detected! Showing keyboard.")
+                                                                     if (isMobile && isEditingUnlocked && (area == ClickedArea.HEX || area == ClickedArea.ASCII)) {
+                                                                         coroutineScope.launch {
                                                                              try {
                                                                                  keyboardFocusRequester.requestFocus()
+                                                                                 kotlinx.coroutines.delay(100)
+                                                                                 keyboardController?.show()
                                                                              } catch (e: Exception) {
                                                                                  e.printStackTrace()
                                                                              }
-                                                                             keyboardController?.show()
-                                                                         } else {
-                                                                             focusRequester.requestFocus()
                                                                          }
                                                                      }
                                                                  }
@@ -864,8 +993,11 @@ fun HexViewer(
                                                         }
                                                     }
                                                     touchStartPos = null
+                                                    isMouseDown = false
                                                     isDraggingToScroll = false
+                                                    isDraggingToSelect = false
                                                     isLongPressSelection = false
+                                                    isSecondaryClick = false
                                                 }
                                             }
                                         }

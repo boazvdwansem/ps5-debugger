@@ -18,4 +18,7 @@ object AppContainer {
         clientPort = clientAdapter,
         logPort = logStorageAdapter
     )
+
+    var filePicker: com.osr.ps5debugger.ports.inbound.FilePicker? = null
+    var defaultDumpPath: String = ""
 }

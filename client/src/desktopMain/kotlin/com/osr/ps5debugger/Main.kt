@@ -30,6 +30,7 @@ import androidx.compose.ui.window.WindowState
 import androidx.compose.ui.window.WindowScope
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
+import androidx.compose.ui.res.painterResource
 import com.osr.ps5debugger.ui.MainView
 import com.osr.ps5debugger.PS5ThemeColors
 import com.osr.ps5debugger.Ps5DebuggerTheme
@@ -44,8 +45,67 @@ import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import javax.swing.Timer
 
-fun main() = application {
-    val windowState = rememberWindowState(
+fun main() {
+    AppContainer.filePicker = object : com.osr.ps5debugger.ports.inbound.FilePicker {
+        override fun saveJson(defaultName: String, content: String, onResult: (Boolean) -> Unit) {
+            try {
+                val dialog = java.awt.FileDialog(null as java.awt.Frame?, "Save Watch List", java.awt.FileDialog.SAVE)
+                dialog.file = defaultName
+                dialog.isVisible = true
+                val directory = dialog.directory
+                val file = dialog.file
+                if (directory != null && file != null) {
+                    val targetFile = java.io.File(directory, file)
+                    val finalFile = if (targetFile.extension.equals("json", ignoreCase = true)) targetFile else java.io.File(targetFile.parentFile, "${targetFile.name}.json")
+                    finalFile.writeText(content, Charsets.UTF_8)
+                    onResult(true)
+                } else {
+                    onResult(false)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                onResult(false)
+            }
+        }
+
+        override fun loadJson(onResult: (String?) -> Unit) {
+            try {
+                val dialog = java.awt.FileDialog(null as java.awt.Frame?, "Load Watch List", java.awt.FileDialog.LOAD)
+                dialog.file = "*.json"
+                dialog.isVisible = true
+                val directory = dialog.directory
+                val file = dialog.file
+                if (directory != null && file != null) {
+                    val targetFile = java.io.File(directory, file)
+                    onResult(targetFile.readText(Charsets.UTF_8))
+                } else {
+                    onResult(null)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                onResult(null)
+            }
+        }
+
+        override fun pickDirectory(onResult: (String?) -> Unit) {
+            try {
+                val chooser = javax.swing.JFileChooser()
+                chooser.fileSelectionMode = javax.swing.JFileChooser.DIRECTORIES_ONLY
+                val result = chooser.showOpenDialog(null)
+                if (result == javax.swing.JFileChooser.APPROVE_OPTION) {
+                    onResult(chooser.selectedFile.absolutePath)
+                } else {
+                    onResult(null)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                onResult(null)
+            }
+        }
+    }
+    
+    application {
+        val windowState = rememberWindowState(
         width = 1280.dp,
         height = 860.dp,
         position = WindowPosition.Aligned(Alignment.Center)
@@ -55,7 +115,8 @@ fun main() = application {
         onCloseRequest = ::exitApplication,
         title = "PlayStation 5 Debugger NG Client",
         state = windowState,
-        undecorated = true
+        undecorated = true,
+        icon = painterResource("logo.png")
     ) {
         val window = this.window
         val floatingBounds = remember { mutableStateOf<Rectangle?>(null) }
@@ -213,6 +274,7 @@ fun main() = application {
             onClose = ::exitApplication
         )
     }
+}
 }
 
 @Composable

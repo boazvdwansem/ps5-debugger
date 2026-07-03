@@ -43,7 +43,28 @@ fun MemoryDumperView(modifier: Modifier = Modifier) {
     var dumpProgress by remember { mutableStateOf(0f) }
     var dumpJob by remember { mutableStateOf<Job?>(null) }
     
-    var outputDirPath by remember { mutableStateOf((System.getProperty("user.home") ?: "") + java.io.File.separator + "ps5_dumps") }
+    val isMobile = remember {
+        try {
+            Class.forName("java.awt.Frame")
+            false
+        } catch (_: Throwable) {
+            true
+        }
+    }
+    
+    var outputDirPath by remember { 
+        mutableStateOf(
+            if (isMobile) {
+                if (AppContainer.defaultDumpPath.isNotEmpty()) {
+                    AppContainer.defaultDumpPath + java.io.File.separator + "ps5_dumps"
+                } else {
+                    "ps5_dumps"
+                }
+            } else {
+                (System.getProperty("user.home") ?: "") + java.io.File.separator + "ps5_dumps"
+            }
+        ) 
+    }
 
     Column(modifier = modifier.fillMaxSize().padding(16.dp)) {
         Text(
@@ -66,88 +87,221 @@ fun MemoryDumperView(modifier: Modifier = Modifier) {
             colors = CardDefaults.cardColors(containerColor = PS5ThemeColors.Surface),
             border = BorderStroke(1.dp, PS5ThemeColors.BorderColor)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Button(
-                    onClick = {
-                        maps.forEach { selectedMaps[it.start] = true }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.SecondaryBg)
+            if (isMobile) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Text("Select All", color = PS5ThemeColors.TextMain)
-                }
-                
-                Button(
-                    onClick = {
-                        selectedMaps.clear()
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.SecondaryBg)
-                ) {
-                    Text("Clear Selection", color = PS5ThemeColors.TextMain)
-                }
-                
-                OutlinedTextField(
-                    value = outputDirPath,
-                    onValueChange = { outputDirPath = it },
-                    label = { Text("Destination Folder") },
-                    textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
-                    modifier = Modifier.weight(1f),
-                    singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = PS5ThemeColors.AccentCyan,
-                        unfocusedBorderColor = PS5ThemeColors.BorderColor,
-                        focusedLabelColor = PS5ThemeColors.AccentCyan,
-                        unfocusedLabelColor = PS5ThemeColors.TextMuted
-                    )
-                )
-                
-                val targets = maps.filter { selectedMaps[it.start] == true }
-                
-                Button(
-                    onClick = {
-                        val outputDir = File(outputDirPath)
-                        println("Dump button clicked! Target regions count: ${targets.size}, outputDir: ${outputDir.absolutePath}")
-                        if (!outputDir.exists()) {
-                            val created = outputDir.mkdirs()
-                            println("Created output directory: $created")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                maps.forEach { selectedMaps[it.start] = true }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.SecondaryBg),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Select All", color = PS5ThemeColors.TextMain)
                         }
-                        isDumping = true
-                        dumpProgress = 0f
-                        dumpJob = coroutineScope.launch {
-                             println("Launching dump coroutine...")
-                             MemoryDumper.dumpRegions(
-                                 pid = activeProcess!!.pid,
-                                 regions = targets,
-                                 outputDir = outputDir,
-                                 clientPort = AppContainer.clientAdapter,
-                                 useCase = AppContainer.debuggerUseCase,
-                                 onProgress = { regionName, progress ->
-                                     currentDumpRegionName = regionName
-                                     dumpProgress = progress
-                                 }
-                             )
-                            isDumping = false
-                            println("Dump coroutine finished.")
+                        
+                        Button(
+                            onClick = {
+                                selectedMaps.clear()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.SecondaryBg),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Clear Selection", color = PS5ThemeColors.TextMain)
                         }
-                    },
-                    enabled = targets.isNotEmpty() && !isDumping && outputDirPath.isNotEmpty(),
-                    colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.AccentCyan)
-                ) {
-                    Text(if (isDumping) "Dumping..." else "Dump Selected (${targets.size})", color = Color.Black)
+                    }
+                    
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = outputDirPath,
+                            onValueChange = { outputDirPath = it },
+                            label = { Text("Destination Folder") },
+                            textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = PS5ThemeColors.AccentCyan,
+                                unfocusedBorderColor = PS5ThemeColors.BorderColor,
+                                focusedLabelColor = PS5ThemeColors.AccentCyan,
+                                unfocusedLabelColor = PS5ThemeColors.TextMuted
+                            )
+                        )
+                        
+                        OutlinedButton(
+                            onClick = {
+                                AppContainer.filePicker?.pickDirectory { path ->
+                                    if (path != null) {
+                                        outputDirPath = path
+                                    }
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.SecondaryBg)
+                        ) {
+                            Text("Browse", color = PS5ThemeColors.TextMain)
+                        }
+                    }
+                    
+                    val targets = maps.filter { selectedMaps[it.start] == true }
+                    
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                val outputDir = File(outputDirPath)
+                                println("Dump button clicked! Target regions count: ${targets.size}, outputDir: ${outputDir.absolutePath}")
+                                if (!outputDir.exists()) {
+                                    val created = outputDir.mkdirs()
+                                    println("Created output directory: $created")
+                                }
+                                isDumping = true
+                                dumpProgress = 0f
+                                dumpJob = coroutineScope.launch {
+                                     println("Launching dump coroutine...")
+                                     MemoryDumper.dumpRegions(
+                                         pid = activeProcess!!.pid,
+                                         regions = targets,
+                                         outputDir = outputDir,
+                                         clientPort = AppContainer.clientAdapter,
+                                         useCase = AppContainer.debuggerUseCase,
+                                         onProgress = { regionName, progress ->
+                                             currentDumpRegionName = regionName
+                                             dumpProgress = progress
+                                         }
+                                     )
+                                    isDumping = false
+                                    println("Dump coroutine finished.")
+                                }
+                            },
+                            enabled = targets.isNotEmpty() && !isDumping && outputDirPath.isNotEmpty(),
+                            colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.AccentCyan),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(if (isDumping) "Dumping..." else "Dump Selected (${targets.size})", color = Color.Black)
+                        }
+                        
+                        if (isDumping) {
+                            Button(
+                                onClick = {
+                                    dumpJob?.cancel()
+                                    isDumping = false
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.StatusRed),
+                                modifier = Modifier.weight(0.5f)
+                            ) {
+                                Text("Cancel", color = Color.White)
+                            }
+                        }
+                    }
                 }
-                
-                if (isDumping) {
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
                     Button(
                         onClick = {
-                            dumpJob?.cancel()
-                            isDumping = false
+                            maps.forEach { selectedMaps[it.start] = true }
                         },
-                        colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.StatusRed)
+                        colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.SecondaryBg)
                     ) {
-                        Text("Cancel", color = Color.White)
+                        Text("Select All", color = PS5ThemeColors.TextMain)
+                    }
+                    
+                    Button(
+                        onClick = {
+                            selectedMaps.clear()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.SecondaryBg)
+                    ) {
+                        Text("Clear Selection", color = PS5ThemeColors.TextMain)
+                    }
+                    
+                    OutlinedTextField(
+                        value = outputDirPath,
+                        onValueChange = { outputDirPath = it },
+                        label = { Text("Destination Folder") },
+                        textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = PS5ThemeColors.AccentCyan,
+                            unfocusedBorderColor = PS5ThemeColors.BorderColor,
+                            focusedLabelColor = PS5ThemeColors.AccentCyan,
+                            unfocusedLabelColor = PS5ThemeColors.TextMuted
+                        )
+                    )
+                    
+                    OutlinedButton(
+                        onClick = {
+                            AppContainer.filePicker?.pickDirectory { path ->
+                                if (path != null) {
+                                    outputDirPath = path
+                                }
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.SecondaryBg)
+                    ) {
+                        Text("Browse", color = PS5ThemeColors.TextMain)
+                    }
+                    
+                    val targets = maps.filter { selectedMaps[it.start] == true }
+                    
+                    Button(
+                        onClick = {
+                            val outputDir = File(outputDirPath)
+                            println("Dump button clicked! Target regions count: ${targets.size}, outputDir: ${outputDir.absolutePath}")
+                            if (!outputDir.exists()) {
+                                val created = outputDir.mkdirs()
+                                println("Created output directory: $created")
+                            }
+                            isDumping = true
+                            dumpProgress = 0f
+                            dumpJob = coroutineScope.launch {
+                                 println("Launching dump coroutine...")
+                                 MemoryDumper.dumpRegions(
+                                     pid = activeProcess!!.pid,
+                                     regions = targets,
+                                     outputDir = outputDir,
+                                     clientPort = AppContainer.clientAdapter,
+                                     useCase = AppContainer.debuggerUseCase,
+                                     onProgress = { regionName, progress ->
+                                         currentDumpRegionName = regionName
+                                         dumpProgress = progress
+                                     }
+                                 )
+                                isDumping = false
+                                println("Dump coroutine finished.")
+                            }
+                        },
+                        enabled = targets.isNotEmpty() && !isDumping && outputDirPath.isNotEmpty(),
+                        colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.AccentCyan)
+                    ) {
+                        Text(if (isDumping) "Dumping..." else "Dump Selected (${targets.size})", color = Color.Black)
+                    }
+                    
+                    if (isDumping) {
+                        Button(
+                            onClick = {
+                                dumpJob?.cancel()
+                                isDumping = false
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.StatusRed)
+                        ) {
+                            Text("Cancel", color = Color.White)
+                        }
                     }
                 }
             }
@@ -169,16 +323,20 @@ fun MemoryDumperView(modifier: Modifier = Modifier) {
             }
         }
 
+        val headerFontSize = if (isMobile) 10.sp else 12.sp
+        val itemFontSize = if (isMobile) 11.sp else 13.sp
+        val fontMonospace = FontFamily.Monospace
+
         // Regions list header
         Row(
             modifier = Modifier.fillMaxWidth().background(PS5ThemeColors.SecondaryBg).padding(vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Spacer(Modifier.width(48.dp))
-            Text("Name", fontWeight = FontWeight.Bold, fontSize = 12.sp, modifier = Modifier.weight(2f))
-            Text("Range", fontWeight = FontWeight.Bold, fontSize = 12.sp, modifier = Modifier.weight(3f))
-            Text("Size", fontWeight = FontWeight.Bold, fontSize = 12.sp, modifier = Modifier.weight(1.2f))
-            Text("Flags", fontWeight = FontWeight.Bold, fontSize = 12.sp, modifier = Modifier.weight(1f))
+            Spacer(Modifier.width(if (isMobile) 32.dp else 48.dp))
+            Text("Name", fontWeight = FontWeight.Bold, fontSize = headerFontSize, modifier = Modifier.weight(2f))
+            Text("Range", fontWeight = FontWeight.Bold, fontSize = headerFontSize, modifier = Modifier.weight(3f))
+            Text("Size", fontWeight = FontWeight.Bold, fontSize = headerFontSize, modifier = Modifier.weight(1.2f))
+            Text("Flags", fontWeight = FontWeight.Bold, fontSize = headerFontSize, modifier = Modifier.weight(1f))
         }
 
         if (isLoadingMaps) {
@@ -203,25 +361,25 @@ fun MemoryDumperView(modifier: Modifier = Modifier) {
                         
                         Text(
                             text = map.name.ifEmpty { "unnamed" },
-                            fontSize = 13.sp,
+                            fontSize = itemFontSize,
                             modifier = Modifier.weight(2f)
                         )
                         Text(
                             text = String.format("0x%012X - 0x%012X", map.start, map.end),
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 12.sp,
+                            fontFamily = fontMonospace,
+                            fontSize = headerFontSize,
                             color = PS5ThemeColors.TextMuted,
                             modifier = Modifier.weight(3f)
                         )
                         Text(
                             text = String.format("%.2f MB", map.size.toDouble() / (1024 * 1024)),
-                            fontSize = 12.sp,
+                            fontSize = headerFontSize,
                             modifier = Modifier.weight(1.2f)
                         )
                         Text(
                             text = map.getProtString(),
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 12.sp,
+                            fontFamily = fontMonospace,
+                            fontSize = headerFontSize,
                             color = PS5ThemeColors.AccentCyan,
                             modifier = Modifier.weight(1f)
                         )

@@ -16,7 +16,7 @@ object PS5ThemeColors {
     val SecondaryBg = Color(0xFF21262D)     // Border/contrast panel background
     val BorderColor = Color(0xFF30363D)     // Clean separating line gray
     
-    val AccentCyan = Color(0xFF58A6FF)      // Tech Cyan/Blue accent
+    val AccentCyan = Color(0xFF00D2FF)      // Tech Neon Cyan accent
     val AccentAmber = Color(0xFFFEC260)     // Warning/highlight amber
     
     val TextMain = Color(0xFFC9D1D9)        // Muted white text

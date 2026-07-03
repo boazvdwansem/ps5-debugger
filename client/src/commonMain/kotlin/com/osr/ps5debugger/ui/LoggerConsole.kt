@@ -24,6 +24,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
 import com.osr.ps5debugger.di.AppContainer
 import com.osr.ps5debugger.PS5ThemeColors
 import kotlinx.coroutines.delay
@@ -95,14 +96,79 @@ fun LoggerConsole(
 
 
 
+    val isMobile = remember {
+        try {
+            Class.forName("java.awt.Frame")
+            false
+        } catch (_: Throwable) {
+            true
+        }
+    }
+    
+    val consoleHeight = if (isMobile) 320.dp else 220.dp
+
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .height(220.dp)
+            .height(consoleHeight)
             .background(MaterialTheme.colorScheme.surface)
             .padding(8.dp)
     ) {
-            // Toolbar
+        if (isMobile) {
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Console Logs", style = MaterialTheme.typography.titleSmall)
+                    if (actionButton != null) {
+                        Spacer(modifier = Modifier.weight(1f))
+                        actionButton()
+                    }
+                }
+                
+                BasicTextField(
+                    value = filterText,
+                    onValueChange = { filterText = it },
+                    textStyle = TextStyle(fontSize = 12.sp, color = PS5ThemeColors.TextMain),
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(28.dp)
+                        .background(PS5ThemeColors.Surface, RoundedCornerShape(4.dp))
+                        .border(1.dp, PS5ThemeColors.BorderColor, RoundedCornerShape(4.dp))
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    decorationBox = { innerTextField ->
+                        Box(contentAlignment = Alignment.CenterStart) {
+                            if (filterText.isEmpty()) {
+                                Text("Filter logs...", color = PS5ThemeColors.TextMuted, fontSize = 12.sp)
+                            }
+                            innerTextField()
+                        }
+                    }
+                )
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    com.osr.ps5debugger.domain.model.LogEntry.Level.values().forEach { level ->
+                        FilterChip(
+                            selected = filterLevel == level,
+                            onClick = { filterLevel = if (filterLevel == level) null else level },
+                            label = { Text(level.name, fontSize = 10.sp) },
+                            modifier = Modifier.padding(vertical = 2.dp)
+                        )
+                    }
+                }
+            }
+        } else {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -147,6 +213,7 @@ fun LoggerConsole(
                     actionButton()
                 }
             }
+        }
 
             Box(
                 modifier = Modifier

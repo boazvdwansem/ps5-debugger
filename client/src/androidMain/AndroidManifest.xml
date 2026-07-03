@@ -6,6 +6,7 @@
     <application
         android:allowBackup="true"
         android:label="PS5 Debugger"
+        android:icon="@mipmap/ic_launcher"
         android:theme="@android:style/Theme.Material.NoActionBar">
         <activity
             android:name="com.osr.ps5debugger.MainActivity"

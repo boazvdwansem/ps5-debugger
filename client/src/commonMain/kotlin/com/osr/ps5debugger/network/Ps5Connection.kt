@@ -31,7 +31,7 @@ class Ps5Connection {
                 val newSocket = Socket()
                 newSocket.tcpNoDelay = true
                 newSocket.keepAlive = true
-                newSocket.soTimeout = timeoutMs
+                newSocket.soTimeout = 20000 // 20 seconds read timeout for stable memory dumps
                 newSocket.connect(InetSocketAddress(ip, port), timeoutMs)
                 
                 socket = newSocket

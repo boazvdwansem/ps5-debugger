@@ -108,13 +108,24 @@ fun WatchList(
 
                             OutlinedButton(
                                 onClick = {
-                                    chooseWatchListFile(mode = FileDialog.SAVE)?.let { file ->
-                                        val target = if (file.extension.equals("json", ignoreCase = true)) file else File(file.parentFile, "${file.name}.json")
-                                        runCatching {
-                                            target.writeText(watchListToJson(itemsList), Charsets.UTF_8)
-                                            AppContainer.debuggerUseCase.log("WATCHLIST", "Saved watch list to ${target.absolutePath}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
-                                        }.onFailure {
-                                            AppContainer.debuggerUseCase.log("WATCHLIST", "Failed to save watch list: ${it.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                                    val picker = AppContainer.filePicker
+                                    if (picker != null) {
+                                        picker.saveJson("watchlist.json", watchListToJson(itemsList)) { success ->
+                                            if (success) {
+                                                AppContainer.debuggerUseCase.log("WATCHLIST", "Saved watch list successfully", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                                            } else {
+                                                AppContainer.debuggerUseCase.log("WATCHLIST", "Failed to save watch list", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                                            }
+                                        }
+                                    } else {
+                                        chooseWatchListFile(mode = FileDialog.SAVE)?.let { file ->
+                                            val target = if (file.extension.equals("json", ignoreCase = true)) file else File(file.parentFile, "${file.name}.json")
+                                            runCatching {
+                                                target.writeText(watchListToJson(itemsList), Charsets.UTF_8)
+                                                AppContainer.debuggerUseCase.log("WATCHLIST", "Saved watch list to ${target.absolutePath}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                                            }.onFailure {
+                                                AppContainer.debuggerUseCase.log("WATCHLIST", "Failed to save watch list: ${it.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                                            }
                                         }
                                     }
                                 },
@@ -123,14 +134,30 @@ fun WatchList(
 
                             OutlinedButton(
                                 onClick = {
-                                    chooseWatchListFile(mode = FileDialog.LOAD)?.let { file ->
-                                        runCatching {
-                                            val loaded = watchListFromJson(file.readText(Charsets.UTF_8))
-                                            AppContainer.debuggerUseCase.clearWatchlist()
-                                            loaded.forEach { AppContainer.debuggerUseCase.addWatchItem(it) }
-                                            AppContainer.debuggerUseCase.log("WATCHLIST", "Loaded ${loaded.size} watch entries from ${file.absolutePath}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
-                                        }.onFailure {
-                                            AppContainer.debuggerUseCase.log("WATCHLIST", "Failed to load watch list: ${it.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                                    val picker = AppContainer.filePicker
+                                    if (picker != null) {
+                                        picker.loadJson { json ->
+                                            if (json != null) {
+                                                runCatching {
+                                                    val loaded = watchListFromJson(json)
+                                                    AppContainer.debuggerUseCase.clearWatchlist()
+                                                    loaded.forEach { AppContainer.debuggerUseCase.addWatchItem(it) }
+                                                    AppContainer.debuggerUseCase.log("WATCHLIST", "Loaded ${loaded.size} watch entries", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                                                }.onFailure {
+                                                    AppContainer.debuggerUseCase.log("WATCHLIST", "Failed to parse loaded watch list: ${it.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        chooseWatchListFile(mode = FileDialog.LOAD)?.let { file ->
+                                            runCatching {
+                                                val loaded = watchListFromJson(file.readText(Charsets.UTF_8))
+                                                AppContainer.debuggerUseCase.clearWatchlist()
+                                                loaded.forEach { AppContainer.debuggerUseCase.addWatchItem(it) }
+                                                AppContainer.debuggerUseCase.log("WATCHLIST", "Loaded ${loaded.size} watch entries from ${file.absolutePath}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                                            }.onFailure {
+                                                AppContainer.debuggerUseCase.log("WATCHLIST", "Failed to load watch list: ${it.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                                            }
                                         }
                                     }
                                 },
@@ -168,26 +195,53 @@ fun WatchList(
                         }) { Text("Add") }
 
                         OutlinedButton(onClick = {
-                            chooseWatchListFile(mode = FileDialog.SAVE)?.let { file ->
-                                val target = if (file.extension.equals("json", ignoreCase = true)) file else File(file.parentFile, "${file.name}.json")
-                                runCatching {
-                                    target.writeText(watchListToJson(itemsList), Charsets.UTF_8)
-                                    AppContainer.debuggerUseCase.log("WATCHLIST", "Saved watch list to ${target.absolutePath}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
-                                }.onFailure {
-                                    AppContainer.debuggerUseCase.log("WATCHLIST", "Failed to save watch list: ${it.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                            val picker = AppContainer.filePicker
+                            if (picker != null) {
+                                picker.saveJson("watchlist.json", watchListToJson(itemsList)) { success ->
+                                    if (success) {
+                                        AppContainer.debuggerUseCase.log("WATCHLIST", "Saved watch list successfully", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                                    } else {
+                                        AppContainer.debuggerUseCase.log("WATCHLIST", "Failed to save watch list", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                                    }
+                                }
+                            } else {
+                                chooseWatchListFile(mode = FileDialog.SAVE)?.let { file ->
+                                    val target = if (file.extension.equals("json", ignoreCase = true)) file else File(file.parentFile, "${file.name}.json")
+                                    runCatching {
+                                        target.writeText(watchListToJson(itemsList), Charsets.UTF_8)
+                                        AppContainer.debuggerUseCase.log("WATCHLIST", "Saved watch list to ${target.absolutePath}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                                    }.onFailure {
+                                        AppContainer.debuggerUseCase.log("WATCHLIST", "Failed to save watch list: ${it.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                                    }
                                 }
                             }
                         }) { Text("Save") }
 
                         OutlinedButton(onClick = {
-                            chooseWatchListFile(mode = FileDialog.LOAD)?.let { file ->
-                                runCatching {
-                                    val loaded = watchListFromJson(file.readText(Charsets.UTF_8))
-                                    AppContainer.debuggerUseCase.clearWatchlist()
-                                    loaded.forEach { AppContainer.debuggerUseCase.addWatchItem(it) }
-                                    AppContainer.debuggerUseCase.log("WATCHLIST", "Loaded ${loaded.size} watch entries from ${file.absolutePath}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
-                                }.onFailure {
-                                    AppContainer.debuggerUseCase.log("WATCHLIST", "Failed to load watch list: ${it.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                            val picker = AppContainer.filePicker
+                            if (picker != null) {
+                                picker.loadJson { json ->
+                                    if (json != null) {
+                                        runCatching {
+                                            val loaded = watchListFromJson(json)
+                                            AppContainer.debuggerUseCase.clearWatchlist()
+                                            loaded.forEach { AppContainer.debuggerUseCase.addWatchItem(it) }
+                                            AppContainer.debuggerUseCase.log("WATCHLIST", "Loaded ${loaded.size} watch entries", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                                        }.onFailure {
+                                            AppContainer.debuggerUseCase.log("WATCHLIST", "Failed to parse loaded watch list: ${it.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                                        }
+                                    }
+                                }
+                            } else {
+                                chooseWatchListFile(mode = FileDialog.LOAD)?.let { file ->
+                                    runCatching {
+                                        val loaded = watchListFromJson(file.readText(Charsets.UTF_8))
+                                        AppContainer.debuggerUseCase.clearWatchlist()
+                                        loaded.forEach { AppContainer.debuggerUseCase.addWatchItem(it) }
+                                        AppContainer.debuggerUseCase.log("WATCHLIST", "Loaded ${loaded.size} watch entries from ${file.absolutePath}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                                    }.onFailure {
+                                        AppContainer.debuggerUseCase.log("WATCHLIST", "Failed to load watch list: ${it.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                                    }
                                 }
                             }
                         }) { Text("Load") }
@@ -626,13 +680,17 @@ private fun valueToBytes(valueStr: String, item: WatchItem): ByteArray? {
 }
 
 private fun chooseWatchListFile(mode: Int): File? {
-    val dialog = FileDialog(null as Frame?, if (mode == FileDialog.SAVE) "Save Watch List" else "Load Watch List", mode)
-    dialog.file = "watchlist.json"
-    dialog.isVisible = true
+    return try {
+        val dialog = FileDialog(null as Frame?, if (mode == FileDialog.SAVE) "Save Watch List" else "Load Watch List", mode)
+        dialog.file = "watchlist.json"
+        dialog.isVisible = true
 
-    val directory = dialog.directory ?: return null
-    val file = dialog.file ?: return null
-    return File(directory, file)
+        val directory = dialog.directory ?: return null
+        val file = dialog.file ?: return null
+        File(directory, file)
+    } catch (e: Throwable) {
+        File("watchlist.json").absoluteFile
+    }
 }
 
 private fun watchListToJson(items: List<WatchItem>): String = buildString {

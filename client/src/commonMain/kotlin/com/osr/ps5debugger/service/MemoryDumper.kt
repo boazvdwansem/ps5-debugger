@@ -7,6 +7,7 @@ import com.osr.ps5debugger.ports.inbound.DebuggerUseCase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -27,7 +28,7 @@ object MemoryDumper {
                 outputDir.mkdirs()
             }
 
-            val chunkSize = 65536 // 64KB chunks for smooth network streaming
+            val chunkSize = 16384 // 16KB chunks for highly stable network streaming on mobile and desktop
             
             regions.forEachIndexed { index, region ->
                 val cleanedName = region.name.replace(Regex("[^a-zA-Z0-9_-]"), "_").ifEmpty { "unnamed" }
@@ -54,6 +55,7 @@ object MemoryDumper {
                         
                         val progressFraction = bytesDumped.toFloat() / totalSize.toFloat()
                         onProgress(cleanedName, progressFraction)
+                        yield()
                     }
                 }
                 

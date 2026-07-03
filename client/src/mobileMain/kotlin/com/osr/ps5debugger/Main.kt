@@ -16,9 +16,67 @@ import com.osr.ps5debugger.ui.Ps5DebuggerTheme
 import com.osr.ps5debugger.ui.PS5ThemeColors
 import com.osr.ps5debugger.MobileMainView
 
-fun main() = application {
-    // Standard phone resolution simulator (e.g. 390x844 dp is common for modern iPhone/Android portrait size)
-    val windowState = rememberWindowState(
+fun main() {
+    com.osr.ps5debugger.di.AppContainer.filePicker = object : com.osr.ps5debugger.ports.inbound.FilePicker {
+        override fun saveJson(defaultName: String, content: String, onResult: (Boolean) -> Unit) {
+            try {
+                val dialog = java.awt.FileDialog(null as java.awt.Frame?, "Save Watch List", java.awt.FileDialog.SAVE)
+                dialog.file = defaultName
+                dialog.isVisible = true
+                val directory = dialog.directory
+                val file = dialog.file
+                if (directory != null && file != null) {
+                    val targetFile = java.io.File(directory, file)
+                    val finalFile = if (targetFile.extension.equals("json", ignoreCase = true)) targetFile else java.io.File(targetFile.parentFile, "${targetFile.name}.json")
+                    finalFile.writeText(content, Charsets.UTF_8)
+                    onResult(true)
+                } else {
+                    onResult(false)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                onResult(false)
+            }
+        }
+
+        override fun loadJson(onResult: (String?) -> Unit) {
+            try {
+                val dialog = java.awt.FileDialog(null as java.awt.Frame?, "Load Watch List", java.awt.FileDialog.LOAD)
+                dialog.file = "*.json"
+                dialog.isVisible = true
+                val directory = dialog.directory
+                val file = dialog.file
+                if (directory != null && file != null) {
+                    val targetFile = java.io.File(directory, file)
+                    onResult(targetFile.readText(Charsets.UTF_8))
+                } else {
+                    onResult(null)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                onResult(null)
+            }
+        }
+
+        override fun pickDirectory(onResult: (String?) -> Unit) {
+            try {
+                val chooser = javax.swing.JFileChooser()
+                chooser.fileSelectionMode = javax.swing.JFileChooser.DIRECTORIES_ONLY
+                val result = chooser.showOpenDialog(null)
+                if (result == javax.swing.JFileChooser.APPROVE_OPTION) {
+                    onResult(chooser.selectedFile.absolutePath)
+                } else {
+                    onResult(null)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                onResult(null)
+            }
+        }
+    }
+
+    application {
+        val windowState = rememberWindowState(
         width = 410.dp,
         height = 840.dp,
         position = WindowPosition.Aligned(Alignment.Center)
@@ -39,4 +97,5 @@ fun main() = application {
             }
         }
     }
+}
 }

@@ -46,6 +46,10 @@ jobs:
         if: runner.os != 'Windows'
         run: ./gradlew packageDistributionForCurrentOS
 
+      - name: Build Android APK
+        if: matrix.os == 'ubuntu-latest'
+        run: ./gradlew assembleDebug
+
       - name: Upload MSI (Windows)
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
@@ -66,3 +70,10 @@ jobs:
         with:
           name: desktop-macos
           path: client/build/compose/binaries/main/dmg/*.dmg
+
+      - name: Upload APK (Android)
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: client/build/outputs/apk/debug/*.apk

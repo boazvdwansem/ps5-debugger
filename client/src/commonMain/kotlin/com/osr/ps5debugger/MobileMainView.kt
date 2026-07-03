@@ -156,8 +156,10 @@ fun MobileMainView() {
                 when (currentScreen) {
                     0 -> MobileDashboard(
                         activeMap = activeMap,
-                        onSelectProcessClick = { showProcessSelector = true },
-                        onSelectRegionClick = { showRegionSelector = true },
+                        onMapSelected = { map ->
+                            activeMap = map
+                            currentScreen = 1
+                        },
                         onNavigateToHex = { currentScreen = 1 }
                     )
                     1 -> HexViewer(
@@ -228,6 +230,7 @@ fun MobileMainView() {
                             actionButton = {
                                 Button(
                                     onClick = { showConsoleLogs = false },
+                                    shape = RoundedCornerShape(8.dp),
                                     colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.SecondaryBg)
                                 ) {
                                     Text("Close", color = PS5ThemeColors.TextMain)
@@ -365,10 +368,11 @@ fun MobileConnectionScreen() {
                         }
                     },
                     enabled = !isConnecting && !isDiscovering,
+                    shape = RoundedCornerShape(8.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.AccentCyan),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(if (isConnecting) "Connecting..." else "Connect", color = Color.Black)
+                    Text(if (isConnecting) "Connecting..." else "Connect", color = Color.Black, fontWeight = FontWeight.Bold)
                 }
 
                 FilledTonalButton(
@@ -390,6 +394,7 @@ fun MobileConnectionScreen() {
                         }
                     },
                     enabled = !isConnecting && !isDiscovering,
+                    shape = RoundedCornerShape(8.dp),
                     colors = ButtonDefaults.filledTonalButtonColors(containerColor = PS5ThemeColors.SecondaryBg),
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -411,12 +416,18 @@ fun MobileConnectionScreen() {
 @Composable
 fun MobileDashboard(
     activeMap: MemoryRange?,
-    onSelectProcessClick: () -> Unit,
-    onSelectRegionClick: () -> Unit,
+    onMapSelected: (MemoryRange) -> Unit,
     onNavigateToHex: () -> Unit
 ) {
     val activeProcess by AppContainer.debuggerUseCase.activeProcess.collectAsState()
-    val activeProcessInfo by AppContainer.debuggerUseCase.activeProcessInfo.collectAsState()
+    var activeListTab by remember { mutableStateOf(0) } // 0 = Process List, 1 = Region List
+
+    // If active process is disconnected or reset, revert to process tab
+    LaunchedEffect(activeProcess) {
+        if (activeProcess == null) {
+            activeListTab = 0
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -424,91 +435,125 @@ fun MobileDashboard(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Text("DASHBOARD", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = PS5ThemeColors.TextMain)
+        Text("PROCESS", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = PS5ThemeColors.TextMain)
 
-        // Process Status Card
-        Card(
+        // Status row showing active targets side-by-side
+        Row(
             modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = PS5ThemeColors.Surface),
-            border = BorderStroke(1.dp, PS5ThemeColors.BorderColor)
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Target Process", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = PS5ThemeColors.AccentCyan)
-                
-                if (activeProcess == null) {
-                    Text("No process currently attached.", color = PS5ThemeColors.TextMuted, fontSize = 13.sp)
-                    Button(
-                        onClick = onSelectProcessClick,
-                        colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.AccentCyan),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Attach to Process", color = Color.Black)
+            // Process Status Card
+            Card(
+                modifier = Modifier
+                    .weight(1f)
+                    .clickable { activeListTab = 0 },
+                colors = CardDefaults.cardColors(containerColor = PS5ThemeColors.Surface),
+                border = BorderStroke(
+                    width = 1.dp,
+                    color = if (activeListTab == 0) PS5ThemeColors.AccentCyan else PS5ThemeColors.BorderColor
+                )
+            ) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Target Process", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = if (activeListTab == 0) PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted)
+                    if (activeProcess == null) {
+                        Text("No process attached.", color = PS5ThemeColors.TextMuted, fontSize = 12.sp)
+                    } else {
+                        Text(activeProcess!!.name, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = PS5ThemeColors.TextMain)
+                        Text("PID: ${activeProcess!!.pid}", fontSize = 11.sp, color = PS5ThemeColors.TextMuted)
                     }
-                } else {
+                }
+            }
+
+            // Active Memory Region Card
+            Card(
+                modifier = Modifier
+                    .weight(1.2f)
+                    .clickable(enabled = activeProcess != null) { activeListTab = 1 },
+                colors = CardDefaults.cardColors(containerColor = PS5ThemeColors.Surface),
+                border = BorderStroke(
+                    width = 1.dp,
+                    color = if (activeListTab == 1) PS5ThemeColors.AccentCyan else PS5ThemeColors.BorderColor
+                )
+            ) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column {
-                            Text(activeProcess!!.name, fontWeight = FontWeight.Bold, color = PS5ThemeColors.TextMain)
-                            Text("PID: ${activeProcess!!.pid}", fontSize = 12.sp, color = PS5ThemeColors.TextMuted)
-                            if (activeProcessInfo != null) {
-                                Text("TitleID: ${activeProcessInfo!!.titleId}", fontSize = 12.sp, color = PS5ThemeColors.TextMuted)
+                        Text("Memory Target", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = if (activeListTab == 1) PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted)
+                        if (activeMap != null) {
+                            IconButton(
+                                onClick = onNavigateToHex,
+                                modifier = Modifier.size(24.dp)
+                            ) {
+                                Icon(Icons.Default.Visibility, contentDescription = "View hex", tint = PS5ThemeColors.AccentCyan, modifier = Modifier.size(16.dp))
                             }
                         }
-                        IconButton(onClick = onSelectProcessClick) {
-                            Icon(Icons.Default.Edit, contentDescription = "Change process", tint = PS5ThemeColors.AccentCyan)
-                        }
+                    }
+                    if (activeMap == null) {
+                        Text("No region selected.", color = PS5ThemeColors.TextMuted, fontSize = 12.sp)
+                    } else {
+                        Text(activeMap.name.ifEmpty { "unnamed" }, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = PS5ThemeColors.TextMain)
+                        Text(
+                            text = String.format("0x%X - 0x%X", activeMap.start, activeMap.end),
+                            fontSize = 10.sp,
+                            color = PS5ThemeColors.TextMuted
+                        )
                     }
                 }
             }
         }
 
-        // Active Memory Region Card
-        if (activeProcess != null) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = PS5ThemeColors.Surface),
-                border = BorderStroke(1.dp, PS5ThemeColors.BorderColor)
-            ) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("Memory Region Target", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = PS5ThemeColors.AccentCyan)
-                    
-                    if (activeMap == null) {
-                        Text("No memory region selected.", color = PS5ThemeColors.TextMuted, fontSize = 13.sp)
-                        Button(
-                            onClick = onSelectRegionClick,
-                            colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.AccentCyan),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("Select Memory Region", color = Color.Black)
-                        }
-                    } else {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column {
-                                Text(activeMap.name.ifEmpty { "unnamed" }, fontWeight = FontWeight.Bold, color = PS5ThemeColors.TextMain)
-                                Text(
-                                    text = String.format("0x%X - 0x%X", activeMap.start, activeMap.end),
-                                    fontSize = 11.sp,
-                                    color = PS5ThemeColors.TextMuted
-                                )
-                                Text(
-                                    text = String.format("Size: %.2f MB  |  Prot: %s", activeMap.size.toDouble() / (1024 * 1024), activeMap.getProtString()),
-                                    fontSize = 11.sp,
-                                    color = PS5ThemeColors.AccentCyan
-                                )
+        // Inline Lists
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth().weight(1f)) {
+            val isWide = maxWidth >= 600.dp
+            if (isWide) {
+                Row(
+                    modifier = Modifier.fillMaxSize(),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                        MobileProcessSelector(onProcessSelected = { activeListTab = 1 })
+                    }
+                    Box(modifier = Modifier.weight(1.3f).fillMaxHeight()) {
+                        if (activeProcess != null) {
+                            MobileRegionSelector(
+                                activeMap = activeMap,
+                                onMapSelected = onMapSelected
+                            )
+                        } else {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(PS5ThemeColors.Surface, shape = RoundedCornerShape(10.dp))
+                                    .border(1.dp, PS5ThemeColors.BorderColor, shape = RoundedCornerShape(10.dp)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("Select a process to view memory regions", color = PS5ThemeColors.TextMuted, fontSize = 13.sp)
                             }
-                            Row {
-                                IconButton(onClick = onSelectRegionClick) {
-                                    Icon(Icons.Default.Edit, contentDescription = "Change region", tint = PS5ThemeColors.AccentCyan)
-                                }
-                                IconButton(onClick = onNavigateToHex) {
-                                    Icon(Icons.Default.Visibility, contentDescription = "View hex", tint = PS5ThemeColors.AccentCyan)
-                                }
+                        }
+                    }
+                }
+            } else {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    if (activeListTab == 0) {
+                        MobileProcessSelector(onProcessSelected = { activeListTab = 1 })
+                    } else {
+                        if (activeProcess != null) {
+                            MobileRegionSelector(
+                                activeMap = activeMap,
+                                onMapSelected = onMapSelected
+                            )
+                        } else {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(PS5ThemeColors.Surface, shape = RoundedCornerShape(10.dp))
+                                    .border(1.dp, PS5ThemeColors.BorderColor, shape = RoundedCornerShape(10.dp)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("Select a process to view memory regions", color = PS5ThemeColors.TextMuted, fontSize = 13.sp)
                             }
                         }
                     }
@@ -524,7 +569,9 @@ fun MobileProcessSelector(
 ) {
     val coroutineScope = rememberCoroutineScope()
     val processes by AppContainer.debuggerUseCase.processes.collectAsState()
+    val activeProcess by AppContainer.debuggerUseCase.activeProcess.collectAsState()
     var searchText by remember { mutableStateOf("") }
+    var clickedProcPid by remember { mutableStateOf<Int?>(null) }
 
     Column(modifier = Modifier.fillMaxSize()) {
         OutlinedTextField(
@@ -549,18 +596,28 @@ fun MobileProcessSelector(
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             items(filtered) { proc ->
+                val isSelected = activeProcess?.pid == proc.pid
+                val isClicked = clickedProcPid == proc.pid
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable {
-                            coroutineScope.launch {
-                                AppContainer.debuggerUseCase.selectProcess(proc)
-                                onProcessSelected(proc)
+                            if (!isSelected && clickedProcPid == null) {
+                                clickedProcPid = proc.pid
+                                coroutineScope.launch {
+                                    kotlinx.coroutines.delay(200)
+                                    AppContainer.debuggerUseCase.selectProcess(proc)
+                                    onProcessSelected(proc)
+                                    clickedProcPid = null
+                                }
                             }
                         },
                     shape = RoundedCornerShape(10.dp),
-                    color = PS5ThemeColors.Surface,
-                    border = BorderStroke(1.dp, PS5ThemeColors.BorderColor)
+                    color = if (isSelected || isClicked) PS5ThemeColors.AccentCyan.copy(alpha = 0.12f) else PS5ThemeColors.Surface,
+                    border = BorderStroke(
+                        width = 1.dp,
+                        color = if (isSelected || isClicked) PS5ThemeColors.AccentCyan else PS5ThemeColors.BorderColor
+                    )
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp).fillMaxWidth(),
@@ -571,10 +628,15 @@ fun MobileProcessSelector(
                             Icon(
                                 imageVector = Icons.Default.Code,
                                 contentDescription = null,
-                                tint = PS5ThemeColors.AccentCyan,
+                                tint = if (isSelected || isClicked) PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
                                 modifier = Modifier.size(16.dp)
                             )
-                            Text(proc.name, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = PS5ThemeColors.TextMain)
+                            Text(
+                                proc.name,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = if (isSelected || isClicked) PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMain
+                            )
                         }
                         Surface(
                             shape = RoundedCornerShape(6.dp),
@@ -603,6 +665,8 @@ fun MobileRegionSelector(
 ) {
     val maps by AppContainer.debuggerUseCase.vmMaps.collectAsState()
     var searchText by remember { mutableStateOf("") }
+    var clickedMapId by remember { mutableStateOf<Long?>(null) }
+    val coroutineScope = rememberCoroutineScope()
 
     Column(modifier = Modifier.fillMaxSize()) {
         OutlinedTextField(
@@ -628,15 +692,25 @@ fun MobileRegionSelector(
         ) {
             items(filtered) { map ->
                 val isSelected = activeMap?.start == map.start
+                val isClicked = clickedMapId == map.start
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { onMapSelected(map) },
+                        .clickable {
+                            if (clickedMapId == null) {
+                                clickedMapId = map.start
+                                coroutineScope.launch {
+                                    kotlinx.coroutines.delay(250)
+                                    onMapSelected(map)
+                                    clickedMapId = null
+                                }
+                            }
+                        },
                     shape = RoundedCornerShape(10.dp),
-                    color = if (isSelected) PS5ThemeColors.AccentCyan.copy(alpha = 0.12f) else PS5ThemeColors.Surface,
+                    color = if (isSelected || isClicked) PS5ThemeColors.AccentCyan.copy(alpha = 0.12f) else PS5ThemeColors.Surface,
                     border = BorderStroke(
                         width = 1.dp,
-                        color = if (isSelected) PS5ThemeColors.AccentCyan else PS5ThemeColors.BorderColor
+                        color = if (isSelected || isClicked) PS5ThemeColors.AccentCyan else PS5ThemeColors.BorderColor
                     )
                 ) {
                     Column(modifier = Modifier.padding(12.dp)) {
@@ -645,7 +719,7 @@ fun MobileRegionSelector(
                                 text = map.name.ifEmpty { "unnamed region" },
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 12.sp,
-                                color = if (isSelected) PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMain
+                                color = if (isSelected || isClicked) PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMain
                             )
                             Surface(
                                 shape = RoundedCornerShape(4.dp),
