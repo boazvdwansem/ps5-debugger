@@ -2,6 +2,7 @@ package com.osr.ps5debugger.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -14,6 +15,28 @@ import androidx.compose.ui.unit.sp
 import com.osr.ps5debugger.protocol.Ps5VmMapEntry
 import com.osr.ps5debugger.service.DebuggerService
 import kotlinx.coroutines.launch
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.border
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.automirrored.filled.ExitToApp
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Build
+import androidx.compose.material3.TooltipBox
+import androidx.compose.material3.TooltipDefaults
+import androidx.compose.material3.PlainTooltip
+import androidx.compose.material3.rememberTooltipState
 
 @Composable
 fun MainView() {
@@ -23,8 +46,9 @@ fun MainView() {
     
     val isConnected by DebuggerService.isConnected.collectAsState()
     var isConsoleVisible by remember { mutableStateOf(true) }
+    var isSidebarVisible by remember { mutableStateOf(true) }
     val coroutineScope = rememberCoroutineScope()
-    val tabs = listOf("Memory Hex Viewer", "Memory Search", "Watch List", "Memory Dumper")
+    val tabs = listOf("Memory Viewer", "Memory Search", "Watch List", "Memory Dumper")
     
     LaunchedEffect(isConnected) {
         if (isConnected) {
@@ -61,15 +85,25 @@ fun MainView() {
                             Spacer(modifier = Modifier.weight(1f))
 
                             // Disconnect button
-                            Button(
-                                onClick = {
-                                    coroutineScope.launch {
-                                        DebuggerService.disconnect()
-                                    }
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.StatusRed)
-                            ) {
-                                Text("Disconnect", color = Color.White, fontSize = 12.sp)
+                            Tooltip("Disconnect") {
+                                Button(
+                                    onClick = {
+                                        coroutineScope.launch {
+                                            DebuggerService.disconnect()
+                                        }
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.StatusRed),
+                                    contentPadding = PaddingValues(0.dp),
+                                    modifier = Modifier.size(36.dp),
+                                    shape = RoundedCornerShape(4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.ExitToApp,
+                                        contentDescription = "Disconnect",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
                             }
                         }
 
@@ -77,32 +111,87 @@ fun MainView() {
 
                         // Middle split area
                         Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
-                            // Left processes and discovery bar
-                            ProcessManager(
-                                onMapSelected = {
-                                    activeMap = it
-                                    selectedTab = 0 // Auto switch to hex viewer tab when map region is clicked
-                                },
-                                activeMap = activeMap
-                            )
+                            AnimatedVisibility(
+                                visible = isSidebarVisible,
+                                enter = slideInHorizontally(
+                                    initialOffsetX = { -it },
+                                    animationSpec = tween(durationMillis = 200)
+                                ) + fadeIn(animationSpec = tween(durationMillis = 200)),
+                                exit = slideOutHorizontally(
+                                    targetOffsetX = { -it },
+                                    animationSpec = tween(durationMillis = 200)
+                                ) + fadeOut(animationSpec = tween(durationMillis = 200))
+                            ) {
+                                Row(modifier = Modifier.fillMaxHeight()) {
+                                    // Left processes and discovery bar
+                                    ProcessManager(
+                                        onMapSelected = {
+                                            activeMap = it
+                                            selectedTab = 0 // Auto switch to hex viewer tab when map region is clicked
+                                        },
+                                        activeMap = activeMap,
+                                        onCollapse = { isSidebarVisible = false }
+                                    )
 
-                            VerticalDivider(modifier = Modifier.fillMaxHeight().width(1.dp), color = PS5ThemeColors.BorderColor)
+                                    VerticalDivider(modifier = Modifier.fillMaxHeight().width(1.dp), color = PS5ThemeColors.BorderColor)
+                                }
+                            }
+
+                            if (!isSidebarVisible) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxHeight()
+                                        .width(28.dp)
+                                        .background(PS5ThemeColors.SecondaryBg)
+                                        .clickable { isSidebarVisible = true },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    val density = LocalDensity.current.density
+                                    Canvas(modifier = Modifier.size(24.dp)) {
+                                        val tintColor = PS5ThemeColors.AccentCyan
+                                        val path = androidx.compose.ui.graphics.Path().apply {
+                                            moveTo(9f * density, 6f * density)
+                                            lineTo(15f * density, 12f * density)
+                                            lineTo(9f * density, 18f * density)
+                                        }
+                                        drawPath(
+                                            path = path,
+                                            color = tintColor,
+                                            style = Stroke(width = 2f * density, cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round)
+                                        )
+                                    }
+                                }
+                                VerticalDivider(modifier = Modifier.fillMaxHeight().width(1.dp), color = PS5ThemeColors.BorderColor)
+                            }
 
                             // Right main controls area
                             Column(modifier = Modifier.fillMaxHeight().weight(1f)) {
                                 // Tabs selector
-                                TabRow(
-                                    selectedTabIndex = selectedTab,
-                                    containerColor = MaterialTheme.colorScheme.surface
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(36.dp)
+                                        .background(PS5ThemeColors.SecondaryBg)
+                                        .padding(horizontal = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
                                     tabs.forEachIndexed { index, title ->
-                                        Tab(
-                                            selected = selectedTab == index,
-                                            onClick = { selectedTab = index },
-                                            text = { Text(title) }
+                                        val icon = when (index) {
+                                            0 -> Icons.AutoMirrored.Filled.List
+                                            1 -> Icons.Default.Search
+                                            2 -> Icons.Default.Star
+                                            else -> Icons.Default.Build
+                                        }
+                                        TabItem(
+                                            title = title,
+                                            icon = icon,
+                                            isSelected = selectedTab == index,
+                                            onClick = { selectedTab = index }
                                         )
                                     }
                                 }
+                                HorizontalDivider(color = PS5ThemeColors.BorderColor)
 
                                 // Tab content
                                 Box(modifier = Modifier.fillMaxWidth().weight(1f).background(MaterialTheme.colorScheme.surface.copy(alpha = 0.5f))) {
@@ -123,15 +212,30 @@ fun MainView() {
                             }
                         }
 
-                        if (isConsoleVisible) {
-                            HorizontalDivider(color = PS5ThemeColors.BorderColor)
+                        AnimatedVisibility(
+                            visible = isConsoleVisible,
+                            enter = slideInVertically(
+                                initialOffsetY = { it },
+                                animationSpec = tween(durationMillis = 200)
+                            ) + fadeIn(animationSpec = tween(durationMillis = 200)),
+                            exit = slideOutVertically(
+                                targetOffsetY = { it },
+                                animationSpec = tween(durationMillis = 200)
+                            ) + fadeOut(animationSpec = tween(durationMillis = 200))
+                        ) {
+                            Column {
+                                HorizontalDivider(color = PS5ThemeColors.BorderColor)
 
-                            // Bottom Console Log panel
-                            Box {
-                                LoggerConsole(modifier = Modifier.padding(top = 4.dp))
-                                ConsoleToggleButton(
-                                    onClick = { isConsoleVisible = false },
-                                    modifier = Modifier.align(Alignment.TopEnd).padding(top = 8.dp, end = 12.dp)
+                                // Bottom Console Log panel
+                                LoggerConsole(
+                                    modifier = Modifier.padding(top = 4.dp),
+                                    actionButton = {
+                                        ConsoleToggleButton(
+                                            onClick = { isConsoleVisible = false },
+                                            isLarge = false,
+                                            modifier = Modifier.padding(end = 4.dp)
+                                        )
+                                    }
                                 )
                             }
                         }
@@ -152,22 +256,26 @@ fun MainView() {
 @Composable
 private fun ConsoleToggleButton(
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isLarge: Boolean = true
 ) {
+    val size = if (isLarge) 64.dp else 32.dp
     Button(
         onClick = onClick,
-        modifier = modifier.size(64.dp),
+        modifier = modifier.size(size),
         shape = MaterialTheme.shapes.small,
         contentPadding = PaddingValues(0.dp),
         colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.SecondaryBg)
     ) {
         Column(
-            modifier = Modifier.fillMaxSize().padding(vertical = 7.dp),
+            modifier = Modifier.fillMaxSize().padding(vertical = if (isLarge) 7.dp else 2.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
             val iconColor = PS5ThemeColors.AccentCyan
-            Canvas(modifier = Modifier.size(width = 24.dp, height = 18.dp)) {
+            val width = if (isLarge) 24.dp else 16.dp
+            val height = if (isLarge) 18.dp else 12.dp
+            Canvas(modifier = Modifier.size(width = width, height = height)) {
                 drawRoundRect(
                     color = iconColor,
                     style = Stroke(width = 2f),
@@ -175,25 +283,68 @@ private fun ConsoleToggleButton(
                 )
                 drawLine(
                     color = iconColor,
-                    start = androidx.compose.ui.geometry.Offset(6f, 7f),
-                    end = androidx.compose.ui.geometry.Offset(10f, 10f),
+                    start = androidx.compose.ui.geometry.Offset(if (isLarge) 6f else 4f, if (isLarge) 7f else 4.5f),
+                    end = androidx.compose.ui.geometry.Offset(if (isLarge) 10f else 7f, if (isLarge) 10f else 6.5f),
                     strokeWidth = 2f
                 )
                 drawLine(
                     color = iconColor,
-                    start = androidx.compose.ui.geometry.Offset(10f, 10f),
-                    end = androidx.compose.ui.geometry.Offset(6f, 13f),
+                    start = androidx.compose.ui.geometry.Offset(if (isLarge) 10f else 7f, if (isLarge) 10f else 6.5f),
+                    end = androidx.compose.ui.geometry.Offset(if (isLarge) 6f else 4f, if (isLarge) 13f else 8.5f),
                     strokeWidth = 2f
                 )
                 drawLine(
                     color = iconColor,
-                    start = androidx.compose.ui.geometry.Offset(14f, 13f),
-                    end = androidx.compose.ui.geometry.Offset(19f, 13f),
+                    start = androidx.compose.ui.geometry.Offset(if (isLarge) 14f else 9.5f, if (isLarge) 13f else 8.5f),
+                    end = androidx.compose.ui.geometry.Offset(if (isLarge) 19f else 13f, if (isLarge) 13f else 8.5f),
                     strokeWidth = 2f
                 )
             }
-            Spacer(Modifier.height(3.dp))
-            Text("Console", color = PS5ThemeColors.TextMain, fontSize = 10.sp, maxLines = 1)
+            if (isLarge) {
+                Spacer(Modifier.height(3.dp))
+                Text("Console", color = PS5ThemeColors.TextMain, fontSize = 10.sp, maxLines = 1)
+            }
+        }
+    }
+}
+
+@Composable
+private fun TabItem(
+    title: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val backgroundColor = if (isSelected) PS5ThemeColors.Surface else Color.Transparent
+    val contentColor = if (isSelected) PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted
+    val borderColor = if (isSelected) PS5ThemeColors.BorderColor else Color.Transparent
+    
+    Box(
+        modifier = modifier
+            .height(28.dp)
+            .background(backgroundColor, RoundedCornerShape(4.dp))
+            .border(1.dp, borderColor, RoundedCornerShape(4.dp))
+            .clickable { onClick() }
+            .padding(horizontal = 10.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = contentColor,
+                modifier = Modifier.size(14.dp)
+            )
+            Text(
+                text = title,
+                color = contentColor,
+                fontSize = 11.sp,
+                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+            )
         }
     }
 }

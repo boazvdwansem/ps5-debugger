@@ -1,5 +1,6 @@
 package com.osr.ps5debugger.ui
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -16,6 +17,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -31,7 +34,8 @@ import kotlinx.coroutines.launch
 fun ProcessManager(
     onMapSelected: (Ps5VmMapEntry) -> Unit,
     activeMap: Ps5VmMapEntry?,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onCollapse: (() -> Unit)? = null
 ) {
     val coroutineScope = rememberCoroutineScope()
     val processes by DebuggerService.processes.collectAsState()
@@ -71,10 +75,30 @@ fun ProcessManager(
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text("Processes", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            IconButton(onClick = {
-                coroutineScope.launch { DebuggerService.refreshProcesses() }
-            }) {
-                Icon(Icons.Default.Refresh, contentDescription = "Refresh processes")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = {
+                    coroutineScope.launch { DebuggerService.refreshProcesses() }
+                }) {
+                    Icon(Icons.Default.Refresh, contentDescription = "Refresh processes")
+                }
+                if (onCollapse != null) {
+                    val density = LocalDensity.current.density
+                    IconButton(onClick = onCollapse) {
+                        Canvas(modifier = Modifier.size(24.dp)) {
+                            val tintColor = PS5ThemeColors.AccentCyan
+                            val path = androidx.compose.ui.graphics.Path().apply {
+                                moveTo(15f * density, 6f * density)
+                                lineTo(9f * density, 12f * density)
+                                lineTo(15f * density, 18f * density)
+                            }
+                            drawPath(
+                                path = path,
+                                color = tintColor,
+                                style = Stroke(width = 2f * density, cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round)
+                            )
+                        }
+                    }
+                }
             }
         }
 

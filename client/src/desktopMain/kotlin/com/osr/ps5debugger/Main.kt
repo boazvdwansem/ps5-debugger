@@ -33,6 +33,8 @@ import androidx.compose.ui.window.rememberWindowState
 import com.osr.ps5debugger.ui.MainView
 import com.osr.ps5debugger.ui.PS5ThemeColors
 import com.osr.ps5debugger.ui.Ps5DebuggerTheme
+import com.osr.ps5debugger.service.DebuggerService
+import androidx.compose.runtime.collectAsState
 import java.awt.MouseInfo
 import java.awt.Rectangle
 import java.awt.Toolkit
@@ -251,6 +253,9 @@ private fun WindowScope.CustomTitleBar(
     onRestoreForDrag: () -> Unit,
     onClose: () -> Unit
 ) {
+    val isConnected by DebuggerService.isConnected.collectAsState()
+    val dotColor = if (isConnected) PS5ThemeColors.AccentCyan else PS5ThemeColors.StatusRed
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -269,8 +274,8 @@ private fun WindowScope.CustomTitleBar(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Canvas(modifier = Modifier.size(18.dp)) {
-                    drawCircle(color = PS5ThemeColors.AccentCyan.copy(alpha = 0.18f), radius = size.minDimension / 2f)
-                    drawCircle(color = PS5ThemeColors.AccentCyan, radius = size.minDimension / 4.5f)
+                    drawCircle(color = dotColor.copy(alpha = 0.18f), radius = size.minDimension / 2f)
+                    drawCircle(color = dotColor, radius = size.minDimension / 4.5f)
                 }
                 Spacer(Modifier.width(10.dp))
                 Text(

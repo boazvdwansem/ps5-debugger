@@ -27,3 +27,6 @@ Thumbs.db
 /client/.kotlin
 /client/.gradle
 /client/build
+
+/.agents/
+/.idea

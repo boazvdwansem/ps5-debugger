@@ -95,9 +95,29 @@ object DebuggerService {
         }
     }
 
+    private val lastLogFile = java.io.File("last_log.txt")
+    private val prevLogFile = java.io.File("prev_log.txt")
+
     fun log(tag: String, message: String, level: LogEntry.Level = LogEntry.Level.DEBUG) {
         val entry = LogEntry(tag = tag, message = message, level = level)
-        _logs.update { (it + entry).takeLast(1000) }
+        _logs.update { it + entry }
+
+        try {
+            val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.getDefault())
+            val logText = "[${dateFormat.format(java.util.Date(entry.timestamp))}] [$tag] [${level.name}] $message"
+            
+            if (lastLogFile.exists()) {
+                if (prevLogFile.exists()) {
+                    prevLogFile.delete()
+                }
+                lastLogFile.renameTo(prevLogFile)
+            }
+            lastLogFile.writeText(logText)
+        } catch (_: Exception) {}
+    }
+
+    fun clearLogs() {
+        _logs.value = emptyList()
     }
 
     suspend fun connect(ip: String): Boolean {

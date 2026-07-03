@@ -31,10 +31,17 @@ private val ModernDarkColorScheme = darkColorScheme(
     secondary = PS5ThemeColors.SecondaryBg,
     background = PS5ThemeColors.DarkBg,
     surface = PS5ThemeColors.Surface,
+    surfaceVariant = PS5ThemeColors.Surface,
+    surfaceContainer = PS5ThemeColors.Surface,
+    surfaceContainerLow = PS5ThemeColors.Surface,
+    surfaceContainerHigh = PS5ThemeColors.SecondaryBg,
+    surfaceContainerLowest = PS5ThemeColors.DarkBg,
+    surfaceContainerHighest = PS5ThemeColors.SecondaryBg,
     onPrimary = Color.Black,
     onSecondary = PS5ThemeColors.TextMain,
     onBackground = PS5ThemeColors.TextMain,
     onSurface = PS5ThemeColors.TextMain,
+    onSurfaceVariant = PS5ThemeColors.TextMain,
     error = PS5ThemeColors.StatusRed,
     onError = Color.White
 )
