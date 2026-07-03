@@ -6,6 +6,8 @@ This is a graphical user interface for interacting with the debugger payload.
 Note that this application is under active development, and has only been 
 tested on Windows and firmware 11.60.
 
+This app is a GUI built around the ps5debug payload from OpenSourcereR, all credits go to them.
+
 If any issues arise please open an issue.
 
 ### Features
