@@ -6,10 +6,6 @@ on:
       - master
   workflow_dispatch:
 
-defaults:
-  run:
-    working-directory: client
-
 jobs:
   build:
     name: Build on ${{ matrix.os }}
@@ -22,6 +18,10 @@ jobs:
           - windows-latest
           - ubuntu-latest
           - macos-latest
+
+    defaults:
+      run:
+        working-directory: client
 
     steps:
       - name: Checkout
@@ -46,8 +46,23 @@ jobs:
         if: runner.os != 'Windows'
         run: ./gradlew packageDistributionForCurrentOS
 
-      - name: Upload artifacts
+      - name: Upload MSI (Windows)
+        if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: desktop-${{ runner.os }}
-          path: client/build/compose/binaries/**
+          name: desktop-windows
+          path: client/build/compose/binaries/main/msi/*.msi
+
+      - name: Upload DEB (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-linux
+          path: client/build/compose/binaries/main/deb/*.deb
+
+      - name: Upload DMG (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-macos
+          path: client/build/compose/binaries/main/dmg/*.dmg
