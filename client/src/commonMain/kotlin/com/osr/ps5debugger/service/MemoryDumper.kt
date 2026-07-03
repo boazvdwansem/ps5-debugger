@@ -22,6 +22,7 @@ object MemoryDumper {
         onProgress: (currentRegion: String, progress: Float) -> Unit
     ): Result<Unit> = withContext(Dispatchers.IO) {
         try {
+            println("MemoryDumper: Starting dump of ${regions.size} regions for PID $pid to ${outputDir.absolutePath}")
             if (!outputDir.exists()) {
                 outputDir.mkdirs()
             }
@@ -62,9 +63,12 @@ object MemoryDumper {
                 }
             }
             useCase.log("DUMPER", "Successfully dumped all selected regions to ${outputDir.absolutePath}", LogEntry.Level.INFO)
+            println("MemoryDumper: Successfully finished dump.")
             Result.success(Unit)
         } catch (e: Exception) {
             useCase.log("DUMPER", "Dump failed: ${e.message}", LogEntry.Level.ERROR)
+            println("MemoryDumper: Dump failed with error: ${e.message}")
+            e.printStackTrace()
             Result.failure(e)
         }
     }

@@ -13,6 +13,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.osr.ps5debugger.network.Ps5Discovery
 import com.osr.ps5debugger.di.AppContainer
+import com.osr.ps5debugger.PS5ThemeColors
 import kotlinx.coroutines.launch
 
 @Composable

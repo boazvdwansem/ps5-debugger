@@ -6,14 +6,13 @@ val libs: VersionCatalog = extensions.getByType(VersionCatalogsExtension::class.
 
 plugins {
     kotlin("multiplatform") version "2.4.0"
-    id("org.jetbrains.compose") version "1.12.0-beta01"
+    id("org.jetbrains.compose") version "1.6.11"
     id("org.jetbrains.kotlin.plugin.compose") version "2.4.0"
+    id("com.android.application") version "8.5.2"
 }
 
 group = "com.osr.ps5debugger"
 version = "1.0.0"
-
-
 
 kotlin {
     jvmToolchain(21)
@@ -21,6 +20,21 @@ kotlin {
     jvm("desktop") {
         compilerOptions {
             jvmTarget.set(JvmTarget.JVM_21)
+        }
+        compilations.create("mobile") {
+            defaultSourceSet {
+                dependencies {
+                    implementation(project.dependencies.extensions.getByType(org.jetbrains.compose.ComposePlugin.Dependencies::class.java).desktop.currentOs)
+                    implementation(libs.findLibrary("compose.ui").get())
+                    implementation(libs.findLibrary("compose.runtime").get())
+                }
+            }
+        }
+    }
+
+    androidTarget {
+        compilerOptions {
+            jvmTarget.set(JvmTarget.JVM_17) // Use JVM 17 compile target for Android devices
         }
     }
 
@@ -44,11 +58,37 @@ kotlin {
             }
         }
 
+        val androidMain by getting {
+            dependencies {
+                implementation(libs.findLibrary("androidx-activity-compose").get())
+                implementation(libs.findLibrary("compose.ui").get())
+                implementation(libs.findLibrary("compose.runtime").get())
+            }
+        }
+
         getByName("commonTest") {
             dependencies {
                 implementation(kotlin("test"))
             }
         }
+    }
+}
+
+android {
+    namespace = "com.osr.ps5debugger"
+    compileSdk = 34
+
+    defaultConfig {
+        applicationId = "com.osr.ps5debugger"
+        minSdk = 26
+        targetSdk = 34
+        versionCode = 1
+        versionName = "1.0.0"
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
 }
 

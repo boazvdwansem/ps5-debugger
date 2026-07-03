@@ -1,4 +1,4 @@
-package com.osr.ps5debugger.ui
+package com.osr.ps5debugger
 
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.*

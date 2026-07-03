@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.sp
 import com.osr.ps5debugger.domain.model.Process
 import com.osr.ps5debugger.domain.model.MemoryRange
 import com.osr.ps5debugger.di.AppContainer
+import com.osr.ps5debugger.PS5ThemeColors
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)

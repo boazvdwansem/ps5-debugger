@@ -15,13 +15,17 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.TextStyle
 import com.osr.ps5debugger.domain.model.MemoryRange
 import com.osr.ps5debugger.di.AppContainer
 import com.osr.ps5debugger.service.MemoryDumper
+import com.osr.ps5debugger.PS5ThemeColors
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
-import java.io.File
 import javax.swing.JFileChooser
+import javax.swing.SwingUtilities
+import java.awt.Frame
+import java.io.File
 
 @Composable
 fun MemoryDumperView(modifier: Modifier = Modifier) {
@@ -39,9 +43,7 @@ fun MemoryDumperView(modifier: Modifier = Modifier) {
     var dumpProgress by remember { mutableStateOf(0f) }
     var dumpJob by remember { mutableStateOf<Job?>(null) }
     
-    LaunchedEffect(maps) {
-        selectedMaps.clear()
-    }
+    var outputDirPath by remember { mutableStateOf((System.getProperty("user.home") ?: "") + java.io.File.separator + "ps5_dumps") }
 
     Column(modifier = modifier.fillMaxSize().padding(16.dp)) {
         Text(
@@ -87,38 +89,51 @@ fun MemoryDumperView(modifier: Modifier = Modifier) {
                     Text("Clear Selection", color = PS5ThemeColors.TextMain)
                 }
                 
-                Spacer(Modifier.weight(1f))
+                OutlinedTextField(
+                    value = outputDirPath,
+                    onValueChange = { outputDirPath = it },
+                    label = { Text("Destination Folder") },
+                    textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = PS5ThemeColors.AccentCyan,
+                        unfocusedBorderColor = PS5ThemeColors.BorderColor,
+                        focusedLabelColor = PS5ThemeColors.AccentCyan,
+                        unfocusedLabelColor = PS5ThemeColors.TextMuted
+                    )
+                )
                 
                 val targets = maps.filter { selectedMaps[it.start] == true }
                 
                 Button(
                     onClick = {
-                        val chooser = JFileChooser().apply {
-                            fileSelectionMode = JFileChooser.DIRECTORIES_ONLY
-                            dialogTitle = "Select Destination Folder for Memory Dumps"
+                        val outputDir = File(outputDirPath)
+                        println("Dump button clicked! Target regions count: ${targets.size}, outputDir: ${outputDir.absolutePath}")
+                        if (!outputDir.exists()) {
+                            val created = outputDir.mkdirs()
+                            println("Created output directory: $created")
                         }
-                        val result = chooser.showOpenDialog(null)
-                        if (result == JFileChooser.APPROVE_OPTION && chooser.selectedFile != null) {
-                            val outputDir = chooser.selectedFile
-                            isDumping = true
-                            dumpProgress = 0f
-                            dumpJob = coroutineScope.launch {
-                                 MemoryDumper.dumpRegions(
-                                     pid = activeProcess!!.pid,
-                                     regions = targets,
-                                     outputDir = outputDir,
-                                     clientPort = AppContainer.clientAdapter,
-                                     useCase = AppContainer.debuggerUseCase,
-                                     onProgress = { regionName, progress ->
-                                         currentDumpRegionName = regionName
-                                         dumpProgress = progress
-                                     }
-                                 )
-                                isDumping = false
-                            }
+                        isDumping = true
+                        dumpProgress = 0f
+                        dumpJob = coroutineScope.launch {
+                             println("Launching dump coroutine...")
+                             MemoryDumper.dumpRegions(
+                                 pid = activeProcess!!.pid,
+                                 regions = targets,
+                                 outputDir = outputDir,
+                                 clientPort = AppContainer.clientAdapter,
+                                 useCase = AppContainer.debuggerUseCase,
+                                 onProgress = { regionName, progress ->
+                                     currentDumpRegionName = regionName
+                                     dumpProgress = progress
+                                 }
+                             )
+                            isDumping = false
+                            println("Dump coroutine finished.")
                         }
                     },
-                    enabled = targets.isNotEmpty() && !isDumping,
+                    enabled = targets.isNotEmpty() && !isDumping && outputDirPath.isNotEmpty(),
                     colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.AccentCyan)
                 ) {
                     Text(if (isDumping) "Dumping..." else "Dump Selected (${targets.size})", color = Color.Black)

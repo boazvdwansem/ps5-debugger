@@ -52,7 +52,10 @@ object Ps5Discovery {
                     socket.receive(pack)
                     val incomingMagic = BinaryBuffer(pack.data).readInt()
                     if (incomingMagic == ProtocolConstants.BROADCAST_MAGIC) {
-                        discoveredIps.add(pack.address.hostAddress)
+                        val hostAddress = pack.address?.hostAddress
+                        if (hostAddress != null) {
+                            discoveredIps.add(hostAddress)
+                        }
                     }
                 } catch (_: java.io.InterruptedIOException) {
                     break // Timeout reached

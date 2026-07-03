@@ -31,8 +31,8 @@ import androidx.compose.ui.window.WindowScope
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import com.osr.ps5debugger.ui.MainView
-import com.osr.ps5debugger.ui.PS5ThemeColors
-import com.osr.ps5debugger.ui.Ps5DebuggerTheme
+import com.osr.ps5debugger.PS5ThemeColors
+import com.osr.ps5debugger.Ps5DebuggerTheme
 import com.osr.ps5debugger.di.AppContainer
 import androidx.compose.runtime.collectAsState
 import java.awt.MouseInfo

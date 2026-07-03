@@ -14,6 +14,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.osr.ps5debugger.di.AppContainer
 import com.osr.ps5debugger.domain.model.MemoryRange
+import com.osr.ps5debugger.PS5ThemeColors
+import com.osr.ps5debugger.Ps5DebuggerTheme
 import kotlinx.coroutines.launch
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically

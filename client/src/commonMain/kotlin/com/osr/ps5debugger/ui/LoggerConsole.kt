@@ -22,27 +22,16 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.TextRange
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.LocalContextMenuRepresentation
-import androidx.compose.foundation.ContextMenuState
-import androidx.compose.foundation.ContextMenuRepresentation
-import androidx.compose.foundation.ContextMenuItem
-import androidx.compose.ui.input.pointer.*
-import androidx.compose.ui.unit.DpOffset
 import com.osr.ps5debugger.di.AppContainer
+import com.osr.ps5debugger.PS5ThemeColors
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-val EmptyContextMenuRepresentation = object : ContextMenuRepresentation {
-    @Composable
-    override fun Representation(state: ContextMenuState, items: () -> List<ContextMenuItem>) {
-        // Do nothing to disable the default Swing selection context menu
-    }
-}
+// Context menu representation removed for Android multiplatform compatibility
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -57,8 +46,7 @@ fun LoggerConsole(
     val dateFormat = remember { SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()) }
     val scrollState = rememberScrollState()
 
-    var showContextMenu by remember { mutableStateOf(false) }
-    var contextMenuOffset by remember { mutableStateOf(DpOffset.Zero) }
+
 
     val filteredLogs = remember(logs, filterLevel, filterText) {
         logs.filter { entry ->
@@ -105,26 +93,15 @@ fun LoggerConsole(
         scrollState.animateScrollTo(scrollState.maxValue)
     }
 
-    // Get currently selected text range
-    val selectedText = remember(textFieldValue) {
-        val range = textFieldValue.selection
-        if (!range.collapsed && range.min >= 0 && range.max <= textFieldValue.text.length) {
-            textFieldValue.text.substring(range.min, range.max)
-        } else {
-            ""
-        }
-    }
 
-    CompositionLocalProvider(
-        LocalContextMenuRepresentation provides EmptyContextMenuRepresentation
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(220.dp)
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(8.dp)
     ) {
-        Column(
-            modifier = modifier
-                .fillMaxWidth()
-                .height(220.dp)
-                .background(MaterialTheme.colorScheme.surface)
-                .padding(8.dp)
-        ) {
             // Toolbar
             Row(
                 modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
@@ -176,18 +153,6 @@ fun LoggerConsole(
                     .fillMaxSize()
                     .background(Color.Black.copy(alpha = 0.4f))
                     .padding(4.dp)
-                    .pointerInput(Unit) {
-                        awaitPointerEventScope {
-                            while (true) {
-                                val event = awaitPointerEvent()
-                                val change = event.changes.first()
-                                if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed) {
-                                    contextMenuOffset = DpOffset(change.position.x.dp / density, change.position.y.dp / density)
-                                    showContextMenu = true
-                                }
-                            }
-                        }
-                    }
             ) {
                 BasicTextField(
                     value = textFieldValue,
@@ -198,45 +163,6 @@ fun LoggerConsole(
                         .fillMaxSize()
                         .verticalScroll(scrollState)
                 )
-
-                DropdownMenu(
-                    expanded = showContextMenu,
-                    onDismissRequest = { showContextMenu = false },
-                    offset = contextMenuOffset
-                ) {
-                    DropdownMenuItem(
-                        text = {
-                            Text(
-                                text = if (selectedText.isNotEmpty()) "Copy Selection" else "Copy All Logs",
-                                fontSize = 12.sp
-                            )
-                        },
-                        onClick = {
-                            if (selectedText.isNotEmpty()) {
-                                copyToClipboard(selectedText)
-                            } else {
-                                copyToClipboard(textFieldValue.text)
-                            }
-                            showContextMenu = false
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Select All", fontSize = 12.sp) },
-                        onClick = {
-                            textFieldValue = textFieldValue.copy(selection = TextRange(0, textFieldValue.text.length))
-                            showContextMenu = false
-                        }
-                    )
-                    HorizontalDivider(color = PS5ThemeColors.BorderColor)
-                    DropdownMenuItem(
-                        text = { Text("Clear Console Logs", fontSize = 12.sp) },
-                        onClick = {
-                            AppContainer.debuggerUseCase.clearLogs()
-                            showContextMenu = false
-                        }
-                    )
-                }
             }
         }
-    }
 }
