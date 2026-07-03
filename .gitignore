@@ -30,3 +30,5 @@ Thumbs.db
 
 /.agents/
 /.idea
+/client/last_log.txt
+/client/prev_log.txt

@@ -1,4 +1,16 @@
-# ps5debug-NG
+# ps5debug-NG GUI
+
+![Preview Image](./assets/preview.png)
+
+This is a graphical user interface for interacting with the debugger payload.
+Note that this application is under active development, and has only been 
+tested on Windows and firmware 11.60.
+
+If any issues arise please open an issue.
+
+### Known issues
+
+- Memory scanner might fail or crash the PS5, use with caution.
 
 A debugger payload for jailbroken PlayStation 5 consoles. Ships a userland
 command server that runs inside SceShellCore, letting remote clients inspect
