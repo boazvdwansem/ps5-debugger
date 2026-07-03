@@ -15,8 +15,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.osr.ps5debugger.protocol.Ps5VmMapEntry
-import com.osr.ps5debugger.service.DebuggerService
+import com.osr.ps5debugger.domain.model.MemoryRange
+import com.osr.ps5debugger.di.AppContainer
 import com.osr.ps5debugger.service.MemoryDumper
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -26,11 +26,11 @@ import javax.swing.JFileChooser
 @Composable
 fun MemoryDumperView(modifier: Modifier = Modifier) {
     val coroutineScope = rememberCoroutineScope()
-    val isConnected by DebuggerService.isConnected.collectAsState()
-    val activeProcess by DebuggerService.activeProcess.collectAsState()
+    val isConnected by AppContainer.debuggerUseCase.isConnected.collectAsState()
+    val activeProcess by AppContainer.debuggerUseCase.activeProcess.collectAsState()
     
-    var maps by remember { mutableStateOf<List<Ps5VmMapEntry>>(emptyList()) }
-    var isLoadingMaps by remember { mutableStateOf(false) }
+    val maps by AppContainer.debuggerUseCase.vmMaps.collectAsState()
+    val isLoadingMaps = false
     
     val selectedMaps = remember { mutableStateMapOf<Long, Boolean>() }
     
@@ -39,22 +39,8 @@ fun MemoryDumperView(modifier: Modifier = Modifier) {
     var dumpProgress by remember { mutableStateOf(0f) }
     var dumpJob by remember { mutableStateOf<Job?>(null) }
     
-    // Load maps when active process changes
-    LaunchedEffect(activeProcess, isConnected) {
-        if (isConnected && activeProcess != null) {
-            isLoadingMaps = true
-            try {
-                maps = DebuggerService.client.getMaps(activeProcess!!.pid)
-                selectedMaps.clear()
-            } catch (_: Exception) {
-                maps = emptyList()
-            } finally {
-                isLoadingMaps = false
-            }
-        } else {
-            maps = emptyList()
-            selectedMaps.clear()
-        }
+    LaunchedEffect(maps) {
+        selectedMaps.clear()
     }
 
     Column(modifier = modifier.fillMaxSize().padding(16.dp)) {
@@ -117,15 +103,17 @@ fun MemoryDumperView(modifier: Modifier = Modifier) {
                             isDumping = true
                             dumpProgress = 0f
                             dumpJob = coroutineScope.launch {
-                                MemoryDumper.dumpRegions(
-                                    pid = activeProcess!!.pid,
-                                    regions = targets,
-                                    outputDir = outputDir,
-                                    onProgress = { regionName, progress ->
-                                        currentDumpRegionName = regionName
-                                        dumpProgress = progress
-                                    }
-                                )
+                                 MemoryDumper.dumpRegions(
+                                     pid = activeProcess!!.pid,
+                                     regions = targets,
+                                     outputDir = outputDir,
+                                     clientPort = AppContainer.clientAdapter,
+                                     useCase = AppContainer.debuggerUseCase,
+                                     onProgress = { regionName, progress ->
+                                         currentDumpRegionName = regionName
+                                         dumpProgress = progress
+                                     }
+                                 )
                                 isDumping = false
                             }
                         }

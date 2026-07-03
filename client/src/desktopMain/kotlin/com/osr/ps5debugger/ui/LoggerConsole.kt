@@ -31,7 +31,7 @@ import androidx.compose.foundation.ContextMenuRepresentation
 import androidx.compose.foundation.ContextMenuItem
 import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.unit.DpOffset
-import com.osr.ps5debugger.service.DebuggerService
+import com.osr.ps5debugger.di.AppContainer
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -50,8 +50,8 @@ fun LoggerConsole(
     modifier: Modifier = Modifier,
     actionButton: @Composable (() -> Unit)? = null
 ) {
-    val logs by DebuggerService.logs.collectAsState()
-    var filterLevel by remember { mutableStateOf<DebuggerService.LogEntry.Level?>(null) }
+    val logs by AppContainer.debuggerUseCase.logs.collectAsState()
+    var filterLevel by remember { mutableStateOf<com.osr.ps5debugger.domain.model.LogEntry.Level?>(null) }
     var filterText by remember { mutableStateOf("") }
     
     val dateFormat = remember { SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()) }
@@ -72,11 +72,11 @@ fun LoggerConsole(
         buildAnnotatedString {
             filteredLogs.forEachIndexed { index, entry ->
                 val color = when (entry.level) {
-                    DebuggerService.LogEntry.Level.ERROR -> Color(0xFFE06C75) // red
-                    DebuggerService.LogEntry.Level.WARN -> Color(0xFFD19A66)  // orange
-                    DebuggerService.LogEntry.Level.INFO -> Color(0xFFABB2BF)  // white/gray
-                    DebuggerService.LogEntry.Level.DEBUG -> Color(0xFF5C6370) // gray
-                    DebuggerService.LogEntry.Level.PROTOCOL -> Color(0xFF98C379) // green
+                    com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR -> Color(0xFFE06C75) // red
+                    com.osr.ps5debugger.domain.model.LogEntry.Level.WARN -> Color(0xFFD19A66)  // orange
+                    com.osr.ps5debugger.domain.model.LogEntry.Level.INFO -> Color(0xFFABB2BF)  // white/gray
+                    com.osr.ps5debugger.domain.model.LogEntry.Level.DEBUG -> Color(0xFF5C6370) // gray
+                    com.osr.ps5debugger.domain.model.LogEntry.Level.PROTOCOL -> Color(0xFF98C379) // green
                 }
                 
                 withStyle(SpanStyle(color = Color.Gray)) {
@@ -155,7 +155,7 @@ fun LoggerConsole(
                 )
 
                 Row {
-                    DebuggerService.LogEntry.Level.values().forEach { level ->
+                    com.osr.ps5debugger.domain.model.LogEntry.Level.values().forEach { level ->
                         FilterChip(
                             selected = filterLevel == level,
                             onClick = { filterLevel = if (filterLevel == level) null else level },
@@ -231,7 +231,7 @@ fun LoggerConsole(
                     DropdownMenuItem(
                         text = { Text("Clear Console Logs", fontSize = 12.sp) },
                         onClick = {
-                            DebuggerService.clearLogs()
+                            AppContainer.debuggerUseCase.clearLogs()
                             showContextMenu = false
                         }
                     )

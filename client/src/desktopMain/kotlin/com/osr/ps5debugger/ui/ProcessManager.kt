@@ -23,49 +23,27 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.osr.ps5debugger.network.Ps5Discovery
-import com.osr.ps5debugger.protocol.Ps5Process
-import com.osr.ps5debugger.protocol.Ps5VmMapEntry
-import com.osr.ps5debugger.service.DebuggerService
+import com.osr.ps5debugger.domain.model.Process
+import com.osr.ps5debugger.domain.model.MemoryRange
+import com.osr.ps5debugger.di.AppContainer
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ProcessManager(
-    onMapSelected: (Ps5VmMapEntry) -> Unit,
-    activeMap: Ps5VmMapEntry?,
+    onMapSelected: (MemoryRange) -> Unit,
+    activeMap: MemoryRange?,
     modifier: Modifier = Modifier,
     onCollapse: (() -> Unit)? = null
 ) {
     val coroutineScope = rememberCoroutineScope()
-    val processes by DebuggerService.processes.collectAsState()
-    val activeProcess by DebuggerService.activeProcess.collectAsState()
-    val activeProcessInfo by DebuggerService.activeProcessInfo.collectAsState()
+    val processes by AppContainer.debuggerUseCase.processes.collectAsState()
+    val activeProcess by AppContainer.debuggerUseCase.activeProcess.collectAsState()
+    val activeProcessInfo by AppContainer.debuggerUseCase.activeProcessInfo.collectAsState()
     
     var processSearchText by remember { mutableStateOf("") }
-    
-    var maps by remember { mutableStateOf<List<Ps5VmMapEntry>>(emptyList()) }
-    var isLoadingMaps by remember { mutableStateOf(false) }
-
-    // Load maps when active process changes
-    LaunchedEffect(activeProcess) {
-        if (activeProcess != null) {
-            isLoadingMaps = true
-            try {
-                maps = DebuggerService.client.getMaps(activeProcess!!.pid)
-                DebuggerService.vmMaps.clear()
-                DebuggerService.vmMaps.addAll(maps)
-            } catch (_: Exception) {
-                maps = emptyList()
-                DebuggerService.vmMaps.clear()
-            } finally {
-                isLoadingMaps = false
-            }
-        } else {
-            maps = emptyList()
-            DebuggerService.vmMaps.clear()
-        }
-    }
+    val maps by AppContainer.debuggerUseCase.vmMaps.collectAsState()
+    val isLoadingMaps = false
 
     Column(modifier = modifier.fillMaxHeight().width(320.dp).background(PS5ThemeColors.DarkBg).padding(8.dp)) {
         // Process list header
@@ -77,7 +55,7 @@ fun ProcessManager(
             Text("Processes", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = {
-                    coroutineScope.launch { DebuggerService.refreshProcesses() }
+                    coroutineScope.launch { AppContainer.debuggerUseCase.refreshProcesses() }
                 }) {
                     Icon(Icons.Default.Refresh, contentDescription = "Refresh processes")
                 }
@@ -129,7 +107,7 @@ fun ProcessManager(
                         .fillMaxWidth()
                         .background(if (isSelected) PS5ThemeColors.AccentCyan.copy(alpha = 0.15f) else Color.Transparent)
                         .clickable {
-                            coroutineScope.launch { DebuggerService.selectProcess(proc) }
+                            coroutineScope.launch { AppContainer.debuggerUseCase.selectProcess(proc) }
                         }
                         .padding(8.dp),
                     horizontalArrangement = Arrangement.SpaceBetween

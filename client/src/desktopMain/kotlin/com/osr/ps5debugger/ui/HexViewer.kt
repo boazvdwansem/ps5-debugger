@@ -30,8 +30,8 @@ import androidx.compose.material3.TooltipBox
 import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.rememberTooltipState
-import com.osr.ps5debugger.protocol.Ps5VmMapEntry
-import com.osr.ps5debugger.service.DebuggerService
+import com.osr.ps5debugger.domain.model.MemoryRange
+import com.osr.ps5debugger.di.AppContainer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -62,14 +62,14 @@ fun getFromClipboard(): String {
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun HexViewer(
-    activeMap: Ps5VmMapEntry?,
+    activeMap: MemoryRange?,
     jumpToAddress: Long? = null,
     modifier: Modifier = Modifier
 ) {
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val coroutineScope = rememberCoroutineScope()
-        val client = DebuggerService.client
-        val pid = DebuggerService.activePid
+        val client = AppContainer.clientAdapter.client
+        val pid = AppContainer.debuggerUseCase.activeProcess.value?.pid
         
         var startAddress by remember { mutableStateOf(activeMap?.start ?: 0L) }
         var endAddress by remember { mutableStateOf(activeMap?.end ?: 0L) }
@@ -346,7 +346,7 @@ fun HexViewer(
                             val rowIdx = ((addr - startAddress) / bytesPerRow).toInt()
                             scrollPosition = rowIdx.toLong().coerceIn(0L, maxScrollPosition)
                         } else {
-                            DebuggerService.log("HEX", "Address out of range or invalid", DebuggerService.LogEntry.Level.WARN)
+                            AppContainer.debuggerUseCase.log("HEX", "Address out of range or invalid", com.osr.ps5debugger.domain.model.LogEntry.Level.WARN)
                         }
                     }
                 ) {
@@ -412,13 +412,13 @@ fun HexViewer(
                                     if (!ok) success = false
                                 }
                                 if (success) {
-                                    DebuggerService.log("HEX", "Successfully injected ${pendingEdits.size} bytes overwrites", DebuggerService.LogEntry.Level.INFO)
+                                    AppContainer.debuggerUseCase.log("HEX", "Successfully injected ${pendingEdits.size} bytes overwrites", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
                                     pendingEdits.keys.map { (it / pageSize) * pageSize }.distinct().forEach {
                                         memoryCache.remove(it)
                                     }
                                     pendingEdits.clear()
                                 } else {
-                                    DebuggerService.log("HEX", "Some byte write operations failed on wire", DebuggerService.LogEntry.Level.ERROR)
+                                    AppContainer.debuggerUseCase.log("HEX", "Some byte write operations failed on wire", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
                                 }
                             }
                         }
@@ -721,7 +721,7 @@ fun HexViewer(
                                     text = { Text("Add Address to Watchlist", fontSize = 12.sp) },
                                     onClick = {
                                         if (contextMenuAddr != null) {
-                                            DebuggerService.addToWatchlist(contextMenuAddr!!, type = "Int32", byteLength = 4)
+                                            AppContainer.debuggerUseCase.addToWatchlist(contextMenuAddr!!, type = "Int32", byteLength = 4)
                                         }
                                         showContextMenu = false
                                     }
@@ -733,7 +733,7 @@ fun HexViewer(
                                         val watchStart = selMin ?: contextMenuAddr
                                         val watchLength = if (selMin != null && selMax != null) (selMax - selMin + 1).toInt() else 4
                                         if (watchStart != null) {
-                                            DebuggerService.addToWatchlist(watchStart, type = "ByteArray", byteLength = watchLength)
+                                            AppContainer.debuggerUseCase.addToWatchlist(watchStart, type = "ByteArray", byteLength = watchLength)
                                         }
                                         showContextMenu = false
                                     }

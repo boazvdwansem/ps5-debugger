@@ -17,8 +17,8 @@ import androidx.compose.ui.unit.sp
 import com.osr.ps5debugger.protocol.BinaryBuffer
 import com.osr.ps5debugger.protocol.ProtocolConstants
 import com.osr.ps5debugger.protocol.Ps5ScanResult
-import com.osr.ps5debugger.protocol.Ps5VmMapEntry
-import com.osr.ps5debugger.service.DebuggerService
+import com.osr.ps5debugger.domain.model.MemoryRange
+import com.osr.ps5debugger.di.AppContainer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -29,13 +29,13 @@ private const val ScanReadTimeoutMs = 5 * 60 * 1000
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MemoryScannerView(
-    activeMap: Ps5VmMapEntry?,
+    activeMap: MemoryRange?,
     modifier: Modifier = Modifier
 ) {
     val coroutineScope = rememberCoroutineScope()
-    val client = DebuggerService.client
-    val pid = DebuggerService.activePid
-    val isConnected by DebuggerService.isConnected.collectAsState()
+    val client = AppContainer.clientAdapter.client
+    val pid = AppContainer.debuggerUseCase.activeProcess.value?.pid
+    val isConnected by AppContainer.debuggerUseCase.isConnected.collectAsState()
 
     var scanValue by remember { mutableStateOf("100") }
     var scanValueType by remember { mutableStateOf("Int32") }
@@ -140,14 +140,14 @@ fun MemoryScannerView(
 
                             val bytes = scanValueToBytes(scanValue, scanValueType)
                             if (bytes == null) {
-                                DebuggerService.log("SCAN", "Invalid value format", DebuggerService.LogEntry.Level.ERROR)
+                                AppContainer.debuggerUseCase.log("SCAN", "Invalid value format", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
                                 isScanning = false
                                 return@launch
                             }
 
                             withContext(Dispatchers.IO) {
                                 try {
-                                    DebuggerService.log("SCAN", "Starting scan in range 0x${activeMap.start.toString(16)} to 0x${activeMap.end.toString(16)}", DebuggerService.LogEntry.Level.INFO)
+                                    AppContainer.debuggerUseCase.log("SCAN", "Starting scan in range 0x${activeMap.start.toString(16)} to 0x${activeMap.end.toString(16)}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
                                     
                                     val turboFlags = ProtocolConstants.TS_SERVER_RESIDENT
                                     val startPayload = BinaryBuffer(27 + bytes.size).apply {
@@ -163,7 +163,7 @@ fun MemoryScannerView(
                                     }.bytes
 
                                     client.connection.execute(readTimeoutMs = ScanReadTimeoutMs) { inStr, outStr ->
-                                        DebuggerService.log("SCAN", "Using turbo server-resident scan", DebuggerService.LogEntry.Level.INFO)
+                                        AppContainer.debuggerUseCase.log("SCAN", "Using turbo server-resident scan", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
                                         client.connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_TURBOSCAN_START, startPayload)
                                         var status = client.connection.receiveStatus(inStr)
                                         if (status != ProtocolConstants.CMD_SUCCESS) {
@@ -242,11 +242,11 @@ fun MemoryScannerView(
                                             totalMatchesCount = count
                                             client.connection.receiveStatus(inStr)
                                         }
-                                        DebuggerService.log("SCAN", "Scan finished. Found $totalMatchesCount matches.", DebuggerService.LogEntry.Level.INFO)
+                                        AppContainer.debuggerUseCase.log("SCAN", "Scan finished. Found $totalMatchesCount matches.", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
                                     }
                                     isRescanMode = true
                                 } catch (e: Exception) {
-                                    DebuggerService.log("SCAN", "Scan failed: ${e.message}", DebuggerService.LogEntry.Level.ERROR)
+                                    AppContainer.debuggerUseCase.log("SCAN", "Scan failed: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
                                 }
                             }
                             isScanning = false

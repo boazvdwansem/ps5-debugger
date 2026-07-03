@@ -33,7 +33,7 @@ import androidx.compose.ui.window.rememberWindowState
 import com.osr.ps5debugger.ui.MainView
 import com.osr.ps5debugger.ui.PS5ThemeColors
 import com.osr.ps5debugger.ui.Ps5DebuggerTheme
-import com.osr.ps5debugger.service.DebuggerService
+import com.osr.ps5debugger.di.AppContainer
 import androidx.compose.runtime.collectAsState
 import java.awt.MouseInfo
 import java.awt.Rectangle
@@ -253,7 +253,7 @@ private fun WindowScope.CustomTitleBar(
     onRestoreForDrag: () -> Unit,
     onClose: () -> Unit
 ) {
-    val isConnected by DebuggerService.isConnected.collectAsState()
+    val isConnected by AppContainer.debuggerUseCase.isConnected.collectAsState()
     val dotColor = if (isConnected) PS5ThemeColors.AccentCyan else PS5ThemeColors.StatusRed
 
     Row(

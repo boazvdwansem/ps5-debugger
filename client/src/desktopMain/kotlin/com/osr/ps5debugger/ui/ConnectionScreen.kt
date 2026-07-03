@@ -12,7 +12,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.osr.ps5debugger.network.Ps5Discovery
-import com.osr.ps5debugger.service.DebuggerService
+import com.osr.ps5debugger.di.AppContainer
 import kotlinx.coroutines.launch
 
 @Composable
@@ -81,7 +81,7 @@ fun ConnectionScreen(modifier: Modifier = Modifier) {
                                 statusMessage = "Connecting to $ipInput..."
                                 statusColor = PS5ThemeColors.AccentCyan
                                 try {
-                                    val success = DebuggerService.connect(ipInput)
+                                    val success = AppContainer.debuggerUseCase.connect(ipInput)
                                     if (!success) {
                                         statusMessage = "Connection failed: Handshake rejected"
                                         statusColor = PS5ThemeColors.StatusRed

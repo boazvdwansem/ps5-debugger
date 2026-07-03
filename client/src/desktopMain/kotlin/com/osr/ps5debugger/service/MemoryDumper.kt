@@ -1,6 +1,9 @@
 package com.osr.ps5debugger.service
 
-import com.osr.ps5debugger.protocol.Ps5VmMapEntry
+import com.osr.ps5debugger.domain.model.MemoryRange
+import com.osr.ps5debugger.domain.model.LogEntry
+import com.osr.ps5debugger.ports.outbound.DebuggerClientPort
+import com.osr.ps5debugger.ports.inbound.DebuggerUseCase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
@@ -12,8 +15,10 @@ object MemoryDumper {
 
     suspend fun dumpRegions(
         pid: Int,
-        regions: List<Ps5VmMapEntry>,
+        regions: List<MemoryRange>,
         outputDir: File,
+        clientPort: DebuggerClientPort,
+        useCase: DebuggerUseCase,
         onProgress: (currentRegion: String, progress: Float) -> Unit
     ): Result<Unit> = withContext(Dispatchers.IO) {
         try {
@@ -21,7 +26,6 @@ object MemoryDumper {
                 outputDir.mkdirs()
             }
 
-            val client = DebuggerService.client
             val chunkSize = 65536 // 64KB chunks for smooth network streaming
             
             regions.forEachIndexed { index, region ->
@@ -29,7 +33,7 @@ object MemoryDumper {
                 val fileName = String.format("dump_%d_%s_0x%X.bin", pid, cleanedName, region.start)
                 val outputFile = File(outputDir, fileName)
                 
-                DebuggerService.log("DUMPER", "Dumping region ${index + 1}/${regions.size}: $cleanedName (0x${region.start.toString(16)})", DebuggerService.LogEntry.Level.INFO)
+                useCase.log("DUMPER", "Dumping region ${index + 1}/${regions.size}: $cleanedName (0x${region.start.toString(16)})", LogEntry.Level.INFO)
                 
                 FileOutputStream(outputFile).use { fos ->
                     var currentAddress = region.start
@@ -41,7 +45,7 @@ object MemoryDumper {
                         val remaining = endAddress - currentAddress
                         val toRead = minOf(chunkSize.toLong(), remaining).toInt()
                         
-                        val data = client.readMemory(pid, currentAddress, toRead)
+                        val data = clientPort.readMemory(pid, currentAddress, toRead)
                         fos.write(data)
                         
                         currentAddress += toRead
@@ -53,14 +57,14 @@ object MemoryDumper {
                 }
                 
                 if (!isActive) {
-                    DebuggerService.log("DUMPER", "Dump cancelled by user", DebuggerService.LogEntry.Level.WARN)
+                    useCase.log("DUMPER", "Dump cancelled by user", LogEntry.Level.WARN)
                     return@withContext Result.failure(IOException("Cancelled"))
                 }
             }
-            DebuggerService.log("DUMPER", "Successfully dumped all selected regions to ${outputDir.absolutePath}", DebuggerService.LogEntry.Level.INFO)
+            useCase.log("DUMPER", "Successfully dumped all selected regions to ${outputDir.absolutePath}", LogEntry.Level.INFO)
             Result.success(Unit)
         } catch (e: Exception) {
-            DebuggerService.log("DUMPER", "Dump failed: ${e.message}", DebuggerService.LogEntry.Level.ERROR)
+            useCase.log("DUMPER", "Dump failed: ${e.message}", LogEntry.Level.ERROR)
             Result.failure(e)
         }
     }

@@ -12,8 +12,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.osr.ps5debugger.protocol.Ps5VmMapEntry
-import com.osr.ps5debugger.service.DebuggerService
+import com.osr.ps5debugger.di.AppContainer
+import com.osr.ps5debugger.domain.model.MemoryRange
 import kotlinx.coroutines.launch
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically
@@ -40,11 +40,11 @@ import androidx.compose.material3.rememberTooltipState
 
 @Composable
 fun MainView() {
-    var activeMap by remember { mutableStateOf<Ps5VmMapEntry?>(null) }
+    var activeMap by remember { mutableStateOf<MemoryRange?>(null) }
     var selectedTab by remember { mutableStateOf(0) }
     var jumpToAddress by remember { mutableStateOf<Long?>(null) }
     
-    val isConnected by DebuggerService.isConnected.collectAsState()
+    val isConnected by AppContainer.debuggerUseCase.isConnected.collectAsState()
     var isConsoleVisible by remember { mutableStateOf(true) }
     var isSidebarVisible by remember { mutableStateOf(true) }
     val coroutineScope = rememberCoroutineScope()
@@ -53,9 +53,9 @@ fun MainView() {
     LaunchedEffect(isConnected) {
         if (isConnected) {
             try {
-                DebuggerService.refreshProcesses()
+                AppContainer.debuggerUseCase.refreshProcesses()
             } catch (e: Exception) {
-                DebuggerService.log("MAIN", "Failed to retrieve process list: ${e.message}", DebuggerService.LogEntry.Level.ERROR)
+                AppContainer.debuggerUseCase.log("MAIN", "Failed to retrieve process list: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
             }
         }
     }
@@ -76,7 +76,7 @@ fun MainView() {
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = "PS5 DEBUGGER NG",
+                                text = "PS5 DEBUGGER",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.primary
@@ -89,7 +89,7 @@ fun MainView() {
                                 Button(
                                     onClick = {
                                         coroutineScope.launch {
-                                            DebuggerService.disconnect()
+                                            AppContainer.debuggerUseCase.disconnect()
                                         }
                                     },
                                     colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.StatusRed),
@@ -199,7 +199,7 @@ fun MainView() {
                                         0 -> HexViewer(activeMap = activeMap, jumpToAddress = jumpToAddress)
                                         1 -> MemoryScannerView(activeMap = activeMap)
                                         2 -> WatchList(onJumpToAddress = { addr ->
-                                            val map = DebuggerService.vmMaps.firstOrNull { addr >= it.start && addr < it.end }
+                                            val map = AppContainer.debuggerUseCase.vmMaps.value.firstOrNull { addr >= it.start && addr < it.end }
                                             if (map != null) {
                                                 activeMap = map
                                                 jumpToAddress = addr

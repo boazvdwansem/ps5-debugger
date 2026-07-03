@@ -21,8 +21,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.osr.ps5debugger.service.DebuggerService
-import com.osr.ps5debugger.service.WatchItem
+import com.osr.ps5debugger.domain.model.WatchItem
+import com.osr.ps5debugger.di.AppContainer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -41,33 +41,14 @@ fun WatchList(
     onJumpToAddress: (Long) -> Unit = {}
 ) {
     val coroutineScope = rememberCoroutineScope()
-    val isConnected by DebuggerService.isConnected.collectAsState()
-    val activePid = DebuggerService.activePid
-    val itemsList = DebuggerService.watchlist
+    val isConnected by AppContainer.debuggerUseCase.isConnected.collectAsState()
+    val activePid = AppContainer.debuggerUseCase.activeProcess.value?.pid
+    val itemsList by AppContainer.debuggerUseCase.watchlist.collectAsState()
 
     var addLabel by remember { mutableStateOf("") }
     var addAddressStr by remember { mutableStateOf("") }
     var addType by remember { mutableStateOf("Int32") }
     var addComment by remember { mutableStateOf("") }
-
-    LaunchedEffect(isConnected, activePid) {
-        while (isActive) {
-            if (isConnected && activePid != null && itemsList.isNotEmpty()) {
-                itemsList.forEach { item ->
-                    try {
-                        val data = DebuggerService.client.readMemory(activePid, item.address, typeSizeBytes(item))
-                        item.valueStr = parseValueBytes(data, item.type)
-                    } catch (_: Exception) {
-                        item.valueStr = "??"
-                    }
-                }
-                val temp = itemsList.toList()
-                itemsList.clear()
-                itemsList.addAll(temp)
-            }
-            delay(1000)
-        }
-    }
 
     Column(modifier = modifier.fillMaxSize().padding(8.dp)) {
         Text("Watch List", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
@@ -99,7 +80,7 @@ fun WatchList(
                 Button(onClick = {
                     val addr = addAddressStr.trim().toLongOrNull(16)
                     if (addr != null && addLabel.isNotEmpty()) {
-                        itemsList.add(WatchItem(addLabel, addr, addType, comment = addComment))
+                        AppContainer.debuggerUseCase.addWatchItem(WatchItem(addLabel, addr, addType, comment = addComment))
                         addLabel = ""; addAddressStr = ""; addComment = ""
                     }
                 }) { Text("Add") }
@@ -109,9 +90,9 @@ fun WatchList(
                         val target = if (file.extension.equals("json", ignoreCase = true)) file else File(file.parentFile, "${file.name}.json")
                         runCatching {
                             target.writeText(watchListToJson(itemsList), Charsets.UTF_8)
-                            DebuggerService.log("WATCHLIST", "Saved watch list to ${target.absolutePath}", DebuggerService.LogEntry.Level.INFO)
+                            AppContainer.debuggerUseCase.log("WATCHLIST", "Saved watch list to ${target.absolutePath}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
                         }.onFailure {
-                            DebuggerService.log("WATCHLIST", "Failed to save watch list: ${it.message}", DebuggerService.LogEntry.Level.ERROR)
+                            AppContainer.debuggerUseCase.log("WATCHLIST", "Failed to save watch list: ${it.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
                         }
                     }
                 }) { Text("Save") }
@@ -120,11 +101,11 @@ fun WatchList(
                     chooseWatchListFile(mode = FileDialog.LOAD)?.let { file ->
                         runCatching {
                             val loaded = watchListFromJson(file.readText(Charsets.UTF_8))
-                            itemsList.clear()
-                            itemsList.addAll(loaded)
-                            DebuggerService.log("WATCHLIST", "Loaded ${loaded.size} watch entries from ${file.absolutePath}", DebuggerService.LogEntry.Level.INFO)
+                            AppContainer.debuggerUseCase.clearWatchlist()
+                            loaded.forEach { AppContainer.debuggerUseCase.addWatchItem(it) }
+                            AppContainer.debuggerUseCase.log("WATCHLIST", "Loaded ${loaded.size} watch entries from ${file.absolutePath}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
                         }.onFailure {
-                            DebuggerService.log("WATCHLIST", "Failed to load watch list: ${it.message}", DebuggerService.LogEntry.Level.ERROR)
+                            AppContainer.debuggerUseCase.log("WATCHLIST", "Failed to load watch list: ${it.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
                         }
                     }
                 }) { Text("Load") }
@@ -150,23 +131,17 @@ fun WatchList(
                     activePid = activePid,
                     coroutineScope = coroutineScope,
                     onDelete = {
-                        coroutineScope.launch {
-                            itemsList.remove(item)
-                            DebuggerService.freezer.unfreeze(item.address)
-                        }
+                        AppContainer.debuggerUseCase.removeWatchItem(item)
                     },
                     onJumpToAddress = onJumpToAddress,
                     onUpdateLabel = { newLabel ->
-                        val idx = itemsList.indexOf(item)
-                        if (idx >= 0) itemsList[idx] = item.copy(label = newLabel)
+                        AppContainer.debuggerUseCase.updateWatchItem(item.copy(label = newLabel))
                     },
                     onUpdateComment = { newComment ->
-                        val idx = itemsList.indexOf(item)
-                        if (idx >= 0) itemsList[idx] = item.copy(comment = newComment)
+                        AppContainer.debuggerUseCase.updateWatchItem(item.copy(comment = newComment))
                     },
                     onUpdateType = { newType ->
-                        val idx = itemsList.indexOf(item)
-                        if (idx >= 0) itemsList[idx] = item.copy(type = newType, valueStr = "??")
+                        AppContainer.debuggerUseCase.updateWatchItem(item.copy(type = newType, valueStr = "??"))
                     }
                 )
             }
@@ -281,13 +256,8 @@ private fun WatchRow(
             // Freeze checkbox
             Checkbox(
                 checked = item.isFrozen,
-                onCheckedChange = { frozen ->
-                    item.isFrozen = frozen
-                    coroutineScope.launch {
-                        val bytes = valueToBytes(item.valueStr, item)
-                        if (frozen && bytes != null) DebuggerService.freezer.freeze(item.address, bytes, item.label, item.comment)
-                        else DebuggerService.freezer.unfreeze(item.address)
-                    }
+                onCheckedChange = { _ ->
+                    AppContainer.debuggerUseCase.toggleFreezeWatchItem(item)
                 },
                 modifier = Modifier.width(60.dp)
             )
@@ -356,11 +326,13 @@ private fun WatchRow(
                 Button(onClick = {
                     coroutineScope.launch {
                         val bytes = valueToBytes(editValueText, item)
-                        if (bytes != null && activePid != null) {
-                            val ok = DebuggerService.client.writeMemory(activePid, item.address, bytes)
-                            if (ok) {
-                                item.valueStr = editValueText
-                                if (item.isFrozen) DebuggerService.freezer.freeze(item.address, bytes, item.label, item.comment)
+                        if (bytes != null) {
+                            val result = AppContainer.debuggerUseCase.writeMemory(item.address, bytes)
+                            if (result.isSuccess && result.getOrDefault(false)) {
+                                if (item.isFrozen) {
+                                    AppContainer.debuggerUseCase.toggleFreezeWatchItem(item)
+                                    AppContainer.debuggerUseCase.toggleFreezeWatchItem(item)
+                                }
                             }
                         }
                         showEditDialog = false
