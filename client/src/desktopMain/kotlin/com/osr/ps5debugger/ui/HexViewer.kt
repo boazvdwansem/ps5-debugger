@@ -462,14 +462,21 @@ fun HexViewer(
             val gridWidth = (185 + bytesPerRow * 36 + 16).dp
             Box(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .horizontalScroll(horizontalScrollState)
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentAlignment = Alignment.Center
             ) {
-                Column(
+                Box(
                     modifier = Modifier
-                        .width(gridWidth)
+                        .widthIn(max = gridWidth)
                         .fillMaxHeight()
+                        .horizontalScroll(horizontalScrollState)
                 ) {
+                    Column(
+                        modifier = Modifier
+                            .width(gridWidth)
+                            .fillMaxHeight()
+                    ) {
                     // Hex view titles
                     Row(
                         modifier = Modifier
@@ -776,6 +783,7 @@ fun HexViewer(
             }
         }
     }
+}
 }
 }
 
