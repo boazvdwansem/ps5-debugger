@@ -8,10 +8,26 @@ tested on Windows and firmware 11.60.
 
 If any issues arise please open an issue.
 
+### Features
+
+- Memory viewer
+- Memory scanner
+- Process list
+- Process memory dump
+- Process memory edit
+- Memory dump
+- Logging
+
 ### Known issues
 
 - Memory scanner might fail or crash the PS5, use with caution.
 - Only Windows support for the moment, but Linux, MacOS, Android and iOS will follow soon.
+
+### How to use
+
+- To use the GUI, remember to first inject the `ps5debug-NG.elf` into the system.
+
+### ps5debug-NG ELF
 
 A debugger payload for jailbroken PlayStation 5 consoles. Ships a userland
 command server that runs inside SceShellCore, letting remote clients inspect
