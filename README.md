@@ -11,6 +11,7 @@ If any issues arise please open an issue.
 ### Known issues
 
 - Memory scanner might fail or crash the PS5, use with caution.
+- Only Windows support for the moment, but Linux, MacOS, Android and iOS will follow soon.
 
 A debugger payload for jailbroken PlayStation 5 consoles. Ships a userland
 command server that runs inside SceShellCore, letting remote clients inspect
