@@ -1,1 +1,0 @@
-[2026-07-03 13:09:13.169] [KERNEL] [INFO] <118>[AvControl] sessionId(cbbc8a9f-7549-4b6e-bff9-20217fcca18b) KsvNum(1) hdcp(enabled) name(Q95A) id(SAM 4c2d) code(4c71) y/w(2021/1)
