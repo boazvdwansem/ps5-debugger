@@ -12,6 +12,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -31,7 +32,7 @@ import java.io.InputStream
 private const val ScanReadTimeoutMs = 5 * 60 * 1000
 
 object MemoryScannerState {
-    val scanValueState = mutableStateOf("100")
+    val scanValueState = mutableStateOf("")
     val scanValueExtraState = mutableStateOf("200")
     val scanValueTypeState = mutableStateOf("Int32")
     val scanCompareTypeState = mutableStateOf("ExactValue")
@@ -541,7 +542,7 @@ fun MemoryScannerView(
                                         while (true) {
                                             val event = awaitPointerEvent()
                                             if (event.type == androidx.compose.ui.input.pointer.PointerEventType.Press) {
-                                                if (event.button == androidx.compose.ui.input.pointer.PointerButton.Secondary) {
+                                                if (event.buttons.isSecondaryPressed) {
                                                     showItemMenu = true
                                                     event.changes.forEach { it.consume() }
                                                 }

@@ -143,35 +143,35 @@ fun HexViewer(
         var showContextMenu by remember { mutableStateOf(false) }
         var contextMenuOffset by remember { mutableStateOf(DpOffset.Zero) }
 
-        LaunchedEffect(activeMap) {
-            if (activeMap != null) {
-                startAddress = activeMap.start
-                endAddress = activeMap.end
-                memoryCache.clear()
-                if (activeMap.start != lastActiveMapStart) {
-                    scrollPosition = 0L
-                    lastActiveMapStart = activeMap.start
-                }
-                selectionStart = null
-                selectionEnd = null
-                pendingEdits.clear()
-                isEditingUnlocked = false
-                hexInputBuffer = ""
-            }
-        }
-
         LaunchedEffect(activeMap, jumpToAddress, bytesPerRow, visibleRowsCount) {
-            val target = jumpToAddress ?: return@LaunchedEffect
-            val map = activeMap ?: return@LaunchedEffect
-            if (target < map.start || target >= map.end) return@LaunchedEffect
+            if (activeMap != null) {
+                val mapChanged = activeMap.start != lastActiveMapStart
+                if (mapChanged) {
+                    startAddress = activeMap.start
+                    endAddress = activeMap.end
+                    memoryCache.clear()
+                    pendingEdits.clear()
+                    isEditingUnlocked = false
+                    hexInputBuffer = ""
+                }
 
-            val targetRow = ((target - map.start) / bytesPerRow)
-            val totalRows = ((map.end - map.start + bytesPerRow - 1) / bytesPerRow).toInt()
-            val maxTargetScroll = maxOf(0L, (totalRows - visibleRowsCount).toLong())
-            scrollPosition = targetRow.coerceIn(0L, maxTargetScroll)
-            selectionStart = target
-            selectionEnd = target
-            goToAddressText = target.toString(16).uppercase()
+                val target = jumpToAddress
+                if (target != null && target >= activeMap.start && target < activeMap.end) {
+                    val targetRow = ((target - activeMap.start) / bytesPerRow)
+                    val totalRows = ((activeMap.end - activeMap.start + bytesPerRow - 1) / bytesPerRow).toInt()
+                    val maxTargetScroll = maxOf(0L, (totalRows - visibleRowsCount).toLong())
+                    scrollPosition = targetRow.coerceIn(0L, maxTargetScroll)
+                    selectionStart = target
+                    selectionEnd = target
+                    goToAddressText = target.toString(16).uppercase()
+                } else if (mapChanged) {
+                    scrollPosition = 0L
+                    selectionStart = null
+                    selectionEnd = null
+                }
+
+                lastActiveMapStart = activeMap.start
+            }
         }
 
         val totalBytes = maxOf(0L, endAddress - startAddress)
@@ -189,18 +189,28 @@ fun HexViewer(
             withContext(Dispatchers.IO) {
                 var page = (visibleStart / pageSize) * pageSize
                 while (page <= visibleEnd) {
-                if (!memoryCache.containsKey(page)) {
-                    try {
-                        val data = client.readMemory(pid, page, pageSize)
-                        memoryCache[page] = data
-                    } catch (_: Exception) {
-                        memoryCache[page] = ByteArray(pageSize)
+                    if (!memoryCache.containsKey(page)) {
+                        try {
+                            val readStart = maxOf(page, startAddress)
+                            val readEnd = minOf(page + pageSize, endAddress)
+                            if (readStart < readEnd) {
+                                val readLen = (readEnd - readStart).toInt()
+                                val data = client.readMemory(pid, readStart, readLen)
+                                val pageData = ByteArray(pageSize)
+                                val destOffset = (readStart - page).toInt()
+                                System.arraycopy(data, 0, pageData, destOffset, data.size)
+                                memoryCache[page] = pageData
+                            } else {
+                                memoryCache[page] = ByteArray(pageSize)
+                            }
+                        } catch (_: Exception) {
+                            memoryCache[page] = ByteArray(pageSize)
+                        }
                     }
+                    page += pageSize
                 }
-                page += pageSize
             }
         }
-    }
 
     // Cache selection range bounds
     val selMin = if (selectionStart != null && selectionEnd != null) minOf(selectionStart!!, selectionEnd!!) else null
