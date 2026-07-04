@@ -435,11 +435,20 @@ fun DisassemblyViewer(
                                 DisasmRow(
                                     line = line,
                                     isSelected = isSelected,
-                                    onAddressClicked = { addr, isShift ->
-                                        if (isShift && selectionStart != null) {
-                                            onSelectionChanged?.invoke(selectionStart, addr)
+                                    onAddressClicked = { addr, len, isShift ->
+                                        val firstAddr = instructions.firstOrNull()?.instr?.addr
+                                        val lastAddr = instructions.lastOrNull()?.let { it.instr.addr + it.instr.length }
+                                        val isStartInLoadedRange = selectionStart != null && firstAddr != null && lastAddr != null &&
+                                                selectionStart >= firstAddr && selectionStart <= lastAddr
+                                        
+                                        if (isShift && isStartInLoadedRange) {
+                                            if (addr >= selectionStart!!) {
+                                                onSelectionChanged?.invoke(selectionStart, addr + len - 1)
+                                            } else {
+                                                onSelectionChanged?.invoke(selectionEnd ?: selectionStart, addr)
+                                            }
                                         } else {
-                                            onSelectionChanged?.invoke(addr, addr)
+                                            onSelectionChanged?.invoke(addr, addr + len - 1)
                                         }
                                     },
                                     onAddressRightClicked = { addr, bytes, disasmText, offset ->
@@ -1055,7 +1064,8 @@ private fun isInstructionSelected(instr: Ps5DisasmInstr, start: Long?, end: Long
     if (start == null || end == null) return false
     val lo = minOf(start, end)
     val hi = maxOf(start, end)
-    return instr.addr in lo..hi
+    val instrEnd = instr.addr + instr.length - 1
+    return instrEnd >= lo && instr.addr <= hi
 }
 
 private val regNames = setOf(
@@ -1069,7 +1079,7 @@ private val regNames = setOf(
 fun DisasmRow(
     line: DisasmLine,
     isSelected: Boolean,
-    onAddressClicked: (Long, Boolean) -> Unit,
+    onAddressClicked: (Long, Int, Boolean) -> Unit,
     onAddressRightClicked: (Long, ByteArray, String, DpOffset) -> Unit,
     showHexDetails: Boolean = false
 ) {
@@ -1110,7 +1120,7 @@ fun DisasmRow(
                                 val offset = DpOffset(change.position.x.dp / density, change.position.y.dp / density)
                                 onAddressRightClicked(instr.addr, line.bytes, fullDisasmString, offset)
                             } else {
-                                onAddressClicked(instr.addr, isShift)
+                                onAddressClicked(instr.addr, instr.length, isShift)
                             }
                         }
                     }
