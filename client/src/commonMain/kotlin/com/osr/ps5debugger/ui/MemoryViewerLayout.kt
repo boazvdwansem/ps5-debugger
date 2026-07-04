@@ -12,6 +12,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.osr.ps5debugger.domain.model.MemoryRange
 import com.osr.ps5debugger.PS5ThemeColors
+import com.osr.ps5debugger.protocol.GpRegs
+import com.osr.ps5debugger.protocol.DbRegs
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -26,6 +28,17 @@ fun MemoryViewerLayout(
     // Hoisted Selection State
     var hoistedSelectionStart by remember { mutableStateOf<Long?>(null) }
     var hoistedSelectionEnd by remember { mutableStateOf<Long?>(null) }
+
+    // Hoisted Debugger Session State
+    var isAttached by remember { mutableStateOf(false) }
+    val activeBreakpoints = remember { mutableStateMapOf<Int, Long>() } // index -> address
+    val activeWatchpoints = remember { mutableStateMapOf<Int, Long>() } // slot -> address
+    
+    var threadList by remember { mutableStateOf<List<Int>>(emptyList()) }
+    var selectedLwpid by remember { mutableStateOf<Int?>(null) }
+    var selectedRegs by remember { mutableStateOf<GpRegs?>(null) }
+    var selectedDbRegs by remember { mutableStateOf<DbRegs?>(null) }
+    var selectedFsGs by remember { mutableStateOf<Pair<Long, Long>?>(null) }
 
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val isMobile = maxWidth < 800.dp
@@ -99,6 +112,20 @@ fun MemoryViewerLayout(
                                         currentJumpAddress = addr
                                         viewMode = 1
                                     },
+                                    isAttached = isAttached,
+                                    onAttachedChanged = { isAttached = it },
+                                    activeBreakpoints = activeBreakpoints,
+                                    activeWatchpoints = activeWatchpoints,
+                                    threadList = threadList,
+                                    onThreadListChanged = { threadList = it },
+                                    selectedLwpid = selectedLwpid,
+                                    onSelectedLwpidChanged = { selectedLwpid = it },
+                                    selectedRegs = selectedRegs,
+                                    onSelectedRegsChanged = { selectedRegs = it },
+                                    selectedDbRegs = selectedDbRegs,
+                                    onSelectedDbRegsChanged = { selectedDbRegs = it },
+                                    selectedFsGs = selectedFsGs,
+                                    onSelectedFsGsChanged = { selectedFsGs = it },
                                     modifier = Modifier.weight(1f)
                                 )
                                 HorizontalDivider(color = PS5ThemeColors.BorderColor)
@@ -133,6 +160,20 @@ fun MemoryViewerLayout(
                                     currentJumpAddress = addr
                                     viewMode = 1
                                 },
+                                isAttached = isAttached,
+                                onAttachedChanged = { isAttached = it },
+                                activeBreakpoints = activeBreakpoints,
+                                activeWatchpoints = activeWatchpoints,
+                                threadList = threadList,
+                                onThreadListChanged = { threadList = it },
+                                selectedLwpid = selectedLwpid,
+                                onSelectedLwpidChanged = { selectedLwpid = it },
+                                selectedRegs = selectedRegs,
+                                onSelectedRegsChanged = { selectedRegs = it },
+                                selectedDbRegs = selectedDbRegs,
+                                onSelectedDbRegsChanged = { selectedDbRegs = it },
+                                selectedFsGs = selectedFsGs,
+                                onSelectedFsGsChanged = { selectedFsGs = it },
                                 modifier = Modifier.fillMaxSize(),
                                 showHexDetails = true
                             )

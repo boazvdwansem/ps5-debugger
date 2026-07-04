@@ -319,7 +319,8 @@ class Ps5Client(val connection: Ps5Connection) {
     suspend fun attach(pid: Int): Boolean = connection.execute { inStr, outStr ->
         val payload = BinaryBuffer(4).apply { writeInt(pid) }.bytes
         connection.sendPacket(outStr, ProtocolConstants.CMD_DEBUG_ATTACH, payload)
-        connection.receiveStatus(inStr) == ProtocolConstants.CMD_SUCCESS
+        val status = connection.receiveStatus(inStr)
+        status == ProtocolConstants.CMD_SUCCESS || status == ProtocolConstants.CMD_ALREADY_DEBUG
     }
 
     suspend fun detach(): Boolean = connection.execute { inStr, outStr ->

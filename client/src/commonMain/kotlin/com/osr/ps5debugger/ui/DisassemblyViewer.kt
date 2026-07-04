@@ -24,8 +24,6 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.*
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Info
 import com.osr.ps5debugger.di.AppContainer
 import com.osr.ps5debugger.domain.model.MemoryRange
 import com.osr.ps5debugger.protocol.Ps5DisasmInstr
@@ -33,7 +31,6 @@ import com.osr.ps5debugger.protocol.GpRegs
 import com.osr.ps5debugger.protocol.DbRegs
 import com.osr.ps5debugger.PS5ThemeColors
 import com.osr.ps5debugger.ui.copyToClipboard
-import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 
 data class DisasmLine(
@@ -85,32 +82,35 @@ fun DisassemblyViewer(
     selectionEnd: Long? = null,
     onSelectionChanged: ((Long?, Long?) -> Unit)? = null,
     onJumpToHex: ((Long) -> Unit)? = null,
-    showHexDetails: Boolean = false
+    showHexDetails: Boolean = false,
+    // Hoisted Debugger Session State
+    isAttached: Boolean,
+    onAttachedChanged: (Boolean) -> Unit,
+    activeBreakpoints: MutableMap<Int, Long>,
+    activeWatchpoints: MutableMap<Int, Long>,
+    threadList: List<Int>,
+    onThreadListChanged: (List<Int>) -> Unit,
+    selectedLwpid: Int?,
+    onSelectedLwpidChanged: (Int?) -> Unit,
+    selectedRegs: GpRegs?,
+    onSelectedRegsChanged: (GpRegs?) -> Unit,
+    selectedDbRegs: DbRegs?,
+    onSelectedDbRegsChanged: (DbRegs?) -> Unit,
+    selectedFsGs: Pair<Long, Long>?,
+    onSelectedFsGsChanged: (Pair<Long, Long>?) -> Unit
 ) {
     val coroutineScope = rememberCoroutineScope()
     val client = AppContainer.clientAdapter.client
     val pid = AppContainer.debuggerUseCase.activeProcess.value?.pid
+    val isConnectedFlow = AppContainer.debuggerUseCase.isConnected.collectAsState()
     
     var startAddress by remember { mutableStateOf(activeMap?.start ?: 0L) }
     var goToAddressText by remember { mutableStateOf("") }
     val instructions = remember { mutableStateListOf<DisasmLine>() }
     var isLoading by remember { mutableStateOf(false) }
     
-    // Debugger Session State
-    var isAttached by remember { mutableStateOf(false) }
-    val activeBreakpoints = remember { mutableStateMapOf<Int, Long>() } // index (0-29) -> address
-    val activeWatchpoints = remember { mutableStateMapOf<Int, Long>() } // slot (0-3) -> address
-    
-    // Thread & Registers Inspector State
-    var threadList by remember { mutableStateOf<List<Int>>(emptyList()) }
-    var selectedLwpid by remember { mutableStateOf<Int?>(null) }
-    var selectedRegs by remember { mutableStateOf<GpRegs?>(null) }
-    var selectedDbRegs by remember { mutableStateOf<DbRegs?>(null) }
-    var selectedFsGs by remember { mutableStateOf<Pair<Long, Long>?>(null) }
-    
     // Panels visibility
     var isDebugPanelVisible by remember { mutableStateOf(true) }
-    var showHelpDialog by remember { mutableStateOf(false) }
     
     // Context Menu & Watchpoint Setup Dialog
     var showContextMenu by remember { mutableStateOf(false) }
@@ -151,51 +151,41 @@ fun DisassemblyViewer(
         }
     }
     
-    // Load initial disassembly instructions when startAddress or pid changes
-    LaunchedEffect(pid, activeMap, startAddress) {
-        if (pid != null && activeMap != null) {
+    // Load initial disassembly instructions sequentially to prevent async propagation crashes
+    LaunchedEffect(pid, activeMap, startAddress, isConnectedFlow.value) {
+        if (pid != null && activeMap != null && isConnectedFlow.value) {
             isLoading = true
             try {
                 val len = minOf(65536L, activeMap.end - startAddress).toInt() // Load larger initial chunk (64KB)
                 if (len > 0) {
-                    coroutineScope.launch {
-                        try {
-                            val disasmDeferred = async { client.disassembleRegion(pid, startAddress, len, 500) }
-                            val bytesDeferred = async {
-                                try {
-                                    client.readMemory(pid, startAddress, len)
-                                } catch (_: Exception) {
-                                    ByteArray(0)
-                                }
-                            }
-                            
-                            val rawInstrs = disasmDeferred.await()
-                            val rawBytes = bytesDeferred.await()
-                            
-                            val lines = rawInstrs.map { instr ->
-                                val offset = (instr.addr - startAddress).toInt()
-                                val instrBytes = if (offset >= 0 && offset + instr.length <= rawBytes.size) {
-                                    rawBytes.copyOfRange(offset, offset + instr.length)
-                                } else {
-                                    ByteArray(0)
-                                }
-                                DisasmLine(instr, instrBytes)
-                            }
-                            
-                            instructions.clear()
-                            instructions.addAll(lines)
-                            isLoading = false
-                            
-                            // Scroll to the jump target if selected
-                            if (jumpToAddress != null) {
-                                val index = instructions.indexOfFirst { it.instr.addr == jumpToAddress }
-                                if (index != -1) {
-                                    listState.scrollToItem(index)
-                                }
-                            }
-                        } catch (e: Exception) {
-                            AppContainer.debuggerUseCase.log("DISASM", "Disassembly deferred execution failed: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
-                            isLoading = false
+                    val rawInstrs = client.disassembleRegion(pid, startAddress, len, 500)
+                    val rawBytes = try {
+                        client.readMemory(pid, startAddress, len)
+                    } catch (_: Exception) {
+                        ByteArray(0)
+                    }
+                    
+                    val lines = rawInstrs.map { instr ->
+                        val offset = (instr.addr - startAddress).toInt()
+                        val instrBytes = if (offset >= 0 && offset + instr.length <= rawBytes.size) {
+                            rawBytes.copyOfRange(offset, offset + instr.length)
+                        } else {
+                            ByteArray(0)
+                        }
+                        DisasmLine(instr, instrBytes)
+                    }
+                    
+                    instructions.clear()
+                    instructions.addAll(lines)
+                    isLoading = false
+                    
+                    // Scroll to the jump target if selected
+                    if (jumpToAddress != null) {
+                        val index = instructions.indexOfFirst { it.instr.addr == jumpToAddress }
+                        if (index != -1) {
+                            try {
+                                listState.scrollToItem(index)
+                            } catch (_: Exception) {}
                         }
                     }
                 } else {
@@ -210,22 +200,22 @@ fun DisassemblyViewer(
 
     // Refresh threads and registers helper
     val refreshThreadData: suspend () -> Unit = {
-        if (pid != null && isAttached) {
+        if (pid != null && isAttached && isConnectedFlow.value) {
             try {
                 val threads = client.getThreadList()
-                threadList = threads
+                onThreadListChanged(threads)
                 if (selectedLwpid == null || !threads.contains(selectedLwpid)) {
-                    selectedLwpid = threads.firstOrNull()
+                    onSelectedLwpidChanged(threads.firstOrNull())
                 }
-                val currentLwpid = selectedLwpid
+                val currentLwpid = selectedLwpid ?: threads.firstOrNull()
                 if (currentLwpid != null) {
-                    selectedRegs = client.getRegs(currentLwpid)
-                    selectedDbRegs = client.getDbRegs(currentLwpid)
-                    selectedFsGs = client.getFsGsBase(currentLwpid)
+                    onSelectedRegsChanged(client.getRegs(currentLwpid))
+                    onSelectedDbRegsChanged(client.getDbRegs(currentLwpid))
+                    onSelectedFsGsChanged(client.getFsGsBase(currentLwpid))
                 } else {
-                    selectedRegs = null
-                    selectedDbRegs = null
-                    selectedFsGs = null
+                    onSelectedRegsChanged(null)
+                    onSelectedDbRegsChanged(null)
+                    onSelectedFsGsChanged(null)
                 }
             } catch (e: Exception) {
                 AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to retrieve thread/register values: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.WARN)
@@ -236,11 +226,11 @@ fun DisassemblyViewer(
     // Watch selected thread changes to reload registers
     LaunchedEffect(selectedLwpid) {
         val lwpid = selectedLwpid
-        if (isAttached && lwpid != null) {
+        if (isAttached && lwpid != null && isConnectedFlow.value) {
             try {
-                selectedRegs = client.getRegs(lwpid)
-                selectedDbRegs = client.getDbRegs(lwpid)
-                selectedFsGs = client.getFsGsBase(lwpid)
+                onSelectedRegsChanged(client.getRegs(lwpid))
+                onSelectedDbRegsChanged(client.getDbRegs(lwpid))
+                onSelectedFsGsChanged(client.getFsGsBase(lwpid))
             } catch (_: Exception) {}
         }
     }
@@ -249,8 +239,8 @@ fun DisassemblyViewer(
     val firstVisibleIndex by remember { derivedStateOf { listState.firstVisibleItemIndex } }
     
     // Load next block (scrolling down)
-    LaunchedEffect(firstVisibleIndex, instructions.size, isLoading) {
-        if (!isLoading && activeMap != null && pid != null && instructions.isNotEmpty()) {
+    LaunchedEffect(firstVisibleIndex, instructions.size, isLoading, isConnectedFlow.value) {
+        if (!isLoading && activeMap != null && pid != null && instructions.isNotEmpty() && isConnectedFlow.value) {
             if (firstVisibleIndex + 50 >= instructions.size) {
                 val lastLine = instructions.last()
                 val nextStart = lastLine.instr.addr + lastLine.instr.length
@@ -284,8 +274,8 @@ fun DisassemblyViewer(
     }
 
     // Prepend previous block (scrolling up)
-    LaunchedEffect(firstVisibleIndex, isLoading) {
-        if (!isLoading && activeMap != null && pid != null && instructions.isNotEmpty()) {
+    LaunchedEffect(firstVisibleIndex, isLoading, isConnectedFlow.value) {
+        if (!isLoading && activeMap != null && pid != null && instructions.isNotEmpty() && isConnectedFlow.value) {
             if (firstVisibleIndex <= 5) {
                 val firstLine = instructions.first()
                 if (firstLine.instr.addr > activeMap.start) {
@@ -313,10 +303,12 @@ fun DisassemblyViewer(
                             if (newLines.isNotEmpty()) {
                                 instructions.addAll(0, newLines)
                                 // Offset listState index to prevent scrolling jumps
-                                listState.scrollToItem(
-                                    listState.firstVisibleItemIndex + newLines.size,
-                                    listState.firstVisibleItemScrollOffset
-                                )
+                                try {
+                                    listState.scrollToItem(
+                                        listState.firstVisibleItemIndex + newLines.size,
+                                        listState.firstVisibleItemScrollOffset
+                                    )
+                                } catch (_: Exception) {}
                             }
                         } catch (_: Exception) {}
                     }
@@ -326,7 +318,7 @@ fun DisassemblyViewer(
     }
     
     Column(modifier = modifier.fillMaxSize().padding(8.dp)) {
-        // Navigation & Help Toolbar
+        // Navigation Toolbar
         Row(
             modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -364,17 +356,6 @@ fun DisassemblyViewer(
                 modifier = Modifier.height(40.dp)
             ) {
                 Text("Go", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-            }
-
-            IconButton(
-                onClick = { showHelpDialog = true },
-                modifier = Modifier.size(40.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Info,
-                    contentDescription = "Debugger Capabilities Info",
-                    tint = PS5ThemeColors.AccentCyan
-                )
             }
             
             Button(
@@ -499,11 +480,17 @@ fun DisassemblyViewer(
                                         onClick = {
                                             coroutineScope.launch {
                                                 try {
-                                                    if (client.setBreakpoint(activeBpIndex, false, addr)) {
-                                                        activeBreakpoints.remove(activeBpIndex)
+                                                    // Speculative local toggle
+                                                    activeBreakpoints.remove(activeBpIndex)
+                                                    val ok = client.setBreakpoint(activeBpIndex, false, addr)
+                                                    if (!ok) {
+                                                        activeBreakpoints[activeBpIndex] = addr
+                                                        AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to remove breakpoint on PS5", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                                                    } else {
                                                         AppContainer.debuggerUseCase.log("DEBUGGER", "Removed breakpoint at 0x${addr.toString(16)}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
                                                     }
                                                 } catch (e: Exception) {
+                                                    activeBreakpoints[activeBpIndex] = addr
                                                     AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to remove breakpoint: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
                                                 }
                                             }
@@ -519,8 +506,13 @@ fun DisassemblyViewer(
                                                     // Find first free slot (0-29)
                                                     val freeIndex = (0..29).firstOrNull { !activeBreakpoints.containsKey(it) }
                                                     if (freeIndex != null) {
-                                                        if (client.setBreakpoint(freeIndex, true, addr)) {
-                                                            activeBreakpoints[freeIndex] = addr
+                                                        // Speculative local toggle
+                                                        activeBreakpoints[freeIndex] = addr
+                                                        val ok = client.setBreakpoint(freeIndex, true, addr)
+                                                        if (!ok) {
+                                                            activeBreakpoints.remove(freeIndex)
+                                                            AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to set breakpoint on PS5", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                                                        } else {
                                                             AppContainer.debuggerUseCase.log("DEBUGGER", "Set Software Breakpoint in slot $freeIndex at 0x${addr.toString(16)}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
                                                         }
                                                     } else {
@@ -542,11 +534,16 @@ fun DisassemblyViewer(
                                         onClick = {
                                             coroutineScope.launch {
                                                 try {
-                                                    if (client.setWatchpoint(activeWpSlot, false, 1, 1, addr)) {
-                                                        activeWatchpoints.remove(activeWpSlot)
+                                                    activeWatchpoints.remove(activeWpSlot)
+                                                    val ok = client.setWatchpoint(activeWpSlot, false, 1, 1, addr)
+                                                    if (!ok) {
+                                                        activeWatchpoints[activeWpSlot] = addr
+                                                        AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to remove watchpoint on PS5", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                                                    } else {
                                                         AppContainer.debuggerUseCase.log("DEBUGGER", "Removed hardware watchpoint at 0x${addr.toString(16)}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
                                                     }
                                                 } catch (e: Exception) {
+                                                    activeWatchpoints[activeWpSlot] = addr
                                                     AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to remove watchpoint: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
                                                 }
                                             }
@@ -626,7 +623,7 @@ fun DisassemblyViewer(
                             modifier = Modifier.padding(bottom = 8.dp)
                         )
                         
-                        // Attach / Detach controls wrapped in try-catches
+                        // Attach / Detach controls
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
@@ -637,18 +634,19 @@ fun DisassemblyViewer(
                                     coroutineScope.launch {
                                         try {
                                             if (isAttached) {
-                                                if (client.detach()) {
-                                                    isAttached = false
-                                                    activeBreakpoints.clear()
-                                                    activeWatchpoints.clear()
-                                                    threadList = emptyList()
-                                                    selectedLwpid = null
-                                                    selectedRegs = null
-                                                    AppContainer.debuggerUseCase.log("DEBUGGER", "Detached from target process", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
-                                                }
+                                                try {
+                                                    client.detach()
+                                                } catch (_: Exception) {}
+                                                onAttachedChanged(false)
+                                                activeBreakpoints.clear()
+                                                activeWatchpoints.clear()
+                                                onThreadListChanged(emptyList())
+                                                onSelectedLwpidChanged(null)
+                                                onSelectedRegsChanged(null)
+                                                AppContainer.debuggerUseCase.log("DEBUGGER", "Detached from target process", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
                                             } else {
                                                 if (client.attach(pid)) {
-                                                    isAttached = true
+                                                    onAttachedChanged(true)
                                                     AppContainer.debuggerUseCase.log("DEBUGGER", "Attached to process pid $pid. (Async interrupt channel ready on port 755)", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
                                                     refreshThreadData()
                                                 }
@@ -693,7 +691,7 @@ fun DisassemblyViewer(
                             )
                             Spacer(Modifier.height(4.dp))
                             
-                            // Process execution control wrapped in try-catches
+                            // Process execution control
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -792,7 +790,7 @@ fun DisassemblyViewer(
                                             DropdownMenuItem(
                                                 text = { Text("LWPID: $lwpid", fontSize = 12.sp) },
                                                 onClick = {
-                                                    selectedLwpid = lwpid
+                                                    onSelectedLwpidChanged(lwpid)
                                                     expandedThreads = false
                                                 }
                                             )
@@ -1009,11 +1007,16 @@ fun DisassemblyViewer(
                                         8 -> 2
                                         else -> 3 // 4 bytes
                                     }
-                                    if (client.setWatchpoint(watchpointSlot, true, lenField, watchpointType, addr)) {
-                                        activeWatchpoints[watchpointSlot] = addr
+                                    activeWatchpoints[watchpointSlot] = addr
+                                    val ok = client.setWatchpoint(watchpointSlot, true, lenField, watchpointType, addr)
+                                    if (!ok) {
+                                        activeWatchpoints.remove(watchpointSlot)
+                                        AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to set watchpoint on PS5", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                                    } else {
                                         AppContainer.debuggerUseCase.log("DEBUGGER", "Set Hardware Watchpoint in slot DR$watchpointSlot at 0x${addr.toString(16)} (size: ${watchpointSize}B, type: $watchpointType)", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
                                     }
                                 } catch (e: Exception) {
+                                    activeWatchpoints.remove(watchpointSlot)
                                     AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to set watchpoint: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
                                 }
                             }
@@ -1031,41 +1034,6 @@ fun DisassemblyViewer(
                 containerColor = PS5ThemeColors.SecondaryBg
             )
         }
-    }
-
-    // Debugger capabilities documentation modal
-    if (showHelpDialog) {
-        AlertDialog(
-            onDismissRequest = { showHelpDialog = false },
-            title = {
-                Text(
-                    text = "PS5 Debugger Features",
-                    color = PS5ThemeColors.AccentCyan,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp
-                )
-            },
-            text = {
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("• **Connection Target**: Attach to a single target with CMD_DEBUG_ATTACH (sets up an async interrupt channel back to the client).", color = PS5ThemeColors.TextMain, fontSize = 12.sp)
-                    Text("• **Software Breakpoints**: Up to 30 slots, transparent 0xCC injection.", color = PS5ThemeColors.TextMain, fontSize = 12.sp)
-                    Text("• **Hardware Watchpoints**: Up to 4 DR0-DR3 slots with read / write / read-write and 1/2/4/8-byte granularity.", color = PS5ThemeColors.TextMain, fontSize = 12.sp)
-                    Text("• **Thread Control**: List, suspend, resume, single-step, per-thread step.", color = PS5ThemeColors.TextMain, fontSize = 12.sp)
-                    Text("• **Full Register Access**: General-purpose, FPU + YMM (AVX), debug registers, and the FS/GS segment base addresses (TLS pointers).", color = PS5ThemeColors.TextMain, fontSize = 12.sp)
-                    Text("• **Process Operations**: Continue / stop / halt the whole process from one command.", color = PS5ThemeColors.TextMain, fontSize = 12.sp)
-                    Text("• **Interrupt Handshake**: Asynchronous interrupt packets delivered on a separate TCP connection so the client never polls.", color = PS5ThemeColors.TextMain, fontSize = 12.sp)
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showHelpDialog = false }) {
-                    Text("Close", color = PS5ThemeColors.AccentCyan, fontWeight = FontWeight.Bold)
-                }
-            },
-            containerColor = PS5ThemeColors.SecondaryBg
-        )
     }
 }
 
@@ -1375,7 +1343,7 @@ private fun formatOperands(instr: Ps5DisasmInstr): String {
 
 private fun getInfoText(instr: Ps5DisasmInstr): String {
     return when {
-        instr.isRipRel && instr.ripRelTarget != 0L -> String.format("target: 0x%X", instr.ripRelTarget)
+        instr.isRipRel && instr.ripRelTarget != 0L -> String.format("target: 0x%X", instr.memDisp)
         instr.ripRelTarget != 0L -> String.format("target: 0x%X", instr.ripRelTarget)
         instr.isCall -> "subroutine call"
         instr.isRet -> "return from subroutine"
