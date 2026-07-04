@@ -44,6 +44,8 @@ class DebuggerDomainService(
     private val _vmMaps = MutableStateFlow<List<MemoryRange>>(emptyList())
     override val vmMaps: StateFlow<List<MemoryRange>> = _vmMaps.asStateFlow()
 
+    private var lastConnectedIp: String? = null
+
     // Memory Freezing state
     private val frozenAddresses = mutableMapOf<Long, ByteArray>()
     private val freezeMutex = Mutex()
@@ -110,6 +112,7 @@ class DebuggerDomainService(
         log("SYSTEM", "Connecting to $ip...", LogEntry.Level.INFO)
         val ok = clientPort.connect(ip)
         if (ok) {
+            lastConnectedIp = ip
             try {
                 val authOk = clientPort.auth()
                 log("SYSTEM", "Handshake authentication: " + if (authOk) "SUCCESS" else "FAILED", LogEntry.Level.INFO)
@@ -144,14 +147,29 @@ class DebuggerDomainService(
         _activeProcess.value = proc
         _vmMaps.value = emptyList()
         if (proc != null) {
+            if (!clientPort.isConnected && lastConnectedIp != null) {
+                log("SYSTEM", "Connection lost. Attempting auto-reconnect to $lastConnectedIp...", LogEntry.Level.WARN)
+                val ok = connect(lastConnectedIp!!)
+                if (!ok) {
+                    log("SYSTEM", "Auto-reconnect failed.", LogEntry.Level.ERROR)
+                    _isConnected.value = false
+                    return
+                }
+            }
+
             try {
                 val info = clientPort.getProcessInfo(proc.pid)
                 _activeProcessInfo.value = info
                 log("SYSTEM", "Selected active process: ${proc.name} (PID: ${proc.pid}, TitleID: ${info.titleId})", LogEntry.Level.INFO)
-                loadMemoryMaps(proc)
             } catch (e: Exception) {
                 _activeProcessInfo.value = null
-                log("SYSTEM", "Selected active process: ${proc.name} (PID: ${proc.pid})", LogEntry.Level.INFO)
+                log("SYSTEM", "Selected active process: ${proc.name} (PID: ${proc.pid}) (Could not load process details: ${e.message})", LogEntry.Level.INFO)
+            }
+
+            try {
+                loadMemoryMaps(proc)
+            } catch (e: Exception) {
+                log("SYSTEM", "Failed to load memory maps: ${e.message}", LogEntry.Level.ERROR)
             }
         } else {
             _activeProcessInfo.value = null

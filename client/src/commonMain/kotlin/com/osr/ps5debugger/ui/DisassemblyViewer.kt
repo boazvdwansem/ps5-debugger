@@ -358,15 +358,6 @@ fun DisassemblyViewer(
                 Text("Go", fontWeight = FontWeight.Bold, fontSize = 12.sp)
             }
             
-            Button(
-                onClick = { isDebugPanelVisible = !isDebugPanelVisible },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isDebugPanelVisible) PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else PS5ThemeColors.SecondaryBg
-                )
-            ) {
-                Text("Debugger Panel", color = PS5ThemeColors.TextMain)
-            }
-            
             Spacer(Modifier.weight(1f))
             
             // Prev/Next page navigation (shifts the viewing window backwards or forwards)
@@ -616,7 +607,7 @@ fun DisassemblyViewer(
                             .padding(12.dp)
                     ) {
                         Text(
-                            text = "DEBUGGER SESSION",
+                            text = "DEBUGGER",
                             color = PS5ThemeColors.AccentCyan,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
