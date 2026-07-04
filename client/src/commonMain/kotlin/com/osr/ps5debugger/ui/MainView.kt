@@ -47,7 +47,7 @@ fun MainView() {
     var jumpToAddress by remember { mutableStateOf<Long?>(null) }
     
     val isConnected by AppContainer.debuggerUseCase.isConnected.collectAsState()
-    var isConsoleVisible by remember { mutableStateOf(true) }
+    var isConsoleVisible by remember { mutableStateOf(false) }
     var isSidebarVisible by remember { mutableStateOf(true) }
     val coroutineScope = rememberCoroutineScope()
     val tabs = listOf("Memory Viewer", "Memory Search", "Watch List", "Memory Dumper")
@@ -130,6 +130,7 @@ fun MainView() {
                                         onMapSelected = {
                                             activeMap = it
                                             selectedTab = 0 // Auto switch to hex viewer tab when map region is clicked
+                                            isSidebarVisible = false // Auto collapse the sidebar
                                         },
                                         activeMap = activeMap,
                                         onCollapse = { isSidebarVisible = false }
@@ -198,7 +199,7 @@ fun MainView() {
                                 // Tab content
                                 Box(modifier = Modifier.fillMaxWidth().weight(1f).background(MaterialTheme.colorScheme.surface.copy(alpha = 0.5f))) {
                                     when (selectedTab) {
-                                        0 -> HexViewer(activeMap = activeMap, jumpToAddress = jumpToAddress)
+                                        0 -> MemoryViewerLayout(activeMap = activeMap, jumpToAddress = jumpToAddress)
                                         1 -> MemoryScannerView(
                                             activeMap = activeMap,
                                             onJumpToAddress = { addr ->
