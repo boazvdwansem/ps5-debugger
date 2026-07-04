@@ -6,11 +6,19 @@ import com.osr.ps5debugger.domain.model.LogEntry
 import com.osr.ps5debugger.domain.model.WatchItem
 import com.osr.ps5debugger.protocol.Ps5ProcessInfo
 import com.osr.ps5debugger.protocol.Ps5DebugEvent
+import com.osr.ps5debugger.protocol.GpRegs
+import com.osr.ps5debugger.protocol.DbRegs
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.SharedFlow
 
 interface DebuggerUseCase {
     val isConnected: StateFlow<Boolean>
+    val isAttached: StateFlow<Boolean>
+    val threadList: StateFlow<List<Int>>
+    val selectedLwpid: StateFlow<Int?>
+    val selectedRegs: StateFlow<GpRegs?>
+    val selectedDbRegs: StateFlow<DbRegs?>
+    val selectedFsGs: StateFlow<Pair<Long, Long>?>
     val processes: StateFlow<List<Process>>
     val activeProcess: StateFlow<Process?>
     val activeProcessInfo: StateFlow<Ps5ProcessInfo?>
@@ -19,6 +27,12 @@ interface DebuggerUseCase {
     val watchlist: StateFlow<List<WatchItem>>
     val vmMaps: StateFlow<List<MemoryRange>>
 
+    fun setAttached(attached: Boolean)
+    fun setThreadList(threads: List<Int>)
+    fun setSelectedLwpid(lwpid: Int?)
+    fun setSelectedRegs(regs: GpRegs?)
+    fun setSelectedDbRegs(regs: DbRegs?)
+    fun setSelectedFsGs(fsgs: Pair<Long, Long>?)
     suspend fun connect(ip: String): Boolean
     suspend fun disconnect()
     suspend fun refreshProcesses()

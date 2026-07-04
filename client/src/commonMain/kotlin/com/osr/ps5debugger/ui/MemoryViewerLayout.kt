@@ -14,6 +14,9 @@ import com.osr.ps5debugger.domain.model.MemoryRange
 import com.osr.ps5debugger.PS5ThemeColors
 import com.osr.ps5debugger.protocol.GpRegs
 import com.osr.ps5debugger.protocol.DbRegs
+import com.osr.ps5debugger.di.AppContainer
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -30,15 +33,15 @@ fun MemoryViewerLayout(
     var hoistedSelectionEnd by remember { mutableStateOf<Long?>(null) }
 
     // Hoisted Debugger Session State
-    var isAttached by remember { mutableStateOf(false) }
+    val isAttached by AppContainer.debuggerUseCase.isAttached.collectAsState()
     val activeBreakpoints = remember { mutableStateMapOf<Int, Long>() } // index -> address
     val activeWatchpoints = remember { mutableStateMapOf<Int, Long>() } // slot -> address
     
-    var threadList by remember { mutableStateOf<List<Int>>(emptyList()) }
-    var selectedLwpid by remember { mutableStateOf<Int?>(null) }
-    var selectedRegs by remember { mutableStateOf<GpRegs?>(null) }
-    var selectedDbRegs by remember { mutableStateOf<DbRegs?>(null) }
-    var selectedFsGs by remember { mutableStateOf<Pair<Long, Long>?>(null) }
+    val threadList by AppContainer.debuggerUseCase.threadList.collectAsState()
+    val selectedLwpid by AppContainer.debuggerUseCase.selectedLwpid.collectAsState()
+    val selectedRegs by AppContainer.debuggerUseCase.selectedRegs.collectAsState()
+    val selectedDbRegs by AppContainer.debuggerUseCase.selectedDbRegs.collectAsState()
+    val selectedFsGs by AppContainer.debuggerUseCase.selectedFsGs.collectAsState()
 
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val isMobile = maxWidth < 800.dp
@@ -113,19 +116,19 @@ fun MemoryViewerLayout(
                                         viewMode = 1
                                     },
                                     isAttached = isAttached,
-                                    onAttachedChanged = { isAttached = it },
+                                    onAttachedChanged = { AppContainer.debuggerUseCase.setAttached(it) },
                                     activeBreakpoints = activeBreakpoints,
                                     activeWatchpoints = activeWatchpoints,
                                     threadList = threadList,
-                                    onThreadListChanged = { threadList = it },
+                                    onThreadListChanged = { AppContainer.debuggerUseCase.setThreadList(it) },
                                     selectedLwpid = selectedLwpid,
-                                    onSelectedLwpidChanged = { selectedLwpid = it },
+                                    onSelectedLwpidChanged = { AppContainer.debuggerUseCase.setSelectedLwpid(it) },
                                     selectedRegs = selectedRegs,
-                                    onSelectedRegsChanged = { selectedRegs = it },
+                                    onSelectedRegsChanged = { AppContainer.debuggerUseCase.setSelectedRegs(it) },
                                     selectedDbRegs = selectedDbRegs,
-                                    onSelectedDbRegsChanged = { selectedDbRegs = it },
+                                    onSelectedDbRegsChanged = { AppContainer.debuggerUseCase.setSelectedDbRegs(it) },
                                     selectedFsGs = selectedFsGs,
-                                    onSelectedFsGsChanged = { selectedFsGs = it },
+                                    onSelectedFsGsChanged = { AppContainer.debuggerUseCase.setSelectedFsGs(it) },
                                     modifier = Modifier.weight(1f)
                                 )
                                 HorizontalDivider(color = PS5ThemeColors.BorderColor)
@@ -161,19 +164,19 @@ fun MemoryViewerLayout(
                                     viewMode = 1
                                 },
                                 isAttached = isAttached,
-                                onAttachedChanged = { isAttached = it },
+                                onAttachedChanged = { AppContainer.debuggerUseCase.setAttached(it) },
                                 activeBreakpoints = activeBreakpoints,
                                 activeWatchpoints = activeWatchpoints,
                                 threadList = threadList,
-                                onThreadListChanged = { threadList = it },
+                                onThreadListChanged = { AppContainer.debuggerUseCase.setThreadList(it) },
                                 selectedLwpid = selectedLwpid,
-                                onSelectedLwpidChanged = { selectedLwpid = it },
+                                onSelectedLwpidChanged = { AppContainer.debuggerUseCase.setSelectedLwpid(it) },
                                 selectedRegs = selectedRegs,
-                                onSelectedRegsChanged = { selectedRegs = it },
+                                onSelectedRegsChanged = { AppContainer.debuggerUseCase.setSelectedRegs(it) },
                                 selectedDbRegs = selectedDbRegs,
-                                onSelectedDbRegsChanged = { selectedDbRegs = it },
+                                onSelectedDbRegsChanged = { AppContainer.debuggerUseCase.setSelectedDbRegs(it) },
                                 selectedFsGs = selectedFsGs,
-                                onSelectedFsGsChanged = { selectedFsGs = it },
+                                onSelectedFsGsChanged = { AppContainer.debuggerUseCase.setSelectedFsGs(it) },
                                 modifier = Modifier.fillMaxSize(),
                                 showHexDetails = true
                             )

@@ -24,6 +24,48 @@ class DebuggerDomainService(
     private val _isConnected = MutableStateFlow(false)
     override val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
 
+    private val _isAttached = MutableStateFlow(false)
+    override val isAttached: StateFlow<Boolean> = _isAttached.asStateFlow()
+
+    override fun setAttached(attached: Boolean) {
+        _isAttached.value = attached
+    }
+
+    private val _threadList = MutableStateFlow<List<Int>>(emptyList())
+    override val threadList: StateFlow<List<Int>> = _threadList.asStateFlow()
+
+    private val _selectedLwpid = MutableStateFlow<Int?>(null)
+    override val selectedLwpid: StateFlow<Int?> = _selectedLwpid.asStateFlow()
+
+    private val _selectedRegs = MutableStateFlow<com.osr.ps5debugger.protocol.GpRegs?>(null)
+    override val selectedRegs: StateFlow<com.osr.ps5debugger.protocol.GpRegs?> = _selectedRegs.asStateFlow()
+
+    private val _selectedDbRegs = MutableStateFlow<com.osr.ps5debugger.protocol.DbRegs?>(null)
+    override val selectedDbRegs: StateFlow<com.osr.ps5debugger.protocol.DbRegs?> = _selectedDbRegs.asStateFlow()
+
+    private val _selectedFsGs = MutableStateFlow<Pair<Long, Long>?>(null)
+    override val selectedFsGs: StateFlow<Pair<Long, Long>?> = _selectedFsGs.asStateFlow()
+
+    override fun setThreadList(threads: List<Int>) {
+        _threadList.value = threads
+    }
+
+    override fun setSelectedLwpid(lwpid: Int?) {
+        _selectedLwpid.value = lwpid
+    }
+
+    override fun setSelectedRegs(regs: com.osr.ps5debugger.protocol.GpRegs?) {
+        _selectedRegs.value = regs
+    }
+
+    override fun setSelectedDbRegs(regs: com.osr.ps5debugger.protocol.DbRegs?) {
+        _selectedDbRegs.value = regs
+    }
+
+    override fun setSelectedFsGs(fsgs: Pair<Long, Long>?) {
+        _selectedFsGs.value = fsgs
+    }
+
     private val _processes = MutableStateFlow<List<Process>>(emptyList())
     override val processes: StateFlow<List<Process>> = _processes.asStateFlow()
 
@@ -54,6 +96,33 @@ class DebuggerDomainService(
     private var freezeIntervalMs = 500L
 
     init {
+        // Connection keeper loop to handle background disconnects (like detach socket closures)
+        scope.launch {
+            while (isActive) {
+                if (_isConnected.value && !clientPort.isConnected) {
+                    log("SYSTEM", "Socket connection lost. Reconnecting...", LogEntry.Level.WARN)
+                    val ip = lastConnectedIp
+                    if (ip != null) {
+                        val ok = clientPort.connect(ip)
+                        if (ok) {
+                            try {
+                                clientPort.auth()
+                                log("SYSTEM", "Reconnected successfully.", LogEntry.Level.INFO)
+                            } catch (e: Exception) {
+                                log("SYSTEM", "Reconnect authentication failed: ${e.message}", LogEntry.Level.ERROR)
+                                _isConnected.value = false
+                            }
+                        } else {
+                            log("SYSTEM", "Reconnect failed. Returning to connection screen.", LogEntry.Level.ERROR)
+                            _isConnected.value = false
+                        }
+                    } else {
+                        _isConnected.value = false
+                    }
+                }
+                delay(2000)
+            }
+        }
         // Collect network changes and forward connection logs
         scope.launch {
             isConnected.collect { connected ->
@@ -146,6 +215,12 @@ class DebuggerDomainService(
     override suspend fun selectProcess(proc: Process?) {
         _activeProcess.value = proc
         _vmMaps.value = emptyList()
+        _isAttached.value = false
+        _threadList.value = emptyList()
+        _selectedLwpid.value = null
+        _selectedRegs.value = null
+        _selectedDbRegs.value = null
+        _selectedFsGs.value = null
         if (proc != null) {
             if (!clientPort.isConnected && lastConnectedIp != null) {
                 log("SYSTEM", "Connection lost. Attempting auto-reconnect to $lastConnectedIp...", LogEntry.Level.WARN)

@@ -204,7 +204,44 @@ fun DisassemblyViewer(
                     isLoading = false
                 }
             } catch (e: Exception) {
-                AppContainer.debuggerUseCase.log("DISASM", "Disassembly failed: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                AppContainer.debuggerUseCase.log("DISASM", "Disassembly failed, falling back to raw hex formatting: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.WARN)
+                try {
+                    val fallbackLen = minOf(4096, (activeMap.end - startAddress).toInt()) // Load smaller chunk for raw hex view fallback (4KB)
+                    if (fallbackLen > 0) {
+                        val rawData = client.readMemory(pid, startAddress, fallbackLen)
+                        val fallbackList = mutableListOf<DisasmLine>()
+                        var addrOffset = 0
+                        while (addrOffset < rawData.size) {
+                            val byteVal = rawData[addrOffset]
+                            val dummyInstr = Ps5DisasmInstr(
+                                addr = startAddress + addrOffset,
+                                ripRelTarget = 0L,
+                                memDisp = (byteVal.toInt() and 0xFF).toLong(),
+                                length = 1,
+                                kind = 0,
+                                memBaseReg = -1,
+                                memIndexReg = -1,
+                                memScale = 0,
+                                mnemonicLo = -1
+                            )
+                            fallbackList.add(DisasmLine(dummyInstr, byteArrayOf(byteVal)))
+                            addrOffset += 1
+                        }
+                        instructions.clear()
+                        instructions.addAll(fallbackList)
+                        
+                        if (jumpToAddress != null) {
+                            val index = instructions.indexOfFirst { it.instr.addr == jumpToAddress }
+                            if (index != -1) {
+                                try {
+                                    listState.scrollToItem(index)
+                                } catch (_: Exception) {}
+                            }
+                        }
+                    }
+                } catch (readErr: Exception) {
+                    AppContainer.debuggerUseCase.log("DISASM", "Fallback raw memory read failed: ${readErr.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                }
                 isLoading = false
             }
         }
@@ -244,6 +281,13 @@ fun DisassemblyViewer(
                 onSelectedDbRegsChanged(client.getDbRegs(lwpid))
                 onSelectedFsGsChanged(client.getFsGsBase(lwpid))
             } catch (_: Exception) {}
+        }
+    }
+
+    // Auto-refresh thread and register info on load if attached
+    LaunchedEffect(isAttached) {
+        if (isAttached) {
+            refreshThreadData()
         }
     }
 
@@ -1308,11 +1352,15 @@ private fun getMnemonic(instr: Ps5DisasmInstr): String {
         237 -> "SHR"
         27 -> "TEST"
         235 -> "XOR"
+        -1 -> "db"
         else -> "INSTR_${instr.mnemonicLo}"
     }
 }
 
 private fun formatOperands(instr: Ps5DisasmInstr): String {
+    if (instr.mnemonicLo == -1) {
+        return String.format("0x%02X", instr.memDisp)
+    }
     val ops = mutableListOf<String>()
     
     if (instr.isRipRel && instr.ripRelTarget != 0L) {
