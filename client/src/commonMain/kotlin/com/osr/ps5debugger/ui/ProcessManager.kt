@@ -46,19 +46,34 @@ fun ProcessManager(
     val maps by AppContainer.debuggerUseCase.vmMaps.collectAsState()
     val isLoadingMaps = false
 
+    var activeTab by remember { mutableStateOf(0) } // 0 = Processes, 1 = Memory Regions
+
     Column(modifier = modifier.fillMaxHeight().width(320.dp).background(PS5ThemeColors.DarkBg).padding(8.dp)) {
-        // Process list header
+        // Sidebar header
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Text("Processes", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(
+                text = if (activeTab == 0) "Processes" else "Memory Regions",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = {
-                    coroutineScope.launch { AppContainer.debuggerUseCase.refreshProcesses() }
+                    coroutineScope.launch {
+                        if (activeTab == 0) {
+                            AppContainer.debuggerUseCase.refreshProcesses()
+                        } else {
+                            val proc = activeProcess
+                            if (proc != null) {
+                                AppContainer.debuggerUseCase.selectProcess(proc)
+                            }
+                        }
+                    }
                 }) {
-                    Icon(Icons.Default.Refresh, contentDescription = "Refresh processes")
+                    Icon(Icons.Default.Refresh, contentDescription = "Refresh")
                 }
                 if (onCollapse != null) {
                     val density = LocalDensity.current.density
@@ -81,97 +96,150 @@ fun ProcessManager(
             }
         }
 
-        // Search Bar
-        OutlinedTextField(
-            value = processSearchText,
-            onValueChange = { processSearchText = it },
-            placeholder = { Text("Filter processes...") },
-            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
-        )
-
-        // Processes list
-        val filteredProcesses = processes.filter { it.name.contains(processSearchText, ignoreCase = true) }
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f)
-                .clip(RoundedCornerShape(4.dp))
-                .background(PS5ThemeColors.Surface)
-                .border(1.dp, PS5ThemeColors.BorderColor, RoundedCornerShape(4.dp))
+        // Selection Tiles
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            items(filteredProcesses) { proc ->
-                val isSelected = activeProcess?.pid == proc.pid
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(if (isSelected) PS5ThemeColors.AccentCyan.copy(alpha = 0.15f) else Color.Transparent)
-                        .clickable {
-                            coroutineScope.launch { AppContainer.debuggerUseCase.selectProcess(proc) }
-                        }
-                        .padding(8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(proc.name, fontSize = 13.sp, color = PS5ThemeColors.TextMain)
-                    Text("PID: ${proc.pid}", fontSize = 12.sp, color = PS5ThemeColors.TextMuted, fontFamily = FontFamily.Monospace)
+            // Processes Tile
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(36.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(if (activeTab == 0) PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else PS5ThemeColors.Surface)
+                    .border(1.dp, if (activeTab == 0) PS5ThemeColors.AccentCyan else PS5ThemeColors.BorderColor, RoundedCornerShape(4.dp))
+                    .clickable { activeTab = 0 },
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "Processes",
+                    color = if (activeTab == 0) PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMain,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            
+            // Memory Regions Tile
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(36.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(if (activeTab == 1) PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else PS5ThemeColors.Surface)
+                    .border(1.dp, if (activeTab == 1) PS5ThemeColors.AccentCyan else PS5ThemeColors.BorderColor, RoundedCornerShape(4.dp))
+                    .clickable { activeTab = 1 },
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "Regions",
+                    color = if (activeTab == 1) PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMain,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
+        if (activeTab == 0) {
+            // Search Bar
+            OutlinedTextField(
+                value = processSearchText,
+                onValueChange = { processSearchText = it },
+                placeholder = { Text("Filter processes...") },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+            )
+
+            // Processes list
+            val filteredProcesses = processes.filter { it.name.contains(processSearchText, ignoreCase = true) }
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(PS5ThemeColors.Surface)
+                    .border(1.dp, PS5ThemeColors.BorderColor, RoundedCornerShape(4.dp))
+            ) {
+                items(filteredProcesses) { proc ->
+                    val isSelected = activeProcess?.pid == proc.pid
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(if (isSelected) PS5ThemeColors.AccentCyan.copy(alpha = 0.15f) else Color.Transparent)
+                            .clickable {
+                                coroutineScope.launch { 
+                                    AppContainer.debuggerUseCase.selectProcess(proc)
+                                    // Auto switch to memory regions tab when a process is selected
+                                    activeTab = 1
+                                }
+                            }
+                            .padding(8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(proc.name, fontSize = 13.sp, color = PS5ThemeColors.TextMain)
+                        Text("PID: ${proc.pid}", fontSize = 12.sp, color = PS5ThemeColors.TextMuted, fontFamily = FontFamily.Monospace)
+                    }
                 }
             }
         }
 
         // VM Map / Regions list
-        if (activeProcess != null) {
-            Spacer(Modifier.height(8.dp))
-            Text("Memory Regions", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            
-            if (isLoadingMaps) {
-                Box(Modifier.fillMaxWidth().height(100.dp), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(modifier = Modifier.size(24.dp), color = PS5ThemeColors.AccentCyan)
+        if (activeTab == 1) {
+            if (activeProcess == null) {
+                Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                    Text("Select a process first to view memory regions", fontSize = 13.sp, color = PS5ThemeColors.TextMuted)
                 }
             } else {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .clip(RoundedCornerShape(4.dp))
-                        .background(PS5ThemeColors.Surface)
-                        .border(1.dp, PS5ThemeColors.BorderColor, RoundedCornerShape(4.dp))
-                ) {
-                    items(maps) { map ->
-                        val isSelectedMap = activeMap?.start == map.start
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(if (isSelectedMap) PS5ThemeColors.AccentCyan.copy(alpha = 0.15f) else Color.Transparent)
-                                .clickable { onMapSelected(map) }
-                                .padding(8.dp)
-                        ) {
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text(
-                                    text = if (map.name.isEmpty()) "unnamed" else map.name,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = PS5ThemeColors.TextMain
-                                )
-                                Text(
-                                    text = map.getProtString(),
-                                    fontSize = 11.sp,
-                                    color = PS5ThemeColors.AccentCyan,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                            }
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                  Text(
-                                      text = String.format("0x%X - 0x%X", map.start, map.end),
-                                      fontSize = 10.sp,
-                                      color = Color.Gray,
-                                      fontFamily = FontFamily.Monospace
-                                  )
-                                  Text(
-                                      text = String.format("%.2f MB", map.size.toDouble() / (1024 * 1024)),
-                                      fontSize = 10.sp,
-                                      color = Color.Gray
-                                  )
+                if (isLoadingMaps) {
+                    Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(modifier = Modifier.size(24.dp), color = PS5ThemeColors.AccentCyan)
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(PS5ThemeColors.Surface)
+                            .border(1.dp, PS5ThemeColors.BorderColor, RoundedCornerShape(4.dp))
+                    ) {
+                        items(maps) { map ->
+                            val isSelectedMap = activeMap?.start == map.start
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(if (isSelectedMap) PS5ThemeColors.AccentCyan.copy(alpha = 0.15f) else Color.Transparent)
+                                    .clickable { onMapSelected(map) }
+                                    .padding(8.dp)
+                            ) {
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                    Text(
+                                        text = if (map.name.isEmpty()) "unnamed" else map.name,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = PS5ThemeColors.TextMain
+                                    )
+                                    Text(
+                                        text = map.getProtString(),
+                                        fontSize = 11.sp,
+                                        color = PS5ThemeColors.AccentCyan,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                }
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                      Text(
+                                          text = String.format("0x%X - 0x%X", map.start, map.end),
+                                          fontSize = 10.sp,
+                                          color = Color.Gray,
+                                          fontFamily = FontFamily.Monospace
+                                      )
+                                      Text(
+                                          text = String.format("%.2f MB", map.size.toDouble() / (1024 * 1024)),
+                                          fontSize = 10.sp,
+                                          color = Color.Gray
+                                      )
+                                }
                             }
                         }
                     }
