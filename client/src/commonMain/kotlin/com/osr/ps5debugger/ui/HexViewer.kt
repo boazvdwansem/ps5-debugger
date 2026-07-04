@@ -818,189 +818,200 @@ fun HexViewer(
                         Column(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .pointerInput(Unit) {
-                                    awaitPointerEventScope {
-                                        while (true) {
-                                            val event = awaitPointerEvent()
-                                            val change = event.changes.first()
-                                            val position = change.position
-                                            
-                                            when (event.type) {
-                                                PointerEventType.Scroll -> {
-                                                    val delta = change.scrollDelta.y
-                                                    val rows = if (delta > 0f) 3L else if (delta < 0f) -3L else 0L
-                                                    val currentMax = maxOf(0L, ((endAddress - startAddress + bytesPerRow - 1) / bytesPerRow - visibleRowsCount))
-                                                    scrollPosition = (scrollPosition + rows).coerceIn(0L, currentMax)
-                                                }
-                                                PointerEventType.Press -> {
-                                                    isMouseDown = true
-                                                    if (!isMobile) {
-                                                        focusRequester.requestFocus()
+                                .pointerInput(activeMap, bytesPerRow, density) {
+                                    try {
+                                        awaitPointerEventScope {
+                                            while (true) {
+                                                val event = awaitPointerEvent()
+                                                val change = event.changes.first()
+                                                val position = change.position
+                                                
+                                                when (event.type) {
+                                                    PointerEventType.Scroll -> {
+                                                        val delta = change.scrollDelta.y
+                                                        val rows = if (delta > 0f) 3L else if (delta < 0f) -3L else 0L
+                                                        val currentMax = maxOf(0L, ((endAddress - startAddress + bytesPerRow - 1) / bytesPerRow - visibleRowsCount))
+                                                        scrollPosition = (scrollPosition + rows).coerceIn(0L, currentMax)
                                                     }
-                                                    touchStartPos = position
-                                                    touchStartScroll = scrollPosition
-                                                    isDraggingToScroll = false
-                                                    isDraggingToSelect = false
-                                                    isLongPressSelection = false
-                                                    isSecondaryClick = event.buttons.isSecondaryPressed
-                                                    
-                                                    val clickResult = getAddressAtOffset(position.x, position.y, size.height.toFloat(), size.width.toFloat())
-                                                    
-                                                    if (isSecondaryClick) {
-                                                        if (clickResult != null) {
-                                                            val (addr, area) = clickResult
-                                                            clickedArea = area
-                                                            contextMenuAddr = addr
-                                                            if (area == ClickedArea.HEX || area == ClickedArea.ASCII) {
-                                                                if (!isAddressSelected(addr)) {
-                                                                    selectionStart = addr
-                                                                    selectionEnd = addr
-                                                                }
-                                                            }
-                                                            contextMenuOffset = DpOffset(position.x.dp / density, position.y.dp / density)
-                                                            showContextMenu = true
+                                                    PointerEventType.Press -> {
+                                                        isMouseDown = true
+                                                        if (!isMobile) {
+                                                            focusRequester.requestFocus()
                                                         }
-                                                    } else {
-                                                        if (clickResult != null) {
-                                                            val (addr, area) = clickResult
-                                                            longPressJob?.cancel()
-                                                            if (!isMobile && (area == ClickedArea.HEX || area == ClickedArea.ASCII)) {
-                                                                clickedArea = area
-                                                                selectionStart = addr
-                                                                selectionEnd = addr
-                                                                hexInputBuffer = ""
-                                                            }
-                                                            isLongPressSelection = false
-                                                            longPressJob = coroutineScope.launch {
-                                                                delay(400)
-                                                                if (!isDraggingToScroll && !isDraggingToSelect) {
-                                                                    isLongPressSelection = true
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                                PointerEventType.Move -> {
-                                                    val startPos = touchStartPos
-                                                    if (startPos != null) {
-                                                        val dragY = position.y - startPos.y
-                                                        val dragX = position.x - startPos.x
-                                                        val dragDistance = kotlin.math.sqrt(dragX * dragX + dragY * dragY)
-                                                        val dragThreshold = if (isMobile) 24f * density else 8f * density
-                                                        
-                                                        val pressClickResult = getAddressAtOffset(startPos.x, startPos.y, size.height.toFloat(), size.width.toFloat())
-                                                        val isSelectionArea = pressClickResult != null && (pressClickResult.second == ClickedArea.HEX || pressClickResult.second == ClickedArea.ASCII)
-                                                        
-                                                        if (!isDraggingToScroll && !isDraggingToSelect && dragDistance > dragThreshold) {
-                                                            if (isMobile) {
-                                                                if (isSelectionArea && kotlin.math.abs(dragX) > kotlin.math.abs(dragY) * 1.5f) {
-                                                                    isDraggingToSelect = true
-                                                                    longPressJob?.cancel()
-                                                                    val startClick = getAddressAtOffset(startPos.x, startPos.y, size.height.toFloat(), size.width.toFloat())
-                                                                    if (startClick != null) {
-                                                                        clickedArea = startClick.second
-                                                                        selectionStart = startClick.first
-                                                                        selectionEnd = startClick.first
-                                                                        hexInputBuffer = ""
-                                                                    }
-                                                                } else {
-                                                                    isDraggingToScroll = true
-                                                                    longPressJob?.cancel()
-                                                                }
-                                                            } else {
-                                                                if (isSelectionArea) {
-                                                                    isDraggingToSelect = true
-                                                                    longPressJob?.cancel()
-                                                                } else {
-                                                                    isDraggingToScroll = true
-                                                                    longPressJob?.cancel()
-                                                                }
-                                                            }
-                                                        }
-                                                        
-                                                        if (isDraggingToSelect) {
-                                                            val clickResult = getAddressAtOffset(position.x, position.y, size.height.toFloat(), size.width.toFloat())
-                                                            if (clickResult != null) {
-                                                                val (addr, area) = clickResult
-                                                                if (area == ClickedArea.HEX || area == ClickedArea.ASCII) {
-                                                                    selectionEnd = addr
-                                                                }
-                                                            }
-                                                            if (position.y >= size.height) {
-                                                                scrollPosition = (scrollPosition + 1L).coerceIn(0L, maxScrollPosition)
-                                                            } else if (position.y < 0f) {
-                                                                scrollPosition = (scrollPosition - 1L).coerceIn(0L, maxScrollPosition)
-                                                            }
-                                                        } else if (isDraggingToScroll) {
-                                                            val rowDelta = (-dragY / (24f * density)).toLong()
-                                                            scrollPosition = (touchStartScroll + rowDelta).coerceIn(0L, maxScrollPosition)
-                                                        }
-                                                    }
-                                                }
-                                                PointerEventType.Release -> {
-                                                    longPressJob?.cancel()
-                                                    val startPos = touchStartPos
-                                                    if (startPos != null && !isSecondaryClick) {
-                                                        val dragY = position.y - startPos.y
-                                                        val dragX = position.x - startPos.x
-                                                        val dragDistance = kotlin.math.sqrt(dragX * dragX + dragY * dragY)
-                                                        val dragThreshold = if (isMobile) 24f * density else 8f * density
-                                                        val hasDragged = dragDistance > dragThreshold
+                                                        touchStartPos = position
+                                                        touchStartScroll = scrollPosition
+                                                        isDraggingToScroll = false
+                                                        isDraggingToSelect = false
+                                                        isLongPressSelection = false
+                                                        isSecondaryClick = event.buttons.isSecondaryPressed
                                                         
                                                         val clickResult = getAddressAtOffset(position.x, position.y, size.height.toFloat(), size.width.toFloat())
-                                                        if (clickResult != null) {
-                                                            val (addr, area) = clickResult
-                                                            
-                                                            if (isDraggingToSelect) {
-                                                                if (isMobile) {
-                                                                    clickedArea = area
-                                                                    contextMenuAddr = addr
-                                                                    contextMenuOffset = DpOffset(position.x.dp / density, position.y.dp / density)
-                                                                    showContextMenu = true
-                                                                }
-                                                            } else if (isLongPressSelection) {
+                                                        
+                                                        if (isSecondaryClick) {
+                                                            if (clickResult != null) {
+                                                                val (addr, area) = clickResult
                                                                 clickedArea = area
                                                                 contextMenuAddr = addr
+                                                                if (area == ClickedArea.HEX || area == ClickedArea.ASCII) {
+                                                                    if (!isAddressSelected(addr)) {
+                                                                        selectionStart = addr
+                                                                        selectionEnd = addr
+                                                                    }
+                                                                }
                                                                 contextMenuOffset = DpOffset(position.x.dp / density, position.y.dp / density)
                                                                 showContextMenu = true
-                                                            } else if (!isDraggingToScroll) {
-                                                                if (area == ClickedArea.HEX || area == ClickedArea.ASCII) {
+                                                            }
+                                                        } else {
+                                                            if (clickResult != null) {
+                                                                val (addr, area) = clickResult
+                                                                longPressJob?.cancel()
+                                                                if (!isMobile && (area == ClickedArea.HEX || area == ClickedArea.ASCII)) {
                                                                     clickedArea = area
                                                                     selectionStart = addr
                                                                     selectionEnd = addr
                                                                     hexInputBuffer = ""
                                                                 }
-                                                                
-                                                                 // Double tap to edit (requests focus & opens soft keyboard)
-                                                                 val currentTime = System.currentTimeMillis()
-                                                                 println("Release event: addr=$addr, area=$area, timeDiff=${currentTime - lastTapTime}ms, isEditingUnlocked=$isEditingUnlocked")
-                                                                 if (currentTime - lastTapTime < 500) {
-                                                                     println("Double-tap detected! Showing keyboard.")
-                                                                     if (isMobile && isEditingUnlocked && (area == ClickedArea.HEX || area == ClickedArea.ASCII)) {
-                                                                         coroutineScope.launch {
-                                                                             try {
-                                                                                 keyboardFocusRequester.requestFocus()
-                                                                                 kotlinx.coroutines.delay(100)
-                                                                                 keyboardController?.show()
-                                                                             } catch (e: Exception) {
-                                                                                 e.printStackTrace()
-                                                                             }
-                                                                         }
-                                                                     }
-                                                                 }
-                                                                 lastTapTime = currentTime
+                                                                isLongPressSelection = false
+                                                                longPressJob = coroutineScope.launch {
+                                                                    delay(400)
+                                                                    if (!isDraggingToScroll && !isDraggingToSelect) {
+                                                                        isLongPressSelection = true
+                                                                    }
+                                                                }
                                                             }
                                                         }
                                                     }
-                                                    touchStartPos = null
-                                                    isMouseDown = false
-                                                    isDraggingToScroll = false
-                                                    isDraggingToSelect = false
-                                                    isLongPressSelection = false
-                                                    isSecondaryClick = false
+                                                    PointerEventType.Move -> {
+                                                        val startPos = touchStartPos
+                                                        if (startPos != null) {
+                                                            val dragY = position.y - startPos.y
+                                                            val dragX = position.x - startPos.x
+                                                            val dragDistance = kotlin.math.sqrt(dragX * dragX + dragY * dragY)
+                                                            val dragThreshold = if (isMobile) 24f * density else 8f * density
+                                                            
+                                                            val pressClickResult = getAddressAtOffset(startPos.x, startPos.y, size.height.toFloat(), size.width.toFloat())
+                                                            val isSelectionArea = pressClickResult != null && (pressClickResult.second == ClickedArea.HEX || pressClickResult.second == ClickedArea.ASCII)
+                                                            
+                                                            if (!isDraggingToScroll && !isDraggingToSelect && dragDistance > dragThreshold) {
+                                                                if (isMobile) {
+                                                                    if (isSelectionArea && kotlin.math.abs(dragX) > kotlin.math.abs(dragY) * 1.5f) {
+                                                                        isDraggingToSelect = true
+                                                                        longPressJob?.cancel()
+                                                                        val startClick = getAddressAtOffset(startPos.x, startPos.y, size.height.toFloat(), size.width.toFloat())
+                                                                        if (startClick != null) {
+                                                                            clickedArea = startClick.second
+                                                                            selectionStart = startClick.first
+                                                                            selectionEnd = startClick.first
+                                                                            hexInputBuffer = ""
+                                                                        }
+                                                                    } else {
+                                                                        isDraggingToScroll = true
+                                                                        longPressJob?.cancel()
+                                                                    }
+                                                                } else {
+                                                                    if (isSelectionArea) {
+                                                                        isDraggingToSelect = true
+                                                                        longPressJob?.cancel()
+                                                                    } else {
+                                                                        isDraggingToScroll = true
+                                                                        longPressJob?.cancel()
+                                                                    }
+                                                                }
+                                                            }
+                                                            
+                                                            if (isDraggingToSelect) {
+                                                                change.consume()
+                                                                val clickResult = getAddressAtOffset(position.x, position.y, size.height.toFloat(), size.width.toFloat())
+                                                                if (clickResult != null) {
+                                                                    val (addr, area) = clickResult
+                                                                    if (area == ClickedArea.HEX || area == ClickedArea.ASCII) {
+                                                                        selectionEnd = addr
+                                                                    }
+                                                                }
+                                                                if (position.y >= size.height) {
+                                                                    scrollPosition = (scrollPosition + 1L).coerceIn(0L, maxScrollPosition)
+                                                                } else if (position.y < 0f) {
+                                                                    scrollPosition = (scrollPosition - 1L).coerceIn(0L, maxScrollPosition)
+                                                                }
+                                                            } else if (isDraggingToScroll) {
+                                                                change.consume()
+                                                                val rowDelta = (-dragY / (24f * density)).toLong()
+                                                                scrollPosition = (touchStartScroll + rowDelta).coerceIn(0L, maxScrollPosition)
+                                                            }
+                                                        }
+                                                    }
+                                                    PointerEventType.Release -> {
+                                                        longPressJob?.cancel()
+                                                        val startPos = touchStartPos
+                                                        if (startPos != null && !isSecondaryClick) {
+                                                            val dragY = position.y - startPos.y
+                                                            val dragX = position.x - startPos.x
+                                                            val dragDistance = kotlin.math.sqrt(dragX * dragX + dragY * dragY)
+                                                            val dragThreshold = if (isMobile) 24f * density else 8f * density
+                                                            val hasDragged = dragDistance > dragThreshold
+                                                            
+                                                            val clickResult = getAddressAtOffset(position.x, position.y, size.height.toFloat(), size.width.toFloat())
+                                                            if (clickResult != null) {
+                                                                val (addr, area) = clickResult
+                                                                
+                                                                if (isDraggingToSelect) {
+                                                                    if (isMobile) {
+                                                                        clickedArea = area
+                                                                        contextMenuAddr = addr
+                                                                        contextMenuOffset = DpOffset(position.x.dp / density, position.y.dp / density)
+                                                                        showContextMenu = true
+                                                                    }
+                                                                } else if (isLongPressSelection) {
+                                                                    clickedArea = area
+                                                                    contextMenuAddr = addr
+                                                                    contextMenuOffset = DpOffset(position.x.dp / density, position.y.dp / density)
+                                                                    showContextMenu = true
+                                                                } else if (!isDraggingToScroll) {
+                                                                    if (area == ClickedArea.HEX || area == ClickedArea.ASCII) {
+                                                                        clickedArea = area
+                                                                        selectionStart = addr
+                                                                        selectionEnd = addr
+                                                                        hexInputBuffer = ""
+                                                                    }
+                                                                    
+                                                                     // Double tap to edit (requests focus & opens soft keyboard)
+                                                                     val currentTime = System.currentTimeMillis()
+                                                                     println("Release event: addr=$addr, area=$area, timeDiff=${currentTime - lastTapTime}ms, isEditingUnlocked=$isEditingUnlocked")
+                                                                     if (currentTime - lastTapTime < 500) {
+                                                                         println("Double-tap detected! Showing keyboard.")
+                                                                         if (isMobile && isEditingUnlocked && (area == ClickedArea.HEX || area == ClickedArea.ASCII)) {
+                                                                             coroutineScope.launch {
+                                                                                 try {
+                                                                                     keyboardFocusRequester.requestFocus()
+                                                                                     kotlinx.coroutines.delay(100)
+                                                                                     keyboardController?.show()
+                                                                                 } catch (e: Exception) {
+                                                                                     e.printStackTrace()
+                                                                                 }
+                                                                             }
+                                                                         }
+                                                                     }
+                                                                     lastTapTime = currentTime
+                                                                }
+                                                            }
+                                                        }
+                                                        touchStartPos = null
+                                                        isMouseDown = false
+                                                        isDraggingToScroll = false
+                                                        isDraggingToSelect = false
+                                                        isLongPressSelection = false
+                                                        isSecondaryClick = false
+                                                    }
                                                 }
                                             }
                                         }
+                                    } finally {
+                                        isMouseDown = false
+                                        isDraggingToScroll = false
+                                        isDraggingToSelect = false
+                                        isLongPressSelection = false
+                                        isSecondaryClick = false
+                                        touchStartPos = null
                                     }
                                 }
                         ) {

@@ -1,5 +1,7 @@
 package com.osr.ps5debugger.ui
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -9,6 +11,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -27,11 +30,26 @@ import java.io.InputStream
 
 private const val ScanReadTimeoutMs = 5 * 60 * 1000
 
-@OptIn(ExperimentalMaterial3Api::class)
+object MemoryScannerState {
+    val scanValueState = mutableStateOf("100")
+    val scanValueExtraState = mutableStateOf("200")
+    val scanValueTypeState = mutableStateOf("Int32")
+    val scanCompareTypeState = mutableStateOf("ExactValue")
+    val alignmentState = mutableStateOf(4)
+    val isScanningState = mutableStateOf(false)
+    val progressState = mutableStateOf(0f)
+    val scanResults = mutableStateListOf<Ps5ScanResult>()
+    val totalMatchesCountState = mutableStateOf(0L)
+    val isRescanModeState = mutableStateOf(false)
+    val timeRemainingTextState = mutableStateOf("")
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 fun MemoryScannerView(
     activeMap: MemoryRange?,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onJumpToAddress: ((Long) -> Unit)? = null
 ) {
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val isMobile = maxWidth < 600.dp
@@ -40,20 +58,218 @@ fun MemoryScannerView(
         val pid = AppContainer.debuggerUseCase.activeProcess.value?.pid
         val isConnected by AppContainer.debuggerUseCase.isConnected.collectAsState()
 
-        var scanValue by remember { mutableStateOf("100") }
-        var scanValueType by remember { mutableStateOf("Int32") }
-        var scanCompareType by remember { mutableStateOf("ExactValue") }
-        var alignment by remember { mutableStateOf(4) }
+        var scanValue by MemoryScannerState.scanValueState
+        var scanValueExtra by MemoryScannerState.scanValueExtraState
+        var scanValueType by MemoryScannerState.scanValueTypeState
+        var scanCompareType by MemoryScannerState.scanCompareTypeState
+        var alignment by MemoryScannerState.alignmentState
         
-        var isScanning by remember { mutableStateOf(false) }
-        var progress by remember { mutableStateOf(0f) }
-        val scanResults = remember { mutableStateListOf<Ps5ScanResult>() }
-        var totalMatchesCount by remember { mutableStateOf(0L) }
+        var isScanning by MemoryScannerState.isScanningState
+        var progress by MemoryScannerState.progressState
+        val scanResults = MemoryScannerState.scanResults
+        var totalMatchesCount by MemoryScannerState.totalMatchesCountState
         
-        var isRescanMode by remember { mutableStateOf(false) }
+        var isRescanMode by MemoryScannerState.isRescanModeState
 
-        val valueTypes = listOf("Byte", "Int16", "Int32", "Int64", "Float", "Double")
-        val compareTypes = listOf("ExactValue", "BiggerThan", "SmallerThan")
+        val valueTypes = listOf(
+            "Byte (UInt8)", "SByte (Int8)",
+            "UInt16", "Int16",
+            "UInt32", "Int32",
+            "UInt64", "Int64",
+            "Float", "Double",
+            "ASCII String",
+            "Hex Mask (e.g. 00 11 ?? 33)"
+        )
+        val compareTypes = listOf(
+            "ExactValue", "Fuzzy", "BiggerThan", "SmallerThan", "Between",
+            "BiggerThanLast", "IncreasedBy", "SmallerThanLast", "DecreasedBy",
+            "ValueChanged", "ValueUnchanged", "UnknownInitial", "UnknownInitialMax"
+        )
+
+        var timeRemainingText by MemoryScannerState.timeRemainingTextState
+
+        val performScan = {
+            if (activeMap != null && pid != null) {
+                coroutineScope.launch {
+                    isScanning = true
+                    progress = 0f
+                    timeRemainingText = "Starting scan..."
+                    scanResults.clear()
+                    
+                    val vtVal = when (scanValueType) {
+                        "Byte (UInt8)", "Byte" -> 0
+                        "SByte (Int8)" -> 1
+                        "UInt16" -> 2
+                        "Int16" -> 3
+                        "UInt32" -> 4
+                        "Int32" -> 5
+                        "UInt64" -> 6
+                        "Int64" -> 7
+                        "Float" -> 8
+                        "Double" -> 9
+                        "ASCII String", "Hex Mask (e.g. 00 11 ?? 33)" -> 10
+                        else -> 4
+                    }
+                    
+                    val ctVal = when (scanCompareType) {
+                        "ExactValue" -> 0
+                        "Fuzzy" -> 1
+                        "BiggerThan" -> 2
+                        "SmallerThan" -> 3
+                        "Between" -> 4
+                        "BiggerThanLast" -> 5
+                        "IncreasedBy" -> 6
+                        "SmallerThanLast" -> 7
+                        "DecreasedBy" -> 8
+                        "ValueChanged" -> 9
+                        "ValueUnchanged" -> 10
+                        "UnknownInitial" -> 11
+                        "UnknownInitialMax" -> 12
+                        else -> 0
+                    }
+
+                    val noValueNeeded = scanCompareType == "UnknownInitial" ||
+                                        scanCompareType == "ValueChanged" ||
+                                        scanCompareType == "ValueUnchanged" ||
+                                        scanCompareType == "BiggerThanLast" ||
+                                        scanCompareType == "SmallerThanLast"
+
+                    var maskBytes: ByteArray? = null
+                    val typeSize = when {
+                        scanValueType.contains("Byte") -> 1
+                        scanValueType.contains("16") -> 2
+                        scanValueType.contains("32") -> 4
+                        scanValueType.contains("64") -> 8
+                        scanValueType.contains("Float") -> 4
+                        scanValueType.contains("Double") -> 8
+                        else -> 4
+                    }
+                    val bytes = if (noValueNeeded) {
+                        ByteArray(typeSize)
+                    } else if (scanValueType == "ASCII String") {
+                        val pattern = scanValue.encodeToByteArray()
+                        maskBytes = ByteArray(pattern.size) { 1 }
+                        pattern
+                    } else if (scanValueType == "Hex Mask (e.g. 00 11 ?? 33)") {
+                        val pair = parseHexMask(scanValue)
+                        if (pair != null) {
+                            maskBytes = pair.second
+                            pair.first
+                        } else null
+                    } else if (scanCompareType == "Between") {
+                        val b1 = scanValueToBytes(scanValue, scanValueType)
+                        val b2 = scanValueToBytes(scanValueExtra, scanValueType)
+                        if (b1 == null || b2 == null) null else b1 + b2
+                    } else {
+                        scanValueToBytes(scanValue, scanValueType)
+                    }
+
+                    if (bytes == null) {
+                        AppContainer.debuggerUseCase.log("SCAN", "Invalid value format", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                        isScanning = false
+                        return@launch
+                    }
+
+                    val totalRegionBytes = activeMap.end - activeMap.start
+                    val scanStartTime = System.currentTimeMillis()
+                    val progressJob = launch {
+                        val estSpeedBytesPerSec = 200 * 1024 * 1024L // 200 MB/s
+                        val estTotalSec = totalRegionBytes.toDouble() / estSpeedBytesPerSec
+                        while (isScanning) {
+                            val elapsed = (System.currentTimeMillis() - scanStartTime) / 1000.0
+                            val estProgress = (elapsed / estTotalSec).toFloat().coerceIn(0f, 0.99f)
+                            if (estProgress > progress) {
+                                progress = estProgress
+                                val remaining = maxOf(0, (estTotalSec - elapsed).toInt())
+                                timeRemainingText = "Estimated: ${remaining}s remaining (${(estProgress * 100).toInt()}%)"
+                            }
+                            kotlinx.coroutines.delay(200)
+                        }
+                    }
+
+                    withContext(Dispatchers.IO) {
+                        try {
+                            AppContainer.debuggerUseCase.log("SCAN", "Starting scan: vtVal=$vtVal, ctVal=$ctVal, alignment=$alignment, lenData=${bytes.size}, hasMask=${maskBytes != null}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                            
+                            val startPayload = BinaryBuffer(23).apply {
+                                writeInt(pid)
+                                writeLong(activeMap.start)
+                                writeInt((activeMap.end - activeMap.start).toInt())
+                                writeByte(vtVal.toByte())
+                                writeByte(ctVal.toByte())
+                                writeByte(alignment.toByte())
+                                writeInt(bytes.size)
+                            }.bytes
+
+                            client.connection.execute(readTimeoutMs = ScanReadTimeoutMs) { inStr, outStr ->
+                                AppContainer.debuggerUseCase.log("SCAN", "Using streaming scan to prevent OOM/crash", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                                client.connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_SCAN_START, startPayload)
+                                var status = client.connection.receiveStatus(inStr)
+                                if (status != ProtocolConstants.CMD_SUCCESS) {
+                                    throw java.io.IOException("Scan start failed status: 0x${status.toString(16)}")
+                                }
+
+                                // Send the actual search value trailing data after first CMD_SUCCESS
+                                outStr.write(bytes)
+                                maskBytes?.let {
+                                    outStr.write(it)
+                                }
+                                outStr.flush()
+
+                                // Read second ack of data
+                                status = client.connection.receiveStatus(inStr)
+                                if (status != ProtocolConstants.CMD_SUCCESS) {
+                                    throw java.io.IOException("Scan start ack failed")
+                                }
+
+                                val valSize = bytes.size
+                                var count = 0L
+                                while (true) {
+                                    val lenBytes = client.connection.readExactly(inStr, 8)
+                                    val blockLen = BinaryBuffer(lenBytes).readLong()
+                                    if (blockLen == -1L) break
+
+                                    val blockBytes = client.connection.readExactly(inStr, blockLen.toInt())
+                                    val blockBuf = BinaryBuffer(blockBytes)
+                                    while (blockBuf.hasRemaining()) {
+                                        val offset = blockBuf.readInt().toLong()
+                                        val valBytes = blockBuf.readBytes(valSize)
+                                        count++
+                                        if (count <= 1000) {
+                                            scanResults.add(Ps5ScanResult(offset, valBytes))
+                                        }
+                                        if (totalRegionBytes > 0) {
+                                            val prog = (offset.toFloat() / totalRegionBytes.toFloat()).coerceIn(0f, 1f)
+                                            if (prog > progress) {
+                                                progress = prog
+                                                val elapsed = (System.currentTimeMillis() - scanStartTime) / 1000.0
+                                                if (prog > 0.01f && elapsed > 1.0) {
+                                                    val remaining = ((elapsed / prog) - elapsed).toInt()
+                                                    timeRemainingText = "Estimated: ${remaining}s remaining (${(prog * 100).toInt()}%)"
+                                                } else {
+                                                    timeRemainingText = "Scanning... (${(prog * 100).toInt()}%)"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                totalMatchesCount = count
+                                client.connection.receiveStatus(inStr)
+                                AppContainer.debuggerUseCase.log("SCAN", "Scan finished. Found $totalMatchesCount matches.", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                            }
+                            isRescanMode = true
+                        } catch (e: Exception) {
+                            AppContainer.debuggerUseCase.log("SCAN", "Scan failed: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                        } finally {
+                            progressJob.cancel()
+                            progress = 1.0f
+                            timeRemainingText = "Finished"
+                        }
+                    }
+                    isScanning = false
+                }
+            }
+        }
 
         Column(modifier = Modifier.fillMaxSize().padding(8.dp)) {
             Text("Memory Scanner", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
@@ -68,13 +284,31 @@ fun MemoryScannerView(
                         modifier = Modifier.fillMaxWidth().padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        OutlinedTextField(
-                            value = scanValue,
-                            onValueChange = { scanValue = it },
-                            label = { Text("Value to Search") },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true
-                        )
+                        val needsValue = scanCompareType != "UnknownInitial" &&
+                                         scanCompareType != "ValueChanged" &&
+                                         scanCompareType != "ValueUnchanged" &&
+                                         scanCompareType != "BiggerThanLast" &&
+                                         scanCompareType != "SmallerThanLast"
+
+                        if (needsValue) {
+                            OutlinedTextField(
+                                value = scanValue,
+                                onValueChange = { scanValue = it },
+                                label = { Text(if (scanCompareType == "Between") "Low Value" else "Value to Search") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true
+                            )
+                        }
+
+                        if (scanCompareType == "Between") {
+                            OutlinedTextField(
+                                value = scanValueExtra,
+                                onValueChange = { scanValueExtra = it },
+                                label = { Text("High Value") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true
+                            )
+                        }
 
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -95,13 +329,13 @@ fun MemoryScannerView(
                                             text = { Text(vt) },
                                             onClick = {
                                                 scanValueType = vt
-                                                alignment = when (vt) {
-                                                    "Byte" -> 1
-                                                    "Int16" -> 2
-                                                    "Int32" -> 4
-                                                    "Int64" -> 8
-                                                    "Float" -> 4
-                                                    "Double" -> 8
+                                                alignment = when {
+                                                    vt.contains("Byte") -> 1
+                                                    vt.contains("16") -> 2
+                                                    vt.contains("32") -> 4
+                                                    vt.contains("64") -> 8
+                                                    vt.contains("Float") -> 4
+                                                    vt.contains("Double") -> 8
                                                     else -> 4
                                                 }
                                                 vtExpanded = false
@@ -133,148 +367,11 @@ fun MemoryScannerView(
                             horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             Button(
-                                onClick = {
-                                    if (activeMap == null || pid == null) return@Button
-                                    coroutineScope.launch {
-                                        isScanning = true
-                                        progress = 0.1f
-                                        scanResults.clear()
-                                        
-                                        val vtVal = when (scanValueType) {
-                                            "Byte" -> 0
-                                            "Int16" -> 2
-                                            "Int32" -> 4
-                                            "Int64" -> 6
-                                            "Float" -> 8
-                                            "Double" -> 9
-                                            else -> 4
-                                        }
-                                        
-                                        val ctVal = when (scanCompareType) {
-                                            "ExactValue" -> 0
-                                            "BiggerThan" -> 2
-                                            "SmallerThan" -> 3
-                                            else -> 0
-                                        }
-
-                                        val bytes = scanValueToBytes(scanValue, scanValueType)
-                                        if (bytes == null) {
-                                            AppContainer.debuggerUseCase.log("SCAN", "Invalid value format", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
-                                            isScanning = false
-                                            return@launch
-                                        }
-
-                                        withContext(Dispatchers.IO) {
-                                            try {
-                                                AppContainer.debuggerUseCase.log("SCAN", "Starting scan in range 0x${activeMap.start.toString(16)} to 0x${activeMap.end.toString(16)}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
-                                                
-                                                val turboFlags = ProtocolConstants.TS_SERVER_RESIDENT
-                                                val startPayload = BinaryBuffer(27 + bytes.size).apply {
-                                                    writeInt(pid)
-                                                    writeLong(activeMap.start)
-                                                    writeInt((activeMap.end - activeMap.start).toInt())
-                                                    writeByte(vtVal.toByte())
-                                                    writeByte(ctVal.toByte())
-                                                    writeByte(alignment.toByte())
-                                                    writeInt(bytes.size)
-                                                    writeInt(turboFlags)
-                                                    writeBytes(bytes)
-                                                }.bytes
-
-                                                client.connection.execute(readTimeoutMs = ScanReadTimeoutMs) { inStr, outStr ->
-                                                    AppContainer.debuggerUseCase.log("SCAN", "Using turbo server-resident scan", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
-                                                    client.connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_TURBOSCAN_START, startPayload)
-                                                    var status = client.connection.receiveStatus(inStr)
-                                                    if (status != ProtocolConstants.CMD_SUCCESS) {
-                                                        throw java.io.IOException("Turbo scan start failed status: 0x${status.toString(16)}")
-                                                    }
-
-                                                    // Read ack of data
-                                                    status = client.connection.receiveStatus(inStr)
-                                                    if (status != ProtocolConstants.CMD_SUCCESS) {
-                                                        throw java.io.IOException("Turbo scan start ack failed")
-                                                    }
-
-                                                    val valSize = bytes.size
-                                                    val summaryBytes = client.connection.readExactly(inStr, 12)
-                                                    val summaryBuf = BinaryBuffer(summaryBytes)
-                                                    val residentStored = summaryBuf.readInt()
-                                                    val residentCount = summaryBuf.readLong()
-
-                                                    if (residentStored == 1) {
-                                                        totalMatchesCount = residentCount
-                                                        status = client.connection.receiveStatus(inStr)
-                                                        if (status != ProtocolConstants.CMD_SUCCESS) {
-                                                            throw java.io.IOException("Turbo scan final status failed")
-                                                        }
-
-                                                        val getCount = residentCount.coerceAtMost(1000L).toInt()
-                                                        if (getCount > 0) {
-                                                            val getPayload = BinaryBuffer(12).apply {
-                                                                writeInt(0)
-                                                                writeInt(getCount)
-                                                                writeInt(0)
-                                                            }.bytes
-                                                            client.connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_TURBOSCAN_GET, getPayload)
-                                                            status = client.connection.receiveStatus(inStr)
-                                                            if (status != ProtocolConstants.CMD_SUCCESS) {
-                                                                throw java.io.IOException("Turbo scan get failed")
-                                                            }
-
-                                                            val header = BinaryBuffer(client.connection.readExactly(inStr, 4)).readInt()
-                                                            val actualCount = header and 0x7FFFFFFF
-                                                            val hasFirstValue = (header and Int.MIN_VALUE) != 0
-                                                            val recordSize = 8 + valSize * if (hasFirstValue) 3 else 2
-                                                            val records = client.connection.readExactly(inStr, actualCount * recordSize)
-                                                            val recordsBuf = BinaryBuffer(records)
-                                                            repeat(actualCount) {
-                                                                val absoluteAddress = recordsBuf.readLong()
-                                                                val currentValue = recordsBuf.readBytes(valSize)
-                                                                recordsBuf.readBytes(valSize)
-                                                                if (hasFirstValue) recordsBuf.readBytes(valSize)
-                                                                scanResults.add(Ps5ScanResult(absoluteAddress - activeMap.start, currentValue))
-                                                            }
-
-                                                            status = client.connection.receiveStatus(inStr)
-                                                            if (status != ProtocolConstants.CMD_SUCCESS) {
-                                                                throw java.io.IOException("Turbo scan get final status failed")
-                                                            }
-                                                        }
-                                                    } else {
-                                                        var count = 0L
-                                                        while (true) {
-                                                            val lenBytes = client.connection.readExactly(inStr, 8)
-                                                            val blockLen = BinaryBuffer(lenBytes).readLong()
-                                                            if (blockLen == -1L) break
-
-                                                            val blockBytes = client.connection.readExactly(inStr, blockLen.toInt())
-                                                            val blockBuf = BinaryBuffer(blockBytes)
-                                                            while (blockBuf.hasRemaining()) {
-                                                                val offset = blockBuf.readInt().toLong()
-                                                                val valBytes = blockBuf.readBytes(valSize)
-                                                                count++
-                                                                if (count <= 1000) {
-                                                                    scanResults.add(Ps5ScanResult(offset, valBytes))
-                                                                }
-                                                            }
-                                                        }
-                                                        totalMatchesCount = count
-                                                        client.connection.receiveStatus(inStr)
-                                                    }
-                                                    AppContainer.debuggerUseCase.log("SCAN", "Scan finished. Found $totalMatchesCount matches.", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
-                                                }
-                                                isRescanMode = true
-                                            } catch (e: Exception) {
-                                                AppContainer.debuggerUseCase.log("SCAN", "Scan failed: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
-                                            }
-                                        }
-                                        isScanning = false
-                                    }
-                                },
+                                onClick = { performScan() },
                                 enabled = isConnected && activeMap != null && !isScanning,
                                 modifier = Modifier.weight(1f)
                             ) {
-                                Text("Scan")
+                                Text(if (isRescanMode) "Next Scan" else "Scan")
                             }
 
                             if (isRescanMode) {
@@ -298,13 +395,31 @@ fun MemoryScannerView(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
-                        OutlinedTextField(
-                            value = scanValue,
-                            onValueChange = { scanValue = it },
-                            label = { Text("Value to Search") },
-                            modifier = Modifier.width(180.dp),
-                            singleLine = true
-                        )
+                        val needsValue = scanCompareType != "UnknownInitial" &&
+                                         scanCompareType != "ValueChanged" &&
+                                         scanCompareType != "ValueUnchanged" &&
+                                         scanCompareType != "BiggerThanLast" &&
+                                         scanCompareType != "SmallerThanLast"
+
+                        if (needsValue) {
+                            OutlinedTextField(
+                                value = scanValue,
+                                onValueChange = { scanValue = it },
+                                label = { Text(if (scanCompareType == "Between") "Low Value" else "Value to Search") },
+                                modifier = Modifier.width(180.dp),
+                                singleLine = true
+                            )
+                        }
+
+                        if (scanCompareType == "Between") {
+                            OutlinedTextField(
+                                value = scanValueExtra,
+                                onValueChange = { scanValueExtra = it },
+                                label = { Text("High Value") },
+                                modifier = Modifier.width(180.dp),
+                                singleLine = true
+                            )
+                        }
 
                         // Value Type dropdown
                         var vtExpanded by remember { mutableStateOf(false) }
@@ -318,13 +433,13 @@ fun MemoryScannerView(
                                         text = { Text(vt) },
                                         onClick = {
                                             scanValueType = vt
-                                            alignment = when (vt) {
-                                                "Byte" -> 1
-                                                "Int16" -> 2
-                                                "Int32" -> 4
-                                                "Int64" -> 8
-                                                "Float" -> 4
-                                                "Double" -> 8
+                                            alignment = when {
+                                                vt.contains("Byte") -> 1
+                                                vt.contains("16") -> 2
+                                                vt.contains("32") -> 4
+                                                vt.contains("64") -> 8
+                                                vt.contains("Float") -> 4
+                                                vt.contains("Double") -> 8
                                                 else -> 4
                                             }
                                             vtExpanded = false
@@ -348,147 +463,10 @@ fun MemoryScannerView(
                         }
 
                         Button(
-                            onClick = {
-                                if (activeMap == null || pid == null) return@Button
-                                coroutineScope.launch {
-                                    isScanning = true
-                                    progress = 0.1f
-                                    scanResults.clear()
-                                    
-                                    val vtVal = when (scanValueType) {
-                                        "Byte" -> 0
-                                        "Int16" -> 2
-                                        "Int32" -> 4
-                                        "Int64" -> 6
-                                        "Float" -> 8
-                                        "Double" -> 9
-                                        else -> 4
-                                    }
-                                    
-                                    val ctVal = when (scanCompareType) {
-                                        "ExactValue" -> 0
-                                        "BiggerThan" -> 2
-                                        "SmallerThan" -> 3
-                                        else -> 0
-                                    }
-
-                                    val bytes = scanValueToBytes(scanValue, scanValueType)
-                                    if (bytes == null) {
-                                        AppContainer.debuggerUseCase.log("SCAN", "Invalid value format", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
-                                        isScanning = false
-                                        return@launch
-                                    }
-
-                                    withContext(Dispatchers.IO) {
-                                        try {
-                                            AppContainer.debuggerUseCase.log("SCAN", "Starting scan in range 0x${activeMap.start.toString(16)} to 0x${activeMap.end.toString(16)}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
-                                            
-                                            val turboFlags = ProtocolConstants.TS_SERVER_RESIDENT
-                                            val startPayload = BinaryBuffer(27 + bytes.size).apply {
-                                                writeInt(pid)
-                                                writeLong(activeMap.start)
-                                                writeInt((activeMap.end - activeMap.start).toInt())
-                                                writeByte(vtVal.toByte())
-                                                writeByte(ctVal.toByte())
-                                                writeByte(alignment.toByte())
-                                                writeInt(bytes.size)
-                                                writeInt(turboFlags)
-                                                writeBytes(bytes)
-                                            }.bytes
-
-                                            client.connection.execute(readTimeoutMs = ScanReadTimeoutMs) { inStr, outStr ->
-                                                AppContainer.debuggerUseCase.log("SCAN", "Using turbo server-resident scan", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
-                                                client.connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_TURBOSCAN_START, startPayload)
-                                                var status = client.connection.receiveStatus(inStr)
-                                                if (status != ProtocolConstants.CMD_SUCCESS) {
-                                                    throw java.io.IOException("Turbo scan start failed status: 0x${status.toString(16)}")
-                                                }
-
-                                                // Read ack of data
-                                                status = client.connection.receiveStatus(inStr)
-                                                if (status != ProtocolConstants.CMD_SUCCESS) {
-                                                    throw java.io.IOException("Turbo scan start ack failed")
-                                                }
-
-                                                val valSize = bytes.size
-                                                val summaryBytes = client.connection.readExactly(inStr, 12)
-                                                val summaryBuf = BinaryBuffer(summaryBytes)
-                                                val residentStored = summaryBuf.readInt()
-                                                val residentCount = summaryBuf.readLong()
-
-                                                if (residentStored == 1) {
-                                                    totalMatchesCount = residentCount
-                                                    status = client.connection.receiveStatus(inStr)
-                                                    if (status != ProtocolConstants.CMD_SUCCESS) {
-                                                        throw java.io.IOException("Turbo scan final status failed")
-                                                    }
-
-                                                    val getCount = residentCount.coerceAtMost(1000L).toInt()
-                                                    if (getCount > 0) {
-                                                        val getPayload = BinaryBuffer(12).apply {
-                                                            writeInt(0)
-                                                            writeInt(getCount)
-                                                            writeInt(0)
-                                                        }.bytes
-                                                        client.connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_TURBOSCAN_GET, getPayload)
-                                                        status = client.connection.receiveStatus(inStr)
-                                                        if (status != ProtocolConstants.CMD_SUCCESS) {
-                                                            throw java.io.IOException("Turbo scan get failed")
-                                                        }
-
-                                                        val header = BinaryBuffer(client.connection.readExactly(inStr, 4)).readInt()
-                                                        val actualCount = header and 0x7FFFFFFF
-                                                        val hasFirstValue = (header and Int.MIN_VALUE) != 0
-                                                        val recordSize = 8 + valSize * if (hasFirstValue) 3 else 2
-                                                        val records = client.connection.readExactly(inStr, actualCount * recordSize)
-                                                        val recordsBuf = BinaryBuffer(records)
-                                                        repeat(actualCount) {
-                                                            val absoluteAddress = recordsBuf.readLong()
-                                                            val currentValue = recordsBuf.readBytes(valSize)
-                                                            recordsBuf.readBytes(valSize)
-                                                            if (hasFirstValue) recordsBuf.readBytes(valSize)
-                                                            scanResults.add(Ps5ScanResult(absoluteAddress - activeMap.start, currentValue))
-                                                        }
-
-                                                        status = client.connection.receiveStatus(inStr)
-                                                        if (status != ProtocolConstants.CMD_SUCCESS) {
-                                                            throw java.io.IOException("Turbo scan get final status failed")
-                                                        }
-                                                    }
-                                                } else {
-                                                    var count = 0L
-                                                    while (true) {
-                                                        val lenBytes = client.connection.readExactly(inStr, 8)
-                                                        val blockLen = BinaryBuffer(lenBytes).readLong()
-                                                        if (blockLen == -1L) break
-
-                                                        val blockBytes = client.connection.readExactly(inStr, blockLen.toInt())
-                                                        val blockBuf = BinaryBuffer(blockBytes)
-                                                        while (blockBuf.hasRemaining()) {
-                                                            val offset = blockBuf.readInt().toLong()
-                                                            val valBytes = blockBuf.readBytes(valSize)
-                                                            count++
-                                                            if (count <= 1000) {
-                                                                scanResults.add(Ps5ScanResult(offset, valBytes))
-                                                            }
-                                                        }
-                                                    }
-                                                    totalMatchesCount = count
-                                                    client.connection.receiveStatus(inStr)
-                                                }
-                                                AppContainer.debuggerUseCase.log("SCAN", "Scan finished. Found $totalMatchesCount matches.", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
-                                            }
-                                            isRescanMode = true
-                                        } catch (e: Exception) {
-                                            AppContainer.debuggerUseCase.log("SCAN", "Scan failed: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
-                                        }
-                                    }
-                                    isScanning = false
-                                }
-                            },
+                            onClick = { performScan() },
                             enabled = isConnected && activeMap != null && !isScanning
                         ) {
-                            Text("First Scan")
+                            Text(if (isRescanMode) "Next Scan" else "First Scan")
                         }
 
                         if (isRescanMode) {
@@ -507,8 +485,17 @@ fun MemoryScannerView(
                 }
             }
 
-            if (isScanning) {
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp))
+            if (isScanning || progress > 0f) {
+                Column(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+                    LinearProgressIndicator(
+                        progress = { progress },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (timeRemainingText.isNotEmpty()) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(timeRemainingText, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f))
+                    }
+                }
             }
 
             Spacer(Modifier.height(8.dp))
@@ -533,19 +520,77 @@ fun MemoryScannerView(
             LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f)) {
                 items(scanResults) { res ->
                     val absoluteAddress = (activeMap?.start ?: 0L) + res.offset
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        if (isMobile) {
-                            Column(modifier = Modifier.weight(1.5f).padding(start = 8.dp)) {
-                                Text(String.format("0x%X", absoluteAddress), fontFamily = FontFamily.Monospace, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                                Text("+0x${res.offset.toString(16).uppercase()}", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f))
+                    var showItemMenu by remember { mutableStateOf(false) }
+
+                    Box(modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
+                                .combinedClickable(
+                                    onClick = {},
+                                    onDoubleClick = {
+                                        onJumpToAddress?.invoke(absoluteAddress)
+                                    },
+                                    onLongClick = {
+                                        showItemMenu = true
+                                    }
+                                )
+                                .pointerInput(Unit) {
+                                    awaitPointerEventScope {
+                                        while (true) {
+                                            val event = awaitPointerEvent()
+                                            if (event.type == androidx.compose.ui.input.pointer.PointerEventType.Press) {
+                                                if (event.button == androidx.compose.ui.input.pointer.PointerButton.Secondary) {
+                                                    showItemMenu = true
+                                                    event.changes.forEach { it.consume() }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (isMobile) {
+                                Column(modifier = Modifier.weight(1.5f).padding(start = 8.dp)) {
+                                    Text(String.format("0x%X", absoluteAddress), fontFamily = FontFamily.Monospace, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                    Text("+0x${res.offset.toString(16).uppercase()}", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f))
+                                }
+                            } else {
+                                Text(String.format("0x%X (+0x%X)", absoluteAddress, res.offset), fontFamily = FontFamily.Monospace, fontSize = 13.sp, modifier = Modifier.weight(2f).padding(start = 8.dp))
                             }
-                        } else {
-                            Text(String.format("0x%X (+0x%X)", absoluteAddress, res.offset), fontFamily = FontFamily.Monospace, fontSize = 13.sp, modifier = Modifier.weight(2f).padding(start = 8.dp))
+                            Text(parseValueBytes(res.value, scanValueType), fontFamily = FontFamily.Monospace, fontSize = 13.sp, modifier = Modifier.weight(1f))
                         }
-                        Text(parseValueBytes(res.value, scanValueType), fontFamily = FontFamily.Monospace, fontSize = 13.sp, modifier = Modifier.weight(1f))
+
+                        DropdownMenu(
+                            expanded = showItemMenu,
+                            onDismissRequest = { showItemMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Jump to in Memory View") },
+                                onClick = {
+                                    onJumpToAddress?.invoke(absoluteAddress)
+                                    showItemMenu = false
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Add to Watch List") },
+                                onClick = {
+                                    val wlType = when {
+                                        scanValueType.contains("Byte") -> "Byte"
+                                        scanValueType.contains("16") -> "Int16"
+                                        scanValueType.contains("32") -> "Int32"
+                                        scanValueType.contains("64") -> "Int64"
+                                        scanValueType.contains("Float") -> "Float"
+                                        scanValueType.contains("Double") -> "Double"
+                                        else -> "Int32"
+                                    }
+                                    AppContainer.debuggerUseCase.addToWatchlist(absoluteAddress, wlType)
+                                    AppContainer.debuggerUseCase.log("SCAN", "Added 0x${absoluteAddress.toString(16).uppercase()} to watch list", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                                    showItemMenu = false
+                                }
+                            )
+                        }
                     }
                 }
             }
@@ -557,9 +602,13 @@ private fun scanValueToBytes(valueStr: String, type: String): ByteArray? {
     val buf = BinaryBuffer(8)
     try {
         when (type) {
-            "Byte" -> buf.writeByte(valueStr.toByte())
+            "Byte (UInt8)", "Byte" -> buf.writeByte(valueStr.toUByte().toByte())
+            "SByte (Int8)" -> buf.writeByte(valueStr.toByte())
+            "UInt16" -> buf.writeShort(valueStr.toUShort().toShort())
             "Int16" -> buf.writeShort(valueStr.toShort())
+            "UInt32" -> buf.writeInt(valueStr.toUInt().toInt())
             "Int32" -> buf.writeInt(valueStr.toInt())
+            "UInt64" -> buf.writeLong(valueStr.toULong().toLong())
             "Int64" -> buf.writeLong(valueStr.toLong())
             "Float" -> buf.writeFloat(valueStr.toFloat())
             "Double" -> buf.writeDouble(valueStr.toDouble())
@@ -568,6 +617,28 @@ private fun scanValueToBytes(valueStr: String, type: String): ByteArray? {
         val out = ByteArray(buf.position)
         System.arraycopy(buf.bytes, 0, out, 0, buf.position)
         return out
+    } catch (_: Exception) {
+        return null
+    }
+}
+
+private fun parseHexMask(hexStr: String): Pair<ByteArray, ByteArray>? {
+    val tokens = hexStr.trim().split(Regex("\\s+"))
+    if (tokens.isEmpty()) return null
+    val pattern = ByteArray(tokens.size)
+    val mask = ByteArray(tokens.size)
+    try {
+        for (i in tokens.indices) {
+            val token = tokens[i]
+            if (token == "??" || token == "?") {
+                pattern[i] = 0
+                mask[i] = 0
+            } else {
+                pattern[i] = token.toInt(16).toByte()
+                mask[i] = 1
+            }
+        }
+        return Pair(pattern, mask)
     } catch (_: Exception) {
         return null
     }

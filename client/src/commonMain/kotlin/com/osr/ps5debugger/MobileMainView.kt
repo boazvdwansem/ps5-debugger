@@ -169,7 +169,15 @@ fun MobileMainView() {
                     )
                     2 -> MemoryScannerView(
                         activeMap = activeMap,
-                        modifier = Modifier.fillMaxSize()
+                        modifier = Modifier.fillMaxSize(),
+                        onJumpToAddress = { addr ->
+                            val map = AppContainer.debuggerUseCase.vmMaps.value.firstOrNull { addr >= it.start && addr < it.end }
+                            if (map != null) {
+                                activeMap = map
+                                jumpToAddress = addr
+                                currentScreen = 1
+                            }
+                        }
                     )
                     3 -> WatchList(
                         onJumpToAddress = { addr ->

@@ -199,7 +199,17 @@ fun MainView() {
                                 Box(modifier = Modifier.fillMaxWidth().weight(1f).background(MaterialTheme.colorScheme.surface.copy(alpha = 0.5f))) {
                                     when (selectedTab) {
                                         0 -> HexViewer(activeMap = activeMap, jumpToAddress = jumpToAddress)
-                                        1 -> MemoryScannerView(activeMap = activeMap)
+                                        1 -> MemoryScannerView(
+                                            activeMap = activeMap,
+                                            onJumpToAddress = { addr ->
+                                                val map = AppContainer.debuggerUseCase.vmMaps.value.firstOrNull { addr >= it.start && addr < it.end }
+                                                if (map != null) {
+                                                    activeMap = map
+                                                    jumpToAddress = addr
+                                                    selectedTab = 0
+                                                }
+                                            }
+                                        )
                                         2 -> WatchList(onJumpToAddress = { addr ->
                                             val map = AppContainer.debuggerUseCase.vmMaps.value.firstOrNull { addr >= it.start && addr < it.end }
                                             if (map != null) {

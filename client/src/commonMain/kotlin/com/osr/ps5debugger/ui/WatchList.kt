@@ -639,20 +639,25 @@ private fun typeSizeBytes(item: WatchItem): Int = item.byteLength?.coerceAtLeast
 internal fun parseValueBytes(bytes: ByteArray, type: String): String {
     if (bytes.isEmpty()) return "??"
     val buf = com.osr.ps5debugger.protocol.BinaryBuffer(bytes)
-    return when (type) {
-        "Byte"   -> buf.readByte().toString()
-        "Int16"  -> buf.readShort().toString()
-        "Int32"  -> buf.readInt().toString()
-        "Int64"  -> buf.readLong().toString()
-        "Float"  -> buf.readFloat().toString()
-        "Double" -> buf.readDouble().toString()
-        "String" -> bytes
+    return when {
+        type.contains("Byte (UInt8)") || type == "Byte" -> (buf.readByte().toInt() and 0xFF).toString()
+        type.contains("SByte (Int8)") -> buf.readByte().toString()
+        type.contains("UInt16") -> (buf.readShort().toInt() and 0xFFFF).toString()
+        type.contains("Int16") -> buf.readShort().toString()
+        type.contains("UInt32") -> (buf.readInt().toLong() and 0xFFFFFFFFL).toString()
+        type.contains("Int32") -> buf.readInt().toString()
+        type.contains("UInt64") -> buf.readLong().toULong().toString()
+        type.contains("Int64") -> buf.readLong().toString()
+        type.contains("Float") -> buf.readFloat().toString()
+        type.contains("Double") -> buf.readDouble().toString()
+        type == "String" || type.contains("ASCII") -> bytes
             .takeWhile { it != 0.toByte() }
             .map { byte ->
                 val value = byte.toInt() and 0xFF
                 if (value in 32..126) value.toChar() else '.'
             }
             .joinToString("")
+        type.contains("Hex Mask") -> bytes.joinToString(" ") { String.format("%02X", it) }
         else -> "??"
     }
 }
