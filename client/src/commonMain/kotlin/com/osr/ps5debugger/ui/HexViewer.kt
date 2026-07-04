@@ -74,7 +74,10 @@ fun HexViewer(
     activeMap: MemoryRange?,
     jumpToAddress: Long? = null,
     modifier: Modifier = Modifier,
-    showAddress: Boolean = true
+    showAddress: Boolean = true,
+    selectionStartParam: Long? = null,
+    selectionEndParam: Long? = null,
+    onSelectionChanged: ((Long?, Long?) -> Unit)? = null
 ) {
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val coroutineScope = rememberCoroutineScope()
@@ -109,8 +112,17 @@ fun HexViewer(
         }
         
         // Selection range
-        var selectionStart by remember { mutableStateOf<Long?>(null) }
-        var selectionEnd by remember { mutableStateOf<Long?>(null) }
+        var selectionStart by remember { mutableStateOf<Long?>(selectionStartParam) }
+        var selectionEnd by remember { mutableStateOf<Long?>(selectionEndParam) }
+
+        LaunchedEffect(selectionStartParam, selectionEndParam) {
+            selectionStart = selectionStartParam
+            selectionEnd = selectionEndParam
+        }
+
+        LaunchedEffect(selectionStart, selectionEnd) {
+            onSelectionChanged?.invoke(selectionStart, selectionEnd)
+        }
         
         // Lock/Unlock editing state
         var isEditingUnlocked by remember { mutableStateOf(false) }
