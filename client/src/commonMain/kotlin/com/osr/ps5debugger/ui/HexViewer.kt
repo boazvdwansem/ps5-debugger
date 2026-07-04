@@ -174,8 +174,11 @@ fun HexViewer(
                     val totalRows = ((activeMap.end - activeMap.start + bytesPerRow - 1) / bytesPerRow).toInt()
                     val maxTargetScroll = maxOf(0L, (totalRows - visibleRowsCount).toLong())
                     scrollPosition = targetRow.coerceIn(0L, maxTargetScroll)
-                    selectionStart = target
-                    selectionEnd = target
+                    val isLocalTransfer = (target == selectionStartParam || target == selectionEndParam) && selectionStartParam != null && selectionEndParam != null
+                    if (!isLocalTransfer) {
+                        selectionStart = target
+                        selectionEnd = target
+                    }
                     goToAddressText = target.toString(16).uppercase()
                 } else if (mapChanged) {
                     scrollPosition = 0L

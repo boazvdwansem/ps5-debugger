@@ -126,6 +126,18 @@ fun DisassemblyViewer(
 
     val listState = rememberLazyListState()
     
+    var selectionAnchor by remember { mutableStateOf<Long?>(null) }
+    LaunchedEffect(selectionStart) {
+        if (selectionStart != null && selectionAnchor != null) {
+            val diff = kotlin.math.abs(selectionStart - selectionAnchor!!)
+            if (diff > 15) {
+                selectionAnchor = selectionStart
+            }
+        } else {
+            selectionAnchor = selectionStart
+        }
+    }
+    
     // Auto-update startAddress when map changes or jumpToAddress is requested
     LaunchedEffect(activeMap, jumpToAddress) {
         if (activeMap != null) {
@@ -438,16 +450,20 @@ fun DisassemblyViewer(
                                     onAddressClicked = { addr, len, isShift ->
                                         val firstAddr = instructions.firstOrNull()?.instr?.addr
                                         val lastAddr = instructions.lastOrNull()?.let { it.instr.addr + it.instr.length }
-                                        val isStartInLoadedRange = selectionStart != null && firstAddr != null && lastAddr != null &&
-                                                selectionStart >= firstAddr && selectionStart <= lastAddr
+                                        val isAnchorInLoadedRange = selectionAnchor != null && firstAddr != null && lastAddr != null &&
+                                                selectionAnchor!! >= firstAddr && selectionAnchor!! <= lastAddr
                                         
-                                        if (isShift && isStartInLoadedRange) {
-                                            if (addr >= selectionStart!!) {
-                                                onSelectionChanged?.invoke(selectionStart, addr + len - 1)
+                                        if (isShift && isAnchorInLoadedRange) {
+                                            val anchor = selectionAnchor!!
+                                            if (addr >= anchor) {
+                                                onSelectionChanged?.invoke(anchor, addr + len - 1)
                                             } else {
-                                                onSelectionChanged?.invoke(selectionEnd ?: selectionStart, addr)
+                                                val anchorInstr = instructions.firstOrNull { it.instr.addr == anchor }
+                                                val anchorLen = anchorInstr?.instr?.length ?: 1
+                                                onSelectionChanged?.invoke(anchor + anchorLen - 1, addr)
                                             }
                                         } else {
+                                            selectionAnchor = addr
                                             onSelectionChanged?.invoke(addr, addr + len - 1)
                                         }
                                     },
