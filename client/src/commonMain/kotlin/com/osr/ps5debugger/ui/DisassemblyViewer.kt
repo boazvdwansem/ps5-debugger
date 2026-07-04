@@ -1073,6 +1073,7 @@ fun DisasmRow(
     onAddressRightClicked: (Long, ByteArray, String, DpOffset) -> Unit,
     showHexDetails: Boolean = false
 ) {
+    val windowInfo = androidx.compose.ui.platform.LocalWindowInfo.current
     val instr = line.instr
     val mnemonic = getMnemonic(instr)
     val operands = formatOperands(instr)
@@ -1090,7 +1091,7 @@ fun DisasmRow(
     
     val bytesStr = line.bytes.joinToString(" ") { String.format("%02X", it) }
     val fullDisasmString = "$mnemonic $operands"
-
+ 
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1101,7 +1102,7 @@ fun DisasmRow(
                         val event = awaitPointerEvent()
                         if (event.type == PointerEventType.Press) {
                             val change = event.changes.first()
-                            val isShift = event.keyboardModifiers.isShiftPressed
+                            val isShift = event.keyboardModifiers.isShiftPressed || windowInfo.keyboardModifiers.isShiftPressed
                             val isSecondary = event.buttons.isSecondaryPressed
                             
                             if (isSecondary) {
