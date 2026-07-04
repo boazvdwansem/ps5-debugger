@@ -72,23 +72,22 @@ object ProtocolConstants {
     const val CMD_DEBUG_DETACH = 0xBDBB0002.toInt()
     const val CMD_DEBUG_SET_BREAKPOINT = 0xBDBB0003.toInt()
     const val CMD_DEBUG_SET_WATCHPOINT = 0xBDBB0004.toInt()
-
-    // Debug registers / status
-    const val CMD_DEBUG_GETREGS = 0xBDBB0005.toInt()
-    const val CMD_DEBUG_SETREGS = 0xBDBB0006.toInt()
-    const val CMD_DEBUG_GETFPREGS = 0xBDBB0007.toInt()
-    const val CMD_DEBUG_SETFPREGS = 0xBDBB0008.toInt()
-    const val CMD_DEBUG_GETDBGREGS = 0xBDBB0009.toInt()
-    const val CMD_DEBUG_SETDBGREGS = 0xBDBB000A.toInt()
-    const val CMD_DEBUG_GET_FSGS_BASE = 0xBDBB000Bu
-    const val CMD_DEBUG_SET_FSGS_BASE = 0xBDBB000Cu
-
-    const val CMD_DEBUG_STOP = 0xBDBB0013.toInt()
-    const val CMD_DEBUG_RESUME = 0xBDBB0014.toInt()
-    const val CMD_DEBUG_STEP = 0xBDBB0015.toInt()
-    const val CMD_DEBUG_LIST_THREADS = 0xBDBB0010.toInt()
-    const val CMD_DEBUG_SUSPEND_THREAD = 0xBDBB0011.toInt()
-    const val CMD_DEBUG_RESUME_THREAD = 0xBDBB0012.toInt()
+    const val CMD_DEBUG_GET_THREAD_LIST = 0xBDBB0005.toInt()
+    const val CMD_DEBUG_SUSPEND_THREAD = 0xBDBB0006.toInt()
+    const val CMD_DEBUG_RESUME_THREAD = 0xBDBB0007.toInt()
+    const val CMD_DEBUG_GETREGS = 0xBDBB0008.toInt()
+    const val CMD_DEBUG_SETREGS = 0xBDBB0009.toInt()
+    const val CMD_DEBUG_GETFPREGS = 0xBDBB000A.toInt()
+    const val CMD_DEBUG_SETFPREGS = 0xBDBB000B.toInt()
+    const val CMD_DEBUG_GETDBREGS = 0xBDBB000C.toInt()
+    const val CMD_DEBUG_SETDBREGS = 0xBDBB000D.toInt()
+    const val CMD_DEBUG_GETFSGSBASE = 0xBDBB000E.toInt()
+    const val CMD_DEBUG_SETFSGSBASE = 0xBDBB000F.toInt()
+    const val CMD_DEBUG_CONTINUE = 0xBDBB0010.toInt()
+    const val CMD_DEBUG_THREAD_INFO = 0xBDBB0011.toInt()
+    const val CMD_DEBUG_STEP = 0xBDBB0012.toInt()
+    const val CMD_DEBUG_STEP_THREAD = 0xBDBB0013.toInt()
+    const val CMD_DEBUG_PROCESS_STOP = 0xBDBB0500.toInt()
 
     // Console/System UI commands
     const val CMD_CONSOLE_NOTIFY = 0xBDDD0001.toInt()
