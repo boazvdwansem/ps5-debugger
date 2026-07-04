@@ -73,7 +73,8 @@ private var lastActiveMapStart: Long? = null
 fun HexViewer(
     activeMap: MemoryRange?,
     jumpToAddress: Long? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    showAddress: Boolean = true
 ) {
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val coroutineScope = rememberCoroutineScope()
@@ -782,16 +783,18 @@ fun HexViewer(
                         horizontalArrangement = Arrangement.Start,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = "Address",
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = if (isMobile) 11.sp else 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = PS5ThemeColors.TextMain,
-                            modifier = Modifier.width(addressWidthDp).padding(start = if (isMobile) 4.dp else 8.dp)
-                        )
-                        
-                        Spacer(Modifier.width(spacerAddressToHexDp))
+                        if (showAddress) {
+                            Text(
+                                text = "Address",
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = if (isMobile) 11.sp else 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = PS5ThemeColors.TextMain,
+                                modifier = Modifier.width(addressWidthDp).padding(start = if (isMobile) 4.dp else 8.dp)
+                            )
+                            
+                            Spacer(Modifier.width(spacerAddressToHexDp))
+                        }
                         
                         Text(
                             text = "Hexadecimal Data",
@@ -1042,17 +1045,18 @@ fun HexViewer(
                                         StableRowBytes(bytes)
                                     }
  
-                                    HexRowView(
-                                        address = rowAddress,
-                                        stableBytes = stableRowBytes,
-                                        columns = bytesPerRow,
-                                        selectionMin = selMin,
-                                        selectionMax = selMax,
-                                        cursorAddress = selectionEnd,
-                                        pendingEdits = pendingEdits,
-                                        hexInputBuffer = hexInputBuffer,
-                                        isMobile = isMobile
-                                    )
+                                     HexRowView(
+                                         address = rowAddress,
+                                         stableBytes = stableRowBytes,
+                                         columns = bytesPerRow,
+                                         selectionMin = selMin,
+                                         selectionMax = selMax,
+                                         cursorAddress = selectionEnd,
+                                         pendingEdits = pendingEdits,
+                                         hexInputBuffer = hexInputBuffer,
+                                         isMobile = isMobile,
+                                         showAddress = showAddress
+                                     )
                                 } else {
                                     // Render empty filler rows at the end of the region
                                     Spacer(Modifier.height(24.dp))
@@ -1215,7 +1219,8 @@ fun HexRowView(
     cursorAddress: Long?,
     pendingEdits: Map<Long, Byte>,
     hexInputBuffer: String,
-    isMobile: Boolean
+    isMobile: Boolean,
+    showAddress: Boolean = true
 ) {
     val addressWidthDp = if (isMobile) 80.dp else 120.dp
     val hexCellWidthDp = if (isMobile) 20.dp else 24.dp
@@ -1228,15 +1233,17 @@ fun HexRowView(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Start
     ) {
-        Text(
-            text = String.format("%X", address),
-            fontFamily = FontFamily.Monospace,
-            fontSize = if (isMobile) 11.sp else 13.sp,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.width(addressWidthDp).padding(start = if (isMobile) 4.dp else 8.dp)
-        )
+        if (showAddress) {
+            Text(
+                text = String.format("%X", address),
+                fontFamily = FontFamily.Monospace,
+                fontSize = if (isMobile) 11.sp else 13.sp,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.width(addressWidthDp).padding(start = if (isMobile) 4.dp else 8.dp)
+            )
 
-        Spacer(Modifier.width(spacerAddressToHexDp))
+            Spacer(Modifier.width(spacerAddressToHexDp))
+        }
 
         // Hex data group
         Row(

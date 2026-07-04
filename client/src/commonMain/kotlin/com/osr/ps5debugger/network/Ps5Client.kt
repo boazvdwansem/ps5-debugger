@@ -374,6 +374,59 @@ class Ps5Client(val connection: Ps5Connection) {
         connection.receiveStatus(inStr) == ProtocolConstants.CMD_SUCCESS
     }
 
+    suspend fun disassembleRegion(pid: Int, address: Long, length: Int, maxEntries: Int = 1000): List<Ps5DisasmInstr> = connection.execute { inStr, outStr ->
+        val payload = BinaryBuffer(20).apply {
+            writeInt(pid)
+            writeLong(address)
+            writeInt(length)
+            writeInt(maxEntries)
+        }.bytes
+        connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_DISASM_REGION, payload)
+        
+        val status = connection.receiveStatus(inStr)
+        if (status != ProtocolConstants.CMD_SUCCESS) throw java.io.IOException("Disassemble region command failed: status 0x${status.toString(16)}")
+
+        val list = mutableListOf<Ps5DisasmInstr>()
+        while (true) {
+            val bufBytes = connection.readExactly(inStr, 32)
+            // Check sentinel (all bytes 0xFF)
+            var isSentinel = true
+            for (b in bufBytes) {
+                if (b != 0xFF.toByte()) {
+                    isSentinel = false
+                    break
+                }
+            }
+            if (isSentinel) break
+
+            val buf = BinaryBuffer(bufBytes)
+            val addr = buf.readLong()
+            val ripRelTarget = buf.readLong()
+            val memDisp = buf.readLong()
+            val len = buf.readUByte()
+            val kind = buf.readUByte()
+            val memBaseReg = buf.readUByte()
+            val memIndexReg = buf.readUByte()
+            val memScale = buf.readUByte()
+            val mnemonicLo = buf.readUByte()
+            // Skip 2 bytes pad
+            buf.readShort()
+
+            list.add(Ps5DisasmInstr(
+                addr = addr,
+                ripRelTarget = ripRelTarget,
+                memDisp = memDisp,
+                length = len,
+                kind = kind,
+                memBaseReg = memBaseReg,
+                memIndexReg = memIndexReg,
+                memScale = memScale,
+                mnemonicLo = mnemonicLo
+            ))
+        }
+        list
+    }
+
     suspend fun getKernBase(): Long = connection.execute { inStr, outStr ->
         connection.sendPacket(outStr, ProtocolConstants.CMD_KERN_BASE)
         val status = connection.receiveStatus(inStr)

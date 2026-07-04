@@ -23,6 +23,7 @@ import com.osr.ps5debugger.di.AppContainer
 import com.osr.ps5debugger.domain.model.MemoryRange
 import androidx.compose.ui.text.font.FontFamily
 import com.osr.ps5debugger.ui.HexViewer
+import com.osr.ps5debugger.ui.MemoryViewerLayout
 import com.osr.ps5debugger.ui.MemoryScannerView
 import com.osr.ps5debugger.ui.WatchList
 import com.osr.ps5debugger.ui.MemoryDumperView
@@ -162,7 +163,7 @@ fun MobileMainView() {
                         },
                         onNavigateToHex = { currentScreen = 1 }
                     )
-                    1 -> HexViewer(
+                    1 -> MemoryViewerLayout(
                         activeMap = activeMap,
                         jumpToAddress = jumpToAddress,
                         modifier = Modifier.fillMaxSize()
