@@ -24,6 +24,7 @@ import com.osr.ps5debugger.protocol.Ps5ScanResult
 import com.osr.ps5debugger.domain.model.MemoryRange
 import com.osr.ps5debugger.di.AppContainer
 import com.osr.ps5debugger.PS5ThemeColors
+import com.osr.ps5debugger.ui.watchlist.parseValueBytes
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext

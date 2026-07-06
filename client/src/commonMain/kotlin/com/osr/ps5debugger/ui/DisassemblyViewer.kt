@@ -30,7 +30,7 @@ import com.osr.ps5debugger.protocol.Ps5DisasmInstr
 import com.osr.ps5debugger.protocol.GpRegs
 import com.osr.ps5debugger.protocol.DbRegs
 import com.osr.ps5debugger.PS5ThemeColors
-import com.osr.ps5debugger.ui.copyToClipboard
+import com.osr.ps5debugger.util.copyToClipboard
 import com.osr.ps5debugger.ui.disasm.DisasmFormatter
 import kotlinx.coroutines.launch
 
