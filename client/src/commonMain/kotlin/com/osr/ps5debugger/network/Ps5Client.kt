@@ -1,10 +1,17 @@
 package com.osr.ps5debugger.network
 
+import com.osr.ps5debugger.network.services.ProcessService
+import com.osr.ps5debugger.network.services.MemoryService
+import com.osr.ps5debugger.network.services.DebuggerService
 import com.osr.ps5debugger.protocol.*
 import java.io.InputStream
 import java.io.OutputStream
 
 class Ps5Client(val connection: Ps5Connection) {
+
+    private val processService = ProcessService(connection)
+    private val memoryService = MemoryService(connection)
+    private val debuggerService = DebuggerService(connection)
 
     // LFSR for authentication
     private class Lfsr {
@@ -94,7 +101,6 @@ class Ps5Client(val connection: Ps5Connection) {
         connection.sendPacket(outStr, ProtocolConstants.CMD_FW_VERSION)
         val verBytes = connection.readExactly(inStr, 2)
         val rawVer = ((verBytes[1].toInt() and 0xFF shl 8) or (verBytes[0].toInt() and 0xFF))
-        // Format decimal ver, e.g. 900 -> 9.00, 1240 -> 12.40
         val major = rawVer / 100
         val minor = rawVer % 100
         val minorStr = if (minor < 10) "0$minor" else "$minor"
@@ -107,7 +113,6 @@ class Ps5Client(val connection: Ps5Connection) {
         val len = BinaryBuffer(lenBytes).readInt()
         val data = connection.readExactly(inStr, len)
         
-        // Find NUL separator
         var nulIdx = -1
         for (i in data.indices) {
             if (data[i] == 0.toByte()) {
@@ -124,414 +129,6 @@ class Ps5Client(val connection: Ps5Connection) {
         }
     }
 
-    suspend fun getProcesses(): List<Ps5Process> = connection.execute { inStr, outStr ->
-        connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_LIST)
-        val status = connection.receiveStatus(inStr)
-        if (status != ProtocolConstants.CMD_SUCCESS) return@execute emptyList()
-        
-        val countBytes = connection.readExactly(inStr, 4)
-        val count = BinaryBuffer(countBytes).readInt()
-        val data = connection.readExactly(inStr, count * 36)
-        
-        val processes = mutableListOf<Ps5Process>()
-        val buf = BinaryBuffer(data)
-        for (i in 0 until count) {
-            val name = buf.readString(32)
-            val pid = buf.readInt()
-            processes.add(Ps5Process(name, pid))
-        }
-        processes
-    }
-
-    suspend fun getMaps(pid: Int): List<Ps5VmMapEntry> = connection.execute { inStr, outStr ->
-        val payload = BinaryBuffer(4).apply { writeInt(pid) }.bytes
-        connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_MAPS, payload)
-        
-        val status = connection.receiveStatus(inStr)
-        if (status != ProtocolConstants.CMD_SUCCESS) return@execute emptyList()
-
-        val countBytes = connection.readExactly(inStr, 4)
-        val count = BinaryBuffer(countBytes).readInt()
-        val data = connection.readExactly(inStr, count * 58)
-
-        val maps = mutableListOf<Ps5VmMapEntry>()
-        val buf = BinaryBuffer(data)
-        for (i in 0 until count) {
-            val name = buf.readString(32)
-            val start = buf.readLong()
-            val end = buf.readLong()
-            val offset = buf.readLong()
-            val prot = buf.readUShort()
-            maps.add(Ps5VmMapEntry(name, start, end, offset, prot))
-        }
-        maps
-    }
-
-    suspend fun readMemory(pid: Int, address: Long, length: Int): ByteArray = connection.execute { inStr, outStr ->
-        val payload = BinaryBuffer(16).apply {
-            writeInt(pid)
-            writeLong(address)
-            writeInt(length)
-        }.bytes
-        connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_READ, payload)
-        
-        val status = connection.receiveStatus(inStr)
-        if (status != ProtocolConstants.CMD_SUCCESS) throw java.io.IOException("Read memory command failed")
-
-        connection.readExactly(inStr, length)
-    }
-
-    suspend fun writeMemory(pid: Int, address: Long, data: ByteArray): Boolean = connection.execute { inStr, outStr ->
-        val payload = BinaryBuffer(16).apply {
-            writeInt(pid)
-            writeLong(address)
-            writeInt(data.size)
-        }.bytes
-        connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_WRITE, payload)
-        
-        var status = connection.receiveStatus(inStr)
-        if (status != ProtocolConstants.CMD_SUCCESS) return@execute false
-
-        outStr.write(data)
-        outStr.flush()
-
-        status = connection.receiveStatus(inStr)
-        status == ProtocolConstants.CMD_SUCCESS
-    }
-
-    suspend fun writeMemoryMulti(pid: Int, writes: List<Pair<Long, ByteArray>>, withStatusReport: Boolean = false): Boolean = connection.execute { inStr, outStr ->
-        if (writes.isEmpty()) return@execute true
-        
-        val flags = if (withStatusReport) ProtocolConstants.PROC_WRITE_MULTI_F_STATUS else 0
-        val headerPayload = BinaryBuffer(12).apply {
-            writeInt(pid)
-            writeInt(writes.size)
-            writeInt(flags)
-        }.bytes
-        
-        connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_WRITE_MULTI, headerPayload)
-        
-        var status = connection.receiveStatus(inStr)
-        if (status != ProtocolConstants.CMD_SUCCESS) return@execute false
-
-        // Stream entries
-        for ((address, data) in writes) {
-            val entryHeader = BinaryBuffer(12).apply {
-                writeLong(address)
-                writeInt(data.size)
-            }.bytes
-            outStr.write(entryHeader)
-            outStr.write(data)
-        }
-        outStr.flush()
-
-        if (withStatusReport) {
-            // Read status bytes
-            connection.readExactly(inStr, writes.size)
-        }
-
-        status = connection.receiveStatus(inStr)
-        status == ProtocolConstants.CMD_SUCCESS
-    }
-
-    suspend fun allocateMemory(pid: Int, length: Int): Long = connection.execute { inStr, outStr ->
-        val payload = BinaryBuffer(8).apply {
-            writeInt(pid)
-            writeInt(length)
-        }.bytes
-        connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_ALLOC, payload)
-        
-        val status = connection.receiveStatus(inStr)
-        if (status != ProtocolConstants.CMD_SUCCESS) return@execute 0L
-
-        val respBytes = connection.readExactly(inStr, 8)
-        BinaryBuffer(respBytes).readLong()
-    }
-
-    suspend fun allocateMemoryHinted(pid: Int, hint: Long, length: Int): Long = connection.execute { inStr, outStr ->
-        val payload = BinaryBuffer(16).apply {
-            writeInt(pid)
-            writeLong(hint)
-            writeInt(length)
-        }.bytes
-        connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_ALLOC_HINTED, payload)
-        
-        val status = connection.receiveStatus(inStr)
-        val respBytes = connection.readExactly(inStr, 8)
-        val address = BinaryBuffer(respBytes).readLong()
-        if (status != ProtocolConstants.CMD_SUCCESS) return@execute 0L
-        address
-    }
-
-    suspend fun freeMemory(pid: Int, address: Long, length: Int): Boolean = connection.execute { inStr, outStr ->
-        val payload = BinaryBuffer(16).apply {
-            writeInt(pid)
-            writeLong(address)
-            writeInt(length)
-        }.bytes
-        connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_FREE, payload)
-        connection.receiveStatus(inStr) == ProtocolConstants.CMD_SUCCESS
-    }
-
-    suspend fun getProcessInfo(pid: Int): Ps5ProcessInfo = connection.execute { inStr, outStr ->
-        val payload = BinaryBuffer(4).apply { writeInt(pid) }.bytes
-        connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_INFO, payload)
-        
-        val status = connection.receiveStatus(inStr)
-        if (status != ProtocolConstants.CMD_SUCCESS) throw java.io.IOException("Get process info failed")
-
-        val data = connection.readExactly(inStr, 188)
-        val buf = BinaryBuffer(data)
-        val rPid = buf.readInt()
-        val name = buf.readString(40)
-        val path = buf.readString(64)
-        val titleId = buf.readString(16)
-        val contentId = buf.readString(64)
-        Ps5ProcessInfo(rPid, name, path, titleId, contentId)
-    }
-
-    suspend fun changeProtection(pid: Int, address: Long, length: Int, prot: Int): Boolean = connection.execute { inStr, outStr ->
-        val payload = BinaryBuffer(20).apply {
-            writeInt(pid)
-            writeLong(address)
-            writeInt(length)
-            writeInt(prot)
-        }.bytes
-        connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_PROTECT, payload)
-        connection.receiveStatus(inStr) == ProtocolConstants.CMD_SUCCESS
-    }
-
-    suspend fun getForegroundApp(): Ps5ForegroundApp = connection.execute { inStr, outStr ->
-        connection.sendPacket(outStr, ProtocolConstants.CMD_CONSOLE_FOREGROUND_APP)
-        val status = connection.receiveStatus(inStr)
-        if (status != ProtocolConstants.CMD_SUCCESS) throw java.io.IOException("Foreground app query failed")
-        
-        val data = connection.readExactly(inStr, 140)
-        val buf = BinaryBuffer(data)
-        val pid = buf.readInt()
-        val titleid = buf.readString(16)
-        val contentid = buf.readString(64)
-        val name = buf.readString(40)
-        val appVer = buf.readString(16)
-        Ps5ForegroundApp(pid, titleid, contentid, name, appVer)
-    }
-
-    suspend fun attach(pid: Int): Boolean = connection.execute { inStr, outStr ->
-        val payload = BinaryBuffer(4).apply { writeInt(pid) }.bytes
-        connection.sendPacket(outStr, ProtocolConstants.CMD_DEBUG_ATTACH, payload)
-        val status = connection.receiveStatus(inStr)
-        status == ProtocolConstants.CMD_SUCCESS || status == ProtocolConstants.CMD_ALREADY_DEBUG
-    }
-
-    suspend fun detach(): Boolean = connection.execute { inStr, outStr ->
-        connection.sendPacket(outStr, ProtocolConstants.CMD_DEBUG_DETACH)
-        connection.receiveStatus(inStr) == ProtocolConstants.CMD_SUCCESS
-    }
-
-    suspend fun setBreakpoint(index: Int, enabled: Boolean, address: Long): Boolean = connection.execute { inStr, outStr ->
-        val payload = BinaryBuffer(16).apply {
-            writeInt(index)
-            writeInt(if (enabled) 1 else 0)
-            writeLong(address)
-        }.bytes
-        connection.sendPacket(outStr, ProtocolConstants.CMD_DEBUG_SET_BREAKPOINT, payload)
-        connection.receiveStatus(inStr) == ProtocolConstants.CMD_SUCCESS
-    }
-
-    suspend fun setWatchpoint(index: Int, enabled: Boolean, length: Int, breakType: Int, address: Long): Boolean = connection.execute { inStr, outStr ->
-        val payload = BinaryBuffer(24).apply {
-            writeInt(index)
-            writeInt(if (enabled) 1 else 0)
-            writeInt(length)
-            writeInt(breakType)
-            writeLong(address)
-        }.bytes
-        connection.sendPacket(outStr, ProtocolConstants.CMD_DEBUG_SET_WATCHPOINT, payload)
-        connection.receiveStatus(inStr) == ProtocolConstants.CMD_SUCCESS
-    }
-
-    suspend fun stopProcess(): Boolean = connection.execute { inStr, outStr ->
-        val payload = BinaryBuffer(4).apply { writeInt(1) }.bytes // 1 = stop
-        connection.sendPacket(outStr, ProtocolConstants.CMD_DEBUG_CONTINUE, payload)
-        connection.receiveStatus(inStr) == ProtocolConstants.CMD_SUCCESS
-    }
-
-    suspend fun resumeProcess(): Boolean = connection.execute { inStr, outStr ->
-        val payload = BinaryBuffer(4).apply { writeInt(0) }.bytes // 0 = resume
-        connection.sendPacket(outStr, ProtocolConstants.CMD_DEBUG_CONTINUE, payload)
-        connection.receiveStatus(inStr) == ProtocolConstants.CMD_SUCCESS
-    }
-
-    suspend fun stepProcess(): Boolean = connection.execute { inStr, outStr ->
-        connection.sendPacket(outStr, ProtocolConstants.CMD_DEBUG_STEP)
-        connection.receiveStatus(inStr) == ProtocolConstants.CMD_SUCCESS
-    }
-
-    suspend fun getThreadList(): List<Int> = connection.execute { inStr, outStr ->
-        connection.sendPacket(outStr, ProtocolConstants.CMD_DEBUG_GET_THREAD_LIST)
-        val status = connection.receiveStatus(inStr)
-        if (status != ProtocolConstants.CMD_SUCCESS) return@execute emptyList()
-        val numBytes = connection.readExactly(inStr, 4)
-        val num = BinaryBuffer(numBytes).readInt()
-        val list = mutableListOf<Int>()
-        if (num > 0) {
-            val listBytes = connection.readExactly(inStr, num * 4)
-            val buf = BinaryBuffer(listBytes)
-            for (i in 0 until num) {
-                list.add(buf.readInt())
-            }
-        }
-        list
-    }
-
-    suspend fun suspendThread(lwpid: Int): Boolean = connection.execute { inStr, outStr ->
-        val payload = BinaryBuffer(4).apply { writeInt(lwpid) }.bytes
-        connection.sendPacket(outStr, ProtocolConstants.CMD_DEBUG_SUSPEND_THREAD, payload)
-        connection.receiveStatus(inStr) == ProtocolConstants.CMD_SUCCESS
-    }
-
-    suspend fun resumeThread(lwpid: Int): Boolean = connection.execute { inStr, outStr ->
-        val payload = BinaryBuffer(4).apply { writeInt(lwpid) }.bytes
-        connection.sendPacket(outStr, ProtocolConstants.CMD_DEBUG_RESUME_THREAD, payload)
-        connection.receiveStatus(inStr) == ProtocolConstants.CMD_SUCCESS
-    }
-
-    suspend fun getRegs(lwpid: Int): GpRegs = connection.execute { inStr, outStr ->
-        val payload = BinaryBuffer(4).apply { writeInt(lwpid) }.bytes
-        connection.sendPacket(outStr, ProtocolConstants.CMD_DEBUG_GETREGS, payload)
-        val status = connection.receiveStatus(inStr)
-        if (status != ProtocolConstants.CMD_SUCCESS) throw java.io.IOException("Get regs failed: status 0x${status.toString(16)}")
-        val bytes = connection.readExactly(inStr, 144)
-        GpRegs.parse(BinaryBuffer(bytes))
-    }
-
-    suspend fun setRegs(lwpid: Int, regs: GpRegs): Boolean = connection.execute { inStr, outStr ->
-        val regBytes = BinaryBuffer(144).apply {
-            writeLong(regs.r15)
-            writeLong(regs.r14)
-            writeLong(regs.r13)
-            writeLong(regs.r12)
-            writeLong(regs.r11)
-            writeLong(regs.r10)
-            writeLong(regs.r9)
-            writeLong(regs.r8)
-            writeLong(regs.rdi)
-            writeLong(regs.rsi)
-            writeLong(regs.rbp)
-            writeLong(regs.rbx)
-            writeLong(regs.rdx)
-            writeLong(regs.rcx)
-            writeLong(regs.rax)
-            writeInt(regs.trapno)
-            writeShort(regs.fs.toShort())
-            writeShort(regs.gs.toShort())
-            writeInt(regs.err)
-            writeShort(regs.es.toShort())
-            writeShort(regs.ds.toShort())
-            writeLong(regs.rip)
-            writeLong(regs.cs)
-            writeLong(regs.rflags)
-            writeLong(regs.rsp)
-            writeLong(regs.ss)
-        }.bytes
-        
-        val payload = BinaryBuffer(8).apply {
-            writeInt(lwpid)
-            writeInt(144)
-        }.bytes
-        connection.sendPacket(outStr, ProtocolConstants.CMD_DEBUG_SETREGS, payload)
-        if (connection.receiveStatus(inStr) != ProtocolConstants.CMD_SUCCESS) return@execute false
-        outStr.write(regBytes)
-        outStr.flush()
-        connection.receiveStatus(inStr) == ProtocolConstants.CMD_SUCCESS
-    }
-
-    suspend fun getFpRegs(lwpid: Int): ByteArray = connection.execute { inStr, outStr ->
-        val payload = BinaryBuffer(4).apply { writeInt(lwpid) }.bytes
-        connection.sendPacket(outStr, ProtocolConstants.CMD_DEBUG_GETFPREGS, payload)
-        val status = connection.receiveStatus(inStr)
-        if (status != ProtocolConstants.CMD_SUCCESS) throw java.io.IOException("Get FP regs failed")
-        connection.readExactly(inStr, 832)
-    }
-
-    suspend fun setFpRegs(lwpid: Int, fpBytes: ByteArray): Boolean = connection.execute { inStr, outStr ->
-        val payload = BinaryBuffer(8).apply {
-            writeInt(lwpid)
-            writeInt(fpBytes.size)
-        }.bytes
-        connection.sendPacket(outStr, ProtocolConstants.CMD_DEBUG_SETFPREGS, payload)
-        if (connection.receiveStatus(inStr) != ProtocolConstants.CMD_SUCCESS) return@execute false
-        outStr.write(fpBytes)
-        outStr.flush()
-        connection.receiveStatus(inStr) == ProtocolConstants.CMD_SUCCESS
-    }
-
-    suspend fun getDbRegs(lwpid: Int): DbRegs = connection.execute { inStr, outStr ->
-        val payload = BinaryBuffer(4).apply { writeInt(lwpid) }.bytes
-        connection.sendPacket(outStr, ProtocolConstants.CMD_DEBUG_GETDBREGS, payload)
-        val status = connection.receiveStatus(inStr)
-        if (status != ProtocolConstants.CMD_SUCCESS) throw java.io.IOException("Get DB regs failed")
-        val bytes = connection.readExactly(inStr, 128)
-        DbRegs.parse(BinaryBuffer(bytes))
-    }
-
-    suspend fun setDbRegs(lwpid: Int, dbRegs: DbRegs): Boolean = connection.execute { inStr, outStr ->
-        val regBytes = BinaryBuffer(128).apply {
-            writeLong(dbRegs.dr0)
-            writeLong(dbRegs.dr1)
-            writeLong(dbRegs.dr2)
-            writeLong(dbRegs.dr3)
-            writeLong(dbRegs.dr4)
-            writeLong(dbRegs.dr5)
-            writeLong(dbRegs.dr6)
-            writeLong(dbRegs.dr7)
-            for (r in dbRegs.reserved) {
-                writeLong(r)
-            }
-        }.bytes
-        val payload = BinaryBuffer(8).apply {
-            writeInt(lwpid)
-            writeInt(128)
-        }.bytes
-        connection.sendPacket(outStr, ProtocolConstants.CMD_DEBUG_SETDBREGS, payload)
-        if (connection.receiveStatus(inStr) != ProtocolConstants.CMD_SUCCESS) return@execute false
-        outStr.write(regBytes)
-        outStr.flush()
-        connection.receiveStatus(inStr) == ProtocolConstants.CMD_SUCCESS
-    }
-
-    suspend fun getFsGsBase(lwpid: Int): Pair<Long, Long> = connection.execute { inStr, outStr ->
-        val payload = BinaryBuffer(4).apply { writeInt(lwpid) }.bytes
-        connection.sendPacket(outStr, ProtocolConstants.CMD_DEBUG_GETFSGSBASE, payload)
-        val status = connection.receiveStatus(inStr)
-        if (status != ProtocolConstants.CMD_SUCCESS) throw java.io.IOException("Get FS/GS base failed")
-        val bytes = connection.readExactly(inStr, 16)
-        val buf = BinaryBuffer(bytes)
-        Pair(buf.readLong(), buf.readLong())
-    }
-
-    suspend fun setFsGsBase(lwpid: Int, fsBase: Long, gsBase: Long): Boolean = connection.execute { inStr, outStr ->
-        val baseBytes = BinaryBuffer(16).apply {
-            writeLong(fsBase)
-            writeLong(gsBase)
-        }.bytes
-        val payload = BinaryBuffer(8).apply {
-            writeInt(lwpid)
-            writeInt(16)
-        }.bytes
-        connection.sendPacket(outStr, ProtocolConstants.CMD_DEBUG_SETFSGSBASE, payload)
-        if (connection.receiveStatus(inStr) != ProtocolConstants.CMD_SUCCESS) return@execute false
-        outStr.write(baseBytes)
-        outStr.flush()
-        connection.receiveStatus(inStr) == ProtocolConstants.CMD_SUCCESS
-    }
-
-    suspend fun stepThread(lwpid: Int): Boolean = connection.execute { inStr, outStr ->
-        val payload = BinaryBuffer(4).apply { writeInt(lwpid) }.bytes
-        connection.sendPacket(outStr, ProtocolConstants.CMD_DEBUG_STEP_THREAD, payload)
-        connection.receiveStatus(inStr) == ProtocolConstants.CMD_SUCCESS
-    }
-
     suspend fun sendNotification(text: String): Boolean = connection.execute { inStr, outStr ->
         val textBytes = text.toByteArray(Charsets.UTF_8)
         val payload = BinaryBuffer(4 + textBytes.size).apply {
@@ -542,64 +139,44 @@ class Ps5Client(val connection: Ps5Connection) {
         connection.receiveStatus(inStr) == ProtocolConstants.CMD_SUCCESS
     }
 
-    suspend fun disassembleRegion(pid: Int, address: Long, length: Int, maxEntries: Int = 1000): List<Ps5DisasmInstr> = connection.execute { inStr, outStr ->
-        val payload = BinaryBuffer(20).apply {
-            writeInt(pid)
-            writeLong(address)
-            writeInt(length)
-            writeInt(maxEntries)
-        }.bytes
-        connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_DISASM_REGION, payload)
-        
-        val status = connection.receiveStatus(inStr)
-        if (status != ProtocolConstants.CMD_SUCCESS) throw java.io.IOException("Disassemble region command failed: status 0x${status.toString(16)}")
+    // Process Delegation
+    suspend fun getProcesses(): List<Ps5Process> = processService.getProcesses()
+    suspend fun getMaps(pid: Int): List<Ps5VmMapEntry> = processService.getMaps(pid)
+    suspend fun getProcessInfo(pid: Int): Ps5ProcessInfo = processService.getProcessInfo(pid)
+    suspend fun getForegroundApp(): Ps5ForegroundApp = processService.getForegroundApp()
 
-        val list = mutableListOf<Ps5DisasmInstr>()
-        while (true) {
-            val bufBytes = connection.readExactly(inStr, 32)
-            // Check sentinel (all bytes 0xFF)
-            var isSentinel = true
-            for (b in bufBytes) {
-                if (b != 0xFF.toByte()) {
-                    isSentinel = false
-                    break
-                }
-            }
-            if (isSentinel) break
+    // Memory Delegation
+    suspend fun readMemory(pid: Int, address: Long, length: Int): ByteArray = memoryService.readMemory(pid, address, length)
+    suspend fun writeMemory(pid: Int, address: Long, data: ByteArray): Boolean = memoryService.writeMemory(pid, address, data)
+    suspend fun writeMemoryMulti(pid: Int, writes: List<Pair<Long, ByteArray>>, withStatusReport: Boolean = false): Boolean =
+        memoryService.writeMemoryMulti(pid, writes, withStatusReport)
+    suspend fun allocateMemory(pid: Int, length: Int): Long = memoryService.allocateMemory(pid, length)
+    suspend fun allocateMemoryHinted(pid: Int, hint: Long, length: Int): Long = memoryService.allocateMemoryHinted(pid, hint, length)
+    suspend fun freeMemory(pid: Int, address: Long, length: Int): Boolean = memoryService.freeMemory(pid, address, length)
+    suspend fun changeProtection(pid: Int, address: Long, length: Int, prot: Int): Boolean = memoryService.changeProtection(pid, address, length, prot)
+    suspend fun disassembleRegion(pid: Int, address: Long, length: Int, maxEntries: Int = 1000): List<Ps5DisasmInstr> =
+        memoryService.disassembleRegion(pid, address, length, maxEntries)
+    suspend fun getKernBase(): Long = memoryService.getKernBase()
 
-            val buf = BinaryBuffer(bufBytes)
-            val addr = buf.readLong()
-            val ripRelTarget = buf.readLong()
-            val memDisp = buf.readLong()
-            val len = buf.readUByte()
-            val kind = buf.readUByte()
-            val memBaseReg = buf.readUByte()
-            val memIndexReg = buf.readUByte()
-            val memScale = buf.readUByte()
-            val mnemonicLo = buf.readUByte()
-            // Skip 2 bytes pad
-            buf.readShort()
-
-            list.add(Ps5DisasmInstr(
-                addr = addr,
-                ripRelTarget = ripRelTarget,
-                memDisp = memDisp,
-                length = len,
-                kind = kind,
-                memBaseReg = memBaseReg,
-                memIndexReg = memIndexReg,
-                memScale = memScale,
-                mnemonicLo = mnemonicLo
-            ))
-        }
-        list
-    }
-
-    suspend fun getKernBase(): Long = connection.execute { inStr, outStr ->
-        connection.sendPacket(outStr, ProtocolConstants.CMD_KERN_BASE)
-        val status = connection.receiveStatus(inStr)
-        if (status != ProtocolConstants.CMD_SUCCESS) return@execute 0L
-        val bytes = connection.readExactly(inStr, 8)
-        BinaryBuffer(bytes).readLong()
-    }
+    // Debugger Delegation
+    suspend fun attach(pid: Int): Boolean = debuggerService.attach(pid)
+    suspend fun detach(): Boolean = debuggerService.detach()
+    suspend fun setBreakpoint(index: Int, enabled: Boolean, address: Long): Boolean = debuggerService.setBreakpoint(index, enabled, address)
+    suspend fun setWatchpoint(index: Int, enabled: Boolean, length: Int, breakType: Int, address: Long): Boolean =
+        debuggerService.setWatchpoint(index, enabled, length, breakType, address)
+    suspend fun stopProcess(): Boolean = debuggerService.stopProcess()
+    suspend fun resumeProcess(): Boolean = debuggerService.resumeProcess()
+    suspend fun stepProcess(): Boolean = debuggerService.stepProcess()
+    suspend fun getThreadList(): List<Int> = debuggerService.getThreadList()
+    suspend fun suspendThread(lwpid: Int): Boolean = debuggerService.suspendThread(lwpid)
+    suspend fun resumeThread(lwpid: Int): Boolean = debuggerService.resumeThread(lwpid)
+    suspend fun getRegs(lwpid: Int): GpRegs = debuggerService.getRegs(lwpid)
+    suspend fun setRegs(lwpid: Int, regs: GpRegs): Boolean = debuggerService.setRegs(lwpid, regs)
+    suspend fun getFpRegs(lwpid: Int): ByteArray = debuggerService.getFpRegs(lwpid)
+    suspend fun setFpRegs(lwpid: Int, fpBytes: ByteArray): Boolean = debuggerService.setFpRegs(lwpid, fpBytes)
+    suspend fun getDbRegs(lwpid: Int): DbRegs = debuggerService.getDbRegs(lwpid)
+    suspend fun setDbRegs(lwpid: Int, dbRegs: DbRegs): Boolean = debuggerService.setDbRegs(lwpid, dbRegs)
+    suspend fun getFsGsBase(lwpid: Int): Pair<Long, Long> = debuggerService.getFsGsBase(lwpid)
+    suspend fun setFsGsBase(lwpid: Int, fsBase: Long, gsBase: Long): Boolean = debuggerService.setFsGsBase(lwpid, fsBase, gsBase)
+    suspend fun stepThread(lwpid: Int): Boolean = debuggerService.stepThread(lwpid)
 }
