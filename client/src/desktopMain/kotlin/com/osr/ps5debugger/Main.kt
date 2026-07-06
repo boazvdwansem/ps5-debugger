@@ -301,7 +301,7 @@ private fun WindowScope.AppWindowFrame(
                     onRestoreForDrag = onRestoreForDrag,
                     onClose = onClose
                 )
-                MainView()
+                MainView(onExit = onClose)
             }
         }
     }

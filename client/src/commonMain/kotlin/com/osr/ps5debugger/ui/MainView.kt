@@ -41,16 +41,19 @@ import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.rememberTooltipState
 
 @Composable
-fun MainView() {
+fun MainView(onExit: () -> Unit = {}) {
     var activeMap by remember { mutableStateOf<MemoryRange?>(null) }
     var selectedTab by remember { mutableStateOf(0) }
     var jumpToAddress by remember { mutableStateOf<Long?>(null) }
-    
+    var viewMode by remember { mutableStateOf(2) } // 0 = Disassembly, 1 = Graph, 2 = Hex Viewer
+
     val isConnected by AppContainer.debuggerUseCase.isConnected.collectAsState()
     var isConsoleVisible by remember { mutableStateOf(false) }
     var isSidebarVisible by remember { mutableStateOf(true) }
     val coroutineScope = rememberCoroutineScope()
     val tabs = listOf("Memory Viewer", "Memory Search", "Watch List", "Memory Dumper")
+    
+    val watchlist by AppContainer.debuggerUseCase.watchlist.collectAsState()
     
     LaunchedEffect(isConnected) {
         if (isConnected) {
@@ -58,6 +61,82 @@ fun MainView() {
                 AppContainer.debuggerUseCase.refreshProcesses()
             } catch (e: Exception) {
                 AppContainer.debuggerUseCase.log("MAIN", "Failed to retrieve process list: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+            }
+        }
+    }
+
+    var selectionStart by remember { mutableStateOf<Long?>(null) }
+    var selectionEnd by remember { mutableStateOf<Long?>(null) }
+
+    val onFileAction: (String) -> Unit = { action ->
+        when (action) {
+            "Save" -> {
+                val json = watchListToJson(watchlist)
+                AppContainer.filePicker?.saveJson("watchlist.json", json) { success ->
+                    if (success) AppContainer.debuggerUseCase.log("FILE", "Watchlist saved successfully", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                }
+            }
+            "Load" -> {
+                AppContainer.filePicker?.loadJson { json ->
+                    if (json != null) {
+                        try {
+                            val items = watchListFromJson(json)
+                            AppContainer.debuggerUseCase.clearWatchlist()
+                            items.forEach { AppContainer.debuggerUseCase.addWatchItem(it) }
+                            AppContainer.debuggerUseCase.log("FILE", "Watchlist loaded successfully", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                        } catch (e: Exception) {
+                            AppContainer.debuggerUseCase.log("FILE", "Failed to load watchlist: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                        }
+                    }
+                }
+            }
+            "Exit" -> onExit()
+        }
+    }
+
+    val onViewAction: (String) -> Unit = { action ->
+        selectedTab = 0
+        viewMode = when (action) {
+            "Disassembly" -> 0
+            "Graph" -> 1
+            "Hex" -> 2
+            else -> 2
+        }
+    }
+
+    val onEditAction: (String) -> Unit = { action ->
+        when (action) {
+            "Copy Address" -> {
+                selectionStart?.let { copyToClipboard("0x${it.toString(16).uppercase()}") }
+            }
+            "Copy" -> {
+                selectionStart?.let { start ->
+                    selectionEnd?.let { end ->
+                        coroutineScope.launch {
+                            val s = minOf(start, end)
+                            val e = maxOf(start, end)
+                            val len = (e - s + 1).toInt().coerceAtMost(1024 * 1024)
+                            AppContainer.debuggerUseCase.readMemory(s, len).onSuccess { data ->
+                                val hex = data.joinToString(" ") { it.toUByte().toString(16).padStart(2, '0').uppercase() }
+                                copyToClipboard(hex)
+                            }
+                        }
+                    }
+                }
+            }
+            "Select All" -> {
+                activeMap?.let {
+                    selectionStart = it.start
+                    selectionEnd = it.end - 1
+                }
+            }
+            "Select None" -> {
+                selectionStart = null
+                selectionEnd = null
+            }
+            "Go to address" -> {
+                selectedTab = 0
+                // This typically focuses the address bar if it were a separate component
             }
         }
     }
@@ -77,11 +156,10 @@ fun MainView() {
                             modifier = Modifier.fillMaxWidth().height(48.dp).background(MaterialTheme.colorScheme.surface).padding(horizontal = 16.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                text = "PS5 DEBUGGER",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
+                            TopMenuBar(
+                                onFileAction = onFileAction,
+                                onEditAction = onEditAction,
+                                onViewAction = onViewAction
                             )
 
                             Spacer(modifier = Modifier.weight(1f))
@@ -199,7 +277,18 @@ fun MainView() {
                                 // Tab content
                                 Box(modifier = Modifier.fillMaxWidth().weight(1f).background(MaterialTheme.colorScheme.surface.copy(alpha = 0.5f))) {
                                     when (selectedTab) {
-                                        0 -> MemoryViewerLayout(activeMap = activeMap, jumpToAddress = jumpToAddress)
+                                        0 -> MemoryViewerLayout(
+                                            activeMap = activeMap,
+                                            jumpToAddress = jumpToAddress,
+                                            viewModeParam = viewMode,
+                                            onViewModeChanged = { viewMode = it },
+                                            selectionStartParam = selectionStart,
+                                            selectionEndParam = selectionEnd,
+                                            onSelectionChanged = { start, end ->
+                                                selectionStart = start
+                                                selectionEnd = end
+                                            }
+                                        )
                                         1 -> MemoryScannerView(
                                             activeMap = activeMap,
                                             onJumpToAddress = { addr ->
@@ -261,6 +350,80 @@ fun MainView() {
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TopMenuBar(
+    onFileAction: (String) -> Unit,
+    onEditAction: (String) -> Unit,
+    onViewAction: (String) -> Unit
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        MenuDropdown(
+            title = "File",
+            options = listOf("Save", "Load", "Preferences", "Exit").map { it to { onFileAction(it) } }
+        )
+
+        MenuDropdown(
+            title = "Edit",
+            options = listOf(
+                "Undo",
+                "Redo",
+                "Cut",
+                "Copy",
+                "Copy Address",
+                "Paste",
+                "Select All",
+                "Select None",
+                "Find",
+                "Find next",
+                "Go to address"
+            ).map { it to { onEditAction(it) } }
+        )
+
+        MenuDropdown(
+            title = "View",
+            options = listOf("Disassembly", "Graph", "Hex").map { it to { onViewAction(it) } }
+        )
+    }
+}
+
+@Composable
+private fun MenuDropdown(
+    title: String,
+    options: List<Pair<String, () -> Unit>>
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    Box {
+        Text(
+            text = title,
+            color = MaterialTheme.colorScheme.primary,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier
+                .clickable { expanded = true }
+                .padding(horizontal = 8.dp, vertical = 6.dp)
+        )
+
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            options.forEach { (option, action) ->
+                DropdownMenuItem(
+                    text = { Text(option) },
+                    onClick = {
+                        expanded = false
+                        action()
+                    }
+                )
             }
         }
     }

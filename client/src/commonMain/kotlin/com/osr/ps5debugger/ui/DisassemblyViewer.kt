@@ -77,6 +77,7 @@ fun ByteAsciiCellCompact(byte: Byte) {
 @Composable
 fun DisassemblyViewer(
     activeMap: MemoryRange?,
+    instructions: androidx.compose.runtime.snapshots.SnapshotStateList<DisasmLine>,
     jumpToAddress: Long? = null,
     modifier: Modifier = Modifier,
     selectionStart: Long? = null,
@@ -107,7 +108,6 @@ fun DisassemblyViewer(
     
     var startAddress by remember { mutableStateOf(activeMap?.start ?: 0L) }
     var goToAddressText by remember { mutableStateOf("") }
-    val instructions = remember { mutableStateListOf<DisasmLine>() }
     var isLoading by remember { mutableStateOf(false) }
     
     // Panels visibility

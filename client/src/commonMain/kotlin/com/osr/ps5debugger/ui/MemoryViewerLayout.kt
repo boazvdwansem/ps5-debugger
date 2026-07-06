@@ -1,6 +1,8 @@
 package com.osr.ps5debugger.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -23,14 +25,37 @@ import androidx.compose.runtime.getValue
 fun MemoryViewerLayout(
     activeMap: MemoryRange?,
     jumpToAddress: Long? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    viewModeParam: Int? = null,
+    onViewModeChanged: ((Int) -> Unit)? = null,
+    selectionStartParam: Long? = null,
+    selectionEndParam: Long? = null,
+    onSelectionChanged: ((Long?, Long?) -> Unit)? = null
 ) {
-    var viewMode by remember { mutableStateOf(0) } // 0 = Disassembly, 1 = Hex Viewer
+    var internalViewMode by remember { mutableStateOf(0) }
+    val viewMode = viewModeParam ?: internalViewMode
+    val setViewMode: (Int) -> Unit = {
+        if (onViewModeChanged != null) onViewModeChanged(it)
+        else internalViewMode = it
+    }
+
     var currentJumpAddress by remember(jumpToAddress) { mutableStateOf(jumpToAddress) }
 
     // Hoisted Selection State
-    var hoistedSelectionStart by remember { mutableStateOf<Long?>(null) }
-    var hoistedSelectionEnd by remember { mutableStateOf<Long?>(null) }
+    var internalSelectionStart by remember { mutableStateOf<Long?>(null) }
+    var internalSelectionEnd by remember { mutableStateOf<Long?>(null) }
+    
+    val hoistedSelectionStart = selectionStartParam ?: internalSelectionStart
+    val hoistedSelectionEnd = selectionEndParam ?: internalSelectionEnd
+    
+    val updateSelection: (Long?, Long?) -> Unit = { start, end ->
+        if (onSelectionChanged != null) onSelectionChanged(start, end)
+        else {
+            internalSelectionStart = start
+            internalSelectionEnd = end
+        }
+    }
+    val instructions = remember { mutableStateListOf<DisasmLine>() }
 
     // Hoisted Debugger Session State
     val isAttached by AppContainer.debuggerUseCase.isAttached.collectAsState()
@@ -63,31 +88,42 @@ fun MemoryViewerLayout(
                     fontWeight = FontWeight.Bold
                 )
                 
-                FilterChip(
-                    selected = viewMode == 0,
-                    onClick = { viewMode = 0 },
-                    label = { Text("Disassembly", fontSize = 11.sp) },
-                    modifier = Modifier.height(28.dp),
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = PS5ThemeColors.AccentCyan,
-                        selectedLabelColor = Color.Black,
-                        containerColor = PS5ThemeColors.Surface,
-                        labelColor = PS5ThemeColors.TextMain
-                    )
-                )
-                
-                FilterChip(
-                    selected = viewMode == 1,
-                    onClick = { viewMode = 1 },
-                    label = { Text("Hex Viewer", fontSize = 11.sp) },
-                    modifier = Modifier.height(28.dp),
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = PS5ThemeColors.AccentCyan,
-                        selectedLabelColor = Color.Black,
-                        containerColor = PS5ThemeColors.Surface,
-                        labelColor = PS5ThemeColors.TextMain
-                    )
-                )
+                Box {
+                    var expanded by remember { mutableStateOf(false) }
+                    val options = listOf("Disassembly", "Graph", "Hex Viewer")
+                    
+                    Button(
+                        onClick = { expanded = true },
+                        colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.Surface),
+                        shape = RoundedCornerShape(4.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                        modifier = Modifier.height(28.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(options[viewMode], fontSize = 11.sp, color = PS5ThemeColors.TextMain)
+                            Text("▼", fontSize = 8.sp, color = PS5ThemeColors.TextMuted)
+                        }
+                    }
+                    
+                    DropdownMenu(
+                        expanded = expanded,
+                        onDismissRequest = { expanded = false },
+                        modifier = Modifier.background(PS5ThemeColors.SecondaryBg).border(1.dp, PS5ThemeColors.BorderColor)
+                    ) {
+                        options.forEachIndexed { index, title ->
+                            DropdownMenuItem(
+                                text = { Text(title, fontSize = 11.sp, color = PS5ThemeColors.TextMain) },
+                                onClick = {
+                                    setViewMode(index)
+                                    expanded = false
+                                }
+                            )
+                        }
+                    }
+                }
             }
             
             HorizontalDivider(color = PS5ThemeColors.BorderColor)
@@ -101,19 +137,19 @@ fun MemoryViewerLayout(
                             Column(modifier = Modifier.fillMaxSize()) {
                                 DisassemblyViewer(
                                     activeMap = activeMap,
+                                    instructions = instructions,
                                     jumpToAddress = currentJumpAddress,
                                     selectionStart = hoistedSelectionStart,
                                     selectionEnd = hoistedSelectionEnd,
                                     onSelectionChanged = { start, end ->
-                                        hoistedSelectionStart = start
-                                        hoistedSelectionEnd = end
+                                        updateSelection(start, end)
                                         if (start != null) {
                                             currentJumpAddress = start
                                         }
                                     },
                                     onJumpToHex = { addr ->
                                         currentJumpAddress = addr
-                                        viewMode = 1
+                                        setViewMode(2)
                                     },
                                     isAttached = isAttached,
                                     onAttachedChanged = { AppContainer.debuggerUseCase.setAttached(it) },
@@ -140,8 +176,7 @@ fun MemoryViewerLayout(
                                     selectionStartParam = hoistedSelectionStart,
                                     selectionEndParam = hoistedSelectionEnd,
                                     onSelectionChanged = { start, end ->
-                                        hoistedSelectionStart = start
-                                        hoistedSelectionEnd = end
+                                        updateSelection(start, end)
                                     }
                                 )
                             }
@@ -149,19 +184,19 @@ fun MemoryViewerLayout(
                             // On desktop: single unified view containing address, Ghidra disassembly, and aligned hex/ascii cells!
                             DisassemblyViewer(
                                 activeMap = activeMap,
+                                instructions = instructions,
                                 jumpToAddress = currentJumpAddress,
                                 selectionStart = hoistedSelectionStart,
                                 selectionEnd = hoistedSelectionEnd,
                                 onSelectionChanged = { start, end ->
-                                    hoistedSelectionStart = start
-                                    hoistedSelectionEnd = end
+                                    updateSelection(start, end)
                                     if (start != null) {
                                         currentJumpAddress = start
                                     }
                                 },
                                 onJumpToHex = { addr ->
                                     currentJumpAddress = addr
-                                    viewMode = 1
+                                    setViewMode(2)
                                 },
                                 isAttached = isAttached,
                                 onAttachedChanged = { AppContainer.debuggerUseCase.setAttached(it) },
@@ -183,6 +218,17 @@ fun MemoryViewerLayout(
                         }
                     }
                     1 -> {
+                        // Graph Viewer (Binary Ninja style Flow Chart CFG)
+                        GraphViewer(
+                            instructions = instructions,
+                            modifier = Modifier.fillMaxSize(),
+                            onAddressClicked = { addr ->
+                                currentJumpAddress = addr
+                                setViewMode(0) // jump back to disassembly
+                            }
+                        )
+                    }
+                    2 -> {
                         // Classic Hex Viewer
                         HexViewer(
                             activeMap = activeMap,
@@ -191,8 +237,7 @@ fun MemoryViewerLayout(
                             selectionStartParam = hoistedSelectionStart,
                             selectionEndParam = hoistedSelectionEnd,
                             onSelectionChanged = { start, end ->
-                                hoistedSelectionStart = start
-                                hoistedSelectionEnd = end
+                                updateSelection(start, end)
                             }
                         )
                     }

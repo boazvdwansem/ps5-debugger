@@ -698,7 +698,7 @@ private fun chooseWatchListFile(mode: Int): File? {
     }
 }
 
-private fun watchListToJson(items: List<WatchItem>): String = buildString {
+fun watchListToJson(items: List<WatchItem>): String = buildString {
     appendLine("[")
     items.forEachIndexed { index, item ->
         append("  {")
@@ -717,7 +717,7 @@ private fun watchListToJson(items: List<WatchItem>): String = buildString {
     appendLine("]")
 }
 
-private fun watchListFromJson(json: String): List<WatchItem> {
+fun watchListFromJson(json: String): List<WatchItem> {
     return extractJsonObjects(json).mapNotNull { obj ->
         val label = readJsonStringField(obj, "label") ?: return@mapNotNull null
         val address = readJsonRawField(obj, "address")?.toLongOrNull()
