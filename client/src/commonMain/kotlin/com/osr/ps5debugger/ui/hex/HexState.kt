@@ -21,28 +21,30 @@ import kotlinx.coroutines.withContext
 enum class ClickedArea { ADDRESS, HEX, ASCII }
 
 private val hexViewerScrollPositions = mutableMapOf<Long, Long>()
-private var lastActiveMapStart: Long? = null
 
 class HexState(
-    val activeMap: MemoryRange?,
-    val jumpToAddress: Long?,
-    val selectionStartParam: Long?,
-    val selectionEndParam: Long?,
-    val onSelectionChanged: ((Long?, Long?) -> Unit)?,
+    activeMapInitial: MemoryRange?,
+    val jumpToAddressInitial: Long?,
+    val selectionStartParamInitial: Long?,
+    val selectionEndParamInitial: Long?,
+    onSelectionChangedInitial: ((Long?, Long?) -> Unit)?,
     val scope: CoroutineScope
 ) {
     val pageSize = 65536
     val memoryCache = mutableStateMapOf<Long, ByteArray>()
     val pendingEdits = mutableStateMapOf<Long, Byte>()
     
-    var startAddress by mutableStateOf(activeMap?.start ?: 0L)
-    var endAddress by mutableStateOf(activeMap?.end ?: 0L)
+    var activeMap by mutableStateOf(activeMapInitial)
+    var onSelectionChanged by mutableStateOf(onSelectionChangedInitial)
+    
+    var startAddress by mutableStateOf(activeMapInitial?.start ?: 0L)
+    var endAddress by mutableStateOf(activeMapInitial?.end ?: 0L)
     var bytesPerRow by mutableIntStateOf(16)
     var visibleRowsCount by mutableIntStateOf(1)
     
-    var scrollPosition by mutableStateOf(activeMap?.let { hexViewerScrollPositions[it.start] } ?: 0L)
-    var selectionStart by mutableStateOf<Long?>(selectionStartParam)
-    var selectionEnd by mutableStateOf<Long?>(selectionEndParam)
+    var scrollPosition by mutableStateOf(activeMapInitial?.let { hexViewerScrollPositions[it.start] } ?: 0L)
+    var selectionStart by mutableStateOf<Long?>(selectionStartParamInitial)
+    var selectionEnd by mutableStateOf<Long?>(selectionEndParamInitial)
     
     var isEditingUnlocked by mutableStateOf(false)
     var hexInputBuffer by mutableStateOf("")
@@ -154,7 +156,7 @@ class HexState(
 
     fun loadMemory() {
         val pid = AppContainer.debuggerUseCase.activeProcess.value?.pid ?: return
-        if (activeMap == null) return
+        val map = activeMap ?: return
         
         scope.launch {
             delay(100)
@@ -274,8 +276,15 @@ fun rememberHexState(
     selectionEndParam: Long?,
     onSelectionChanged: ((Long?, Long?) -> Unit)?,
     scope: CoroutineScope = rememberCoroutineScope()
-) = remember(activeMap) {
-    HexState(activeMap, jumpToAddress, selectionStartParam, selectionEndParam, onSelectionChanged, scope).also {
-        lastActiveMapStart = activeMap?.start
+): HexState {
+    val state = remember(activeMap) {
+        HexState(activeMap, jumpToAddress, selectionStartParam, selectionEndParam, onSelectionChanged, scope)
     }
+    
+    SideEffect {
+        state.activeMap = activeMap
+        state.onSelectionChanged = onSelectionChanged
+    }
+    
+    return state
 }

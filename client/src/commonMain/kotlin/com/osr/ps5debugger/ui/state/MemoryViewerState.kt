@@ -5,23 +5,30 @@ import com.osr.ps5debugger.di.AppContainer
 import com.osr.ps5debugger.domain.model.MemoryRange
 
 class MemoryViewerState(
-    val activeMap: MemoryRange?,
-    val jumpToAddress: Long?,
-    val viewModeParam: Int?,
-    val onViewModeChanged: ((Int) -> Unit)?,
-    val selectionStartParam: Long?,
-    val selectionEndParam: Long?,
-    val onSelectionChanged: ((Long?, Long?) -> Unit)?
+    activeMapInitial: MemoryRange?,
+    jumpToAddressInitial: Long?,
+    viewModeParamInitial: Int?,
+    onViewModeChangedInitial: ((Int) -> Unit)?,
+    selectionStartParamInitial: Long?,
+    selectionEndParamInitial: Long?,
+    onSelectionChangedInitial: ((Long?, Long?) -> Unit)?
 ) {
+    var activeMap by mutableStateOf(activeMapInitial)
+    var jumpToAddress by mutableStateOf(jumpToAddressInitial)
+    var viewModeParam by mutableStateOf(viewModeParamInitial)
+    var onViewModeChanged by mutableStateOf(onViewModeChangedInitial)
+    var selectionStartParam by mutableStateOf(selectionStartParamInitial)
+    var selectionEndParam by mutableStateOf(selectionEndParamInitial)
+    var onSelectionChanged by mutableStateOf(onSelectionChangedInitial)
+
     var internalViewMode by mutableIntStateOf(0)
     val viewMode get() = viewModeParam ?: internalViewMode
     
     fun setViewMode(mode: Int) {
-        if (onViewModeChanged != null) onViewModeChanged.invoke(mode)
-        else internalViewMode = mode
+        onViewModeChanged?.invoke(mode) ?: run { internalViewMode = mode }
     }
 
-    var currentJumpAddress by mutableStateOf(jumpToAddress)
+    var currentJumpAddress by mutableStateOf(jumpToAddressInitial)
 
     var internalSelectionStart by mutableStateOf<Long?>(null)
     var internalSelectionEnd by mutableStateOf<Long?>(null)
@@ -30,8 +37,7 @@ class MemoryViewerState(
     val selectionEnd get() = selectionEndParam ?: internalSelectionEnd
     
     fun updateSelection(start: Long?, end: Long?) {
-        if (onSelectionChanged != null) onSelectionChanged.invoke(start, end)
-        else {
+        onSelectionChanged?.invoke(start, end) ?: run {
             internalSelectionStart = start
             internalSelectionEnd = end
         }
@@ -54,6 +60,26 @@ fun rememberMemoryViewerState(
     selectionStartParam: Long?,
     selectionEndParam: Long?,
     onSelectionChanged: ((Long?, Long?) -> Unit)?
-) = remember(activeMap) {
-    MemoryViewerState(activeMap, jumpToAddress, viewModeParam, onViewModeChanged, selectionStartParam, selectionEndParam, onSelectionChanged)
+): MemoryViewerState {
+    val state = remember(activeMap) {
+        MemoryViewerState(activeMap, jumpToAddress, viewModeParam, onViewModeChanged, selectionStartParam, selectionEndParam, onSelectionChanged)
+    }
+    
+    SideEffect {
+        state.activeMap = activeMap
+        state.jumpToAddress = jumpToAddress
+        state.viewModeParam = viewModeParam
+        state.onViewModeChanged = onViewModeChanged
+        state.selectionStartParam = selectionStartParam
+        state.selectionEndParam = selectionEndParam
+        state.onSelectionChanged = onSelectionChanged
+    }
+
+    LaunchedEffect(jumpToAddress) {
+        if (jumpToAddress != null) {
+            state.currentJumpAddress = jumpToAddress
+        }
+    }
+    
+    return state
 }

@@ -64,7 +64,7 @@ fun HexViewer(
             state.bytesPerRow = if (isMobile) 8 else 16
         }
 
-        LaunchedEffect(maxHeight, density) {
+        LaunchedEffect(maxHeight, density, state) {
             val nonGridHeight = 100.dp
             state.visibleRowsCount = ((maxHeight - nonGridHeight) / 24.dp).toInt().coerceAtLeast(1)
         }
@@ -353,7 +353,7 @@ private fun HexGridBody(state: HexState, isMobile: Boolean, showAddress: Boolean
                                         val pressClickResult = state.getAddressAtOffset(startPos.x, startPos.y, density, isMobile)
                                         val isSelectionArea = pressClickResult != null && (pressClickResult.second == ClickedArea.HEX || pressClickResult.second == ClickedArea.ASCII)
                                         
-                                        if (isMobile && isSelectionArea && kotlin.math.abs(dragX) > kotlin.math.abs(dragY) * 1.5f) {
+                                        if (isSelectionArea && (!isMobile || kotlin.math.abs(dragX) > kotlin.math.abs(dragY) * 1.5f)) {
                                             state.isDraggingToSelect = true
                                         } else {
                                             state.isDraggingToScroll = true
