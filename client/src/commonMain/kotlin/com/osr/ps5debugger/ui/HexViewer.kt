@@ -512,14 +512,14 @@ private fun BoxScope.HexScrollbar(state: HexState, modifier: Modifier = Modifier
                 0.dp
             }
             
-            Box(modifier = Modifier.fillMaxSize().pointerInput(thumbOffset, thumbHeight) {
+            Box(modifier = Modifier.fillMaxSize().pointerInput(state, maxScroll) {
                 detectTapGestures { pressOffset ->
                     if (pressOffset.y < thumbOffset.toPx()) state.updateScrollPosition((state.scrollPosition - state.visibleRowsCount).coerceIn(0L, maxScroll))
                     else if (pressOffset.y > (thumbOffset + thumbHeight).toPx()) state.updateScrollPosition((state.scrollPosition + state.visibleRowsCount).coerceIn(0L, maxScroll))
                 }
             }) {
                 Box(modifier = Modifier.offset(y = thumbOffset).fillMaxWidth().height(thumbHeight).background(PS5ThemeColors.AccentCyan, RoundedCornerShape(4.dp))
-                    .pointerInput(maxOffset, maxScroll) {
+                    .pointerInput(state, maxOffset, maxScroll) {
                         detectDragGestures { _, dragAmount ->
                             val maxOffsetPx = maxOffset.toPx()
                             if (maxOffsetPx > 0f) {

@@ -142,9 +142,7 @@ private fun MainContent(state: MainState) {
                         when (activeLeftTab) {
                             "connections" -> ProcessManager(
                                 onMapSelected = {
-                                    state.activeMaps.clear()
                                     state.activeMap = it
-                                    state.jumpToAddress = it.start
                                     state.selectedTab = 0
                                 },
                                 activeMap = state.activeMap,
@@ -152,6 +150,9 @@ private fun MainContent(state: MainState) {
                                 onMapsSelected = { maps ->
                                     state.activeMaps.clear()
                                     state.activeMaps.addAll(maps)
+                                    if (maps.isNotEmpty() && (state.activeMap == null || !maps.any { it.start == state.activeMap?.start })) {
+                                        state.activeMap = maps.first()
+                                    }
                                 },
                                 onCollapse = { activeLeftTab = null }
                             )

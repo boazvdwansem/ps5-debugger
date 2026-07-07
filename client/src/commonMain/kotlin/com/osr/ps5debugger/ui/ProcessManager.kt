@@ -220,9 +220,6 @@ fun ProcessManager(
                                 onMapsSelected(emptyList())
                             } else {
                                 onMapsSelected(filteredMaps)
-                                if (filteredMaps.isNotEmpty()) {
-                                    onMapSelected(filteredMaps.first())
-                                }
                             }
                         },
                         modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
@@ -261,8 +258,20 @@ fun ProcessManager(
                                     .fillMaxWidth()
                                     .background(if (isSelectedMap) PS5ThemeColors.AccentCyan.copy(alpha = 0.15f) else Color.Transparent)
                                     .clickable { 
-                                        // Clicking outside the checkbox selects the map and closes sidebar
-                                        onMapSelected(map)
+                                        // Clicking the row toggles the checkbox instead of resetting map list
+                                        if (onMapsSelected != null) {
+                                            val newList = activeMaps.toMutableList()
+                                            val isAlreadyIn = newList.any { it.start == map.start }
+                                            if (isAlreadyIn) {
+                                                newList.removeAll { it.start == map.start }
+                                            } else {
+                                                newList.add(map)
+                                            }
+                                            newList.sortBy { it.start }
+                                            onMapsSelected(newList)
+                                        } else {
+                                            onMapSelected(map)
+                                        }
                                     }
                                     .padding(8.dp)
                             ) {
