@@ -1,9 +1,9 @@
 package com.osr.ps5debugger.network.services
 
+import com.osr.ps5debugger.protocol.Ps5DisasmInstr
+import com.osr.ps5debugger.protocol.BinaryBuffer
+import com.osr.ps5debugger.protocol.ProtocolConstants
 import com.osr.ps5debugger.network.Ps5Connection
-import com.osr.ps5debugger.protocol.*
-import java.io.InputStream
-import java.io.OutputStream
 
 class MemoryService(private val connection: Ps5Connection) {
 
@@ -40,38 +40,32 @@ class MemoryService(private val connection: Ps5Connection) {
     }
 
     suspend fun writeMemoryMulti(pid: Int, writes: List<Pair<Long, ByteArray>>, withStatusReport: Boolean = false): Boolean = connection.execute { inStr, outStr ->
-        if (writes.isEmpty()) return@execute true
-        
-        val flags = if (withStatusReport) ProtocolConstants.PROC_WRITE_MULTI_F_STATUS else 0
-        val headerPayload = BinaryBuffer(12).apply {
+        val payload = BinaryBuffer(12).apply {
             writeInt(pid)
             writeInt(writes.size)
-            writeInt(flags)
+            writeInt(if (withStatusReport) 1 else 0)
         }.bytes
-        
-        connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_WRITE_MULTI, headerPayload)
-        
-        var status = connection.receiveStatus(inStr)
-        if (status != ProtocolConstants.CMD_SUCCESS) return@execute false
+        connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_WRITE_MULTI, payload)
 
-        // Stream entries
-        for ((address, data) in writes) {
-            val entryHeader = BinaryBuffer(12).apply {
-                writeLong(address)
-                writeInt(data.size)
+        val initialStatus = connection.receiveStatus(inStr)
+        if (initialStatus != ProtocolConstants.CMD_SUCCESS) return@execute false
+
+        for (write in writes) {
+            val hdr = BinaryBuffer(12).apply {
+                writeLong(write.first)
+                writeInt(write.second.size)
             }.bytes
-            outStr.write(entryHeader)
-            outStr.write(data)
+            outStr.write(hdr)
+            outStr.write(write.second)
         }
         outStr.flush()
 
         if (withStatusReport) {
-            // Read status bytes
-            connection.readExactly(inStr, writes.size)
+            connection.readExactly(inStr, writes.size) // consume status bytes
         }
 
-        status = connection.receiveStatus(inStr)
-        status == ProtocolConstants.CMD_SUCCESS
+        val finalStatus = connection.receiveStatus(inStr)
+        finalStatus == ProtocolConstants.CMD_SUCCESS
     }
 
     suspend fun allocateMemory(pid: Int, length: Int): Long = connection.execute { inStr, outStr ->
@@ -80,12 +74,12 @@ class MemoryService(private val connection: Ps5Connection) {
             writeInt(length)
         }.bytes
         connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_ALLOC, payload)
-        
-        val status = connection.receiveStatus(inStr)
-        if (status != ProtocolConstants.CMD_SUCCESS) return@execute 0L
 
+        val status = connection.receiveStatus(inStr)
         val respBytes = connection.readExactly(inStr, 8)
-        BinaryBuffer(respBytes).readLong()
+        val address = BinaryBuffer(respBytes).readLong()
+        if (status != ProtocolConstants.CMD_SUCCESS) return@execute 0L
+        address
     }
 
     suspend fun allocateMemoryHinted(pid: Int, hint: Long, length: Int): Long = connection.execute { inStr, outStr ->
@@ -95,7 +89,7 @@ class MemoryService(private val connection: Ps5Connection) {
             writeInt(length)
         }.bytes
         connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_ALLOC_HINTED, payload)
-        
+
         val status = connection.receiveStatus(inStr)
         val respBytes = connection.readExactly(inStr, 8)
         val address = BinaryBuffer(respBytes).readLong()
@@ -159,8 +153,7 @@ class MemoryService(private val connection: Ps5Connection) {
             val memIndexReg = buf.readUByte()
             val memScale = buf.readUByte()
             val mnemonicLo = buf.readUByte()
-            // Skip 2 bytes pad
-            buf.readShort()
+            val mnemonic16 = buf.readUShort()
 
             list.add(Ps5DisasmInstr(
                 addr = addr,
@@ -171,6 +164,7 @@ class MemoryService(private val connection: Ps5Connection) {
                 memBaseReg = memBaseReg,
                 memIndexReg = memIndexReg,
                 memScale = memScale,
+                mnemonic = mnemonic16,
                 mnemonicLo = mnemonicLo
             ))
         }

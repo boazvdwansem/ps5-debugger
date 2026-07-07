@@ -27,8 +27,6 @@ import androidx.compose.ui.input.pointer.*
 import com.osr.ps5debugger.di.AppContainer
 import com.osr.ps5debugger.domain.model.MemoryRange
 import com.osr.ps5debugger.protocol.Ps5DisasmInstr
-import com.osr.ps5debugger.protocol.GpRegs
-import com.osr.ps5debugger.protocol.DbRegs
 import com.osr.ps5debugger.PS5ThemeColors
 import com.osr.ps5debugger.util.copyToClipboard
 import com.osr.ps5debugger.ui.disasm.DisasmFormatter
@@ -74,6 +72,14 @@ fun ByteAsciiCellCompact(byte: Byte) {
     }
 }
 
+private fun isInstructionSelected(instr: Ps5DisasmInstr, start: Long?, end: Long?): Boolean {
+    if (start == null || end == null) return false
+    val lo = minOf(start, end)
+    val hi = maxOf(start, end)
+    val instrEnd = instr.addr + instr.length - 1
+    return instrEnd >= lo && instr.addr <= hi
+}
+
 @Composable
 fun DisassemblyViewer(
     activeMap: MemoryRange?,
@@ -86,6 +92,7 @@ fun DisassemblyViewer(
     onSelectionChanged: ((Long?, Long?) -> Unit)? = null,
     onJumpToAddress: ((Long) -> Unit)? = null,
     onJumpToHex: ((Long) -> Unit)? = null,
+    onJumpToGraph: ((Long) -> Unit)? = null,
     showHexDetails: Boolean = false,
     isLoading: Boolean = false,
     isAttached: Boolean,
@@ -132,7 +139,7 @@ fun DisassemblyViewer(
             val target = jumpToAddress
             if (target != null && target >= activeMap.start && target < activeMap.end) {
                 // Determine if this jump is external or internal selection click
-                val isLocalSelection = target == selectionStart || target == selectionEnd
+                val isLocalSelection = target == selectionStart || target == selectionEnd || target == selectionAnchor
                 if (!isLocalSelection) {
                     goToAddressText = target.toString(16).uppercase()
                     
@@ -140,7 +147,10 @@ fun DisassemblyViewer(
                     val index = instructions.indexOfFirst { it.instr.addr == target }
                     if (index != -1) {
                         try {
-                            listState.animateScrollToItem(index)
+                            val isVisible = listState.layoutInfo.visibleItemsInfo.any { it.index == index }
+                            if (!isVisible) {
+                                listState.animateScrollToItem(index)
+                            }
                         } catch (_: Exception) {}
                     }
                 }
@@ -401,7 +411,7 @@ fun DisassemblyViewer(
                                     line = line,
                                     isSelected = isSelected,
                                     isFunctionStart = isFunctionStart,
-                                    onAddressClicked = { addr, len, isShift ->
+                                    onAddressClicked = { addr: Long, len: Int, isShift: Boolean ->
                                         val firstAddr = instructions.firstOrNull()?.instr?.addr
                                         val lastAddr = instructions.lastOrNull()?.let { it.instr.addr + it.instr.length }
                                         val isAnchorInLoadedRange = selectionAnchor != null && firstAddr != null && lastAddr != null &&
@@ -414,14 +424,14 @@ fun DisassemblyViewer(
                                             } else {
                                                 val anchorInstr = instructions.firstOrNull { it.instr.addr == anchor }
                                                 val anchorLen = anchorInstr?.instr?.length ?: 1
-                                                onSelectionChanged?.invoke(anchor + anchorLen - 1, addr)
+                                                onSelectionChanged?.invoke(anchor + anchorLen - 1.toLong(), addr)
                                             }
                                         } else {
                                             selectionAnchor = addr
                                             onSelectionChanged?.invoke(addr, addr + len - 1)
                                         }
                                     },
-                                    onAddressRightClicked = { addr, bytes, disasmText, offset ->
+                                    onAddressRightClicked = { addr: Long, bytes: ByteArray, disasmText: String, offset: DpOffset ->
                                         contextMenuAddr = addr
                                         contextMenuBytes = bytes
                                         contextMenuDisasm = disasmText
@@ -430,143 +440,151 @@ fun DisassemblyViewer(
                                     },
                                     showHexDetails = showHexDetails
                                 )
-                            }
-                        }
-                        
-                        val isMenuForThisRow = showContextMenu && contextMenuAddr == line.instr.addr
-                            DropdownMenu(
-                                expanded = isMenuForThisRow,
-                                onDismissRequest = { showContextMenu = false },
-                                offset = contextMenuOffset
-                            ) {
-                                val addr = contextMenuAddr
-                                if (addr != null) {
-                                    if (isAttached) { // Only show breakpoint options if debugger is attached!
-                                        val activeBpIndex = activeBreakpoints.entries.firstOrNull { it.value == addr }?.key
-                                        if (activeBpIndex != null) {
-                                            DropdownMenuItem(
-                                                text = { Text("Remove Breakpoint", color = Color.Red, fontSize = 12.sp) },
-                                                onClick = {
-                                                    coroutineScope.launch {
-                                                        try {
-                                                            activeBreakpoints.remove(activeBpIndex)
-                                                            val ok = client.setBreakpoint(activeBpIndex, false, addr)
-                                                            if (!ok) {
-                                                                activeBreakpoints[activeBpIndex] = addr
-                                                                AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to remove breakpoint on PS5", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
-                                                            } else {
-                                                                AppContainer.debuggerUseCase.log("DEBUGGER", "Removed breakpoint at 0x${addr.toString(16)}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
-                                                            }
-                                                        } catch (e: Exception) {
-                                                            activeBreakpoints[activeBpIndex] = addr
-                                                            AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to remove breakpoint: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
-                                                        }
-                                                    }
-                                                    showContextMenu = false
-                                                }
-                                            )
-                                        } else {
-                                            DropdownMenuItem(
-                                                text = { Text("Set Software Breakpoint", fontSize = 12.sp) },
-                                                onClick = {
-                                                    coroutineScope.launch {
-                                                        try {
-                                                            val freeIndex = (0..29).firstOrNull { !activeBreakpoints.containsKey(it) }
-                                                            if (freeIndex != null) {
-                                                                activeBreakpoints[freeIndex] = addr
-                                                                val ok = client.setBreakpoint(freeIndex, true, addr)
+
+                                val isMenuForThisRow = showContextMenu && contextMenuAddr == line.instr.addr
+                                DropdownMenu(
+                                    expanded = isMenuForThisRow,
+                                    onDismissRequest = { showContextMenu = false },
+                                    offset = contextMenuOffset
+                                ) {
+                                    val addr = contextMenuAddr
+                                    if (addr != null) {
+                                        if (isAttached) {
+                                            val activeBpIndex = activeBreakpoints.entries.firstOrNull { it.value == addr }?.key
+                                            if (activeBpIndex != null) {
+                                                DropdownMenuItem(
+                                                    text = { Text("Remove Breakpoint", color = Color.Red, fontSize = 12.sp) },
+                                                    onClick = {
+                                                        coroutineScope.launch {
+                                                            try {
+                                                                activeBreakpoints.remove(activeBpIndex)
+                                                                val ok = client.setBreakpoint(activeBpIndex, false, addr)
                                                                 if (!ok) {
-                                                                    activeBreakpoints.remove(freeIndex)
-                                                                    AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to set breakpoint on PS5", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                                                                    activeBreakpoints[activeBpIndex] = addr
+                                                                    AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to remove breakpoint on PS5", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
                                                                 } else {
-                                                                    AppContainer.debuggerUseCase.log("DEBUGGER", "Set Software Breakpoint in slot $freeIndex at 0x${addr.toString(16)}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                                                                    AppContainer.debuggerUseCase.log("DEBUGGER", "Removed breakpoint at 0x${addr.toString(16)}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
                                                                 }
-                                                            } else {
-                                                                AppContainer.debuggerUseCase.log("DEBUGGER", "No software breakpoint slots remaining! (Max 30)", com.osr.ps5debugger.domain.model.LogEntry.Level.WARN)
+                                                            } catch (e: Exception) {
+                                                                activeBreakpoints[activeBpIndex] = addr
+                                                                AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to remove breakpoint: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
                                                             }
-                                                        } catch (e: Exception) {
-                                                            val indexToRemove = activeBreakpoints.entries.firstOrNull { it.value == addr }?.key
-                                                            if (indexToRemove != null) activeBreakpoints.remove(indexToRemove)
-                                                            AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to set breakpoint: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
                                                         }
+                                                        showContextMenu = false
                                                     }
-                                                    showContextMenu = false
-                                                }
-                                            )
-                                        }
-                                        
-                                        val activeWpSlot = activeWatchpoints.entries.firstOrNull { it.value == addr }?.key
-                                        if (activeWpSlot != null) {
-                                            DropdownMenuItem(
-                                                text = { Text("Remove Watchpoint", color = Color.Red, fontSize = 12.sp) },
-                                                onClick = {
-                                                    coroutineScope.launch {
-                                                        try {
-                                                            activeWatchpoints.remove(activeWpSlot)
-                                                            val ok = client.setWatchpoint(activeWpSlot, false, 1, 1, addr)
-                                                            if (!ok) {
+                                                )
+                                            } else {
+                                                DropdownMenuItem(
+                                                    text = { Text("Set Software Breakpoint", fontSize = 12.sp) },
+                                                    onClick = {
+                                                        coroutineScope.launch {
+                                                            try {
+                                                                val freeIndex = (0..29).firstOrNull { !activeBreakpoints.containsKey(it) }
+                                                                if (freeIndex != null) {
+                                                                    activeBreakpoints[freeIndex] = addr
+                                                                    val ok = client.setBreakpoint(freeIndex, true, addr)
+                                                                    if (!ok) {
+                                                                        activeBreakpoints.remove(freeIndex)
+                                                                        AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to set breakpoint on PS5", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                                                                    } else {
+                                                                        AppContainer.debuggerUseCase.log("DEBUGGER", "Set Software Breakpoint in slot $freeIndex at 0x${addr.toString(16)}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                                                                    }
+                                                                } else {
+                                                                    AppContainer.debuggerUseCase.log("DEBUGGER", "No software breakpoint slots remaining! (Max 30)", com.osr.ps5debugger.domain.model.LogEntry.Level.WARN)
+                                                                }
+                                                            } catch (e: Exception) {
+                                                                val indexToRemove = activeBreakpoints.entries.firstOrNull { it.value == addr }?.key
+                                                                if (indexToRemove != null) activeBreakpoints.remove(indexToRemove)
+                                                                AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to set breakpoint: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                                                            }
+                                                        }
+                                                        showContextMenu = false
+                                                    }
+                                                )
+                                            }
+
+                                            val activeWpSlot = activeWatchpoints.entries.firstOrNull { it.value == addr }?.key
+                                            if (activeWpSlot != null) {
+                                                DropdownMenuItem(
+                                                    text = { Text("Remove Watchpoint", color = Color.Red, fontSize = 12.sp) },
+                                                    onClick = {
+                                                        coroutineScope.launch {
+                                                            try {
+                                                                activeWatchpoints.remove(activeWpSlot)
+                                                                val ok = client.setWatchpoint(activeWpSlot, false, 1, 1, addr)
+                                                                if (!ok) {
+                                                                    activeWatchpoints[activeWpSlot] = addr
+                                                                    AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to remove watchpoint on PS5", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                                                                } else {
+                                                                    AppContainer.debuggerUseCase.log("DEBUGGER", "Removed hardware watchpoint at 0x${addr.toString(16)}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                                                                }
+                                                            } catch (e: Exception) {
                                                                 activeWatchpoints[activeWpSlot] = addr
-                                                                AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to remove watchpoint on PS5", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
-                                                            } else {
-                                                                AppContainer.debuggerUseCase.log("DEBUGGER", "Removed hardware watchpoint at 0x${addr.toString(16)}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                                                                AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to remove watchpoint: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
                                                             }
-                                                        } catch (e: Exception) {
-                                                            activeWatchpoints[activeWpSlot] = addr
-                                                            AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to remove watchpoint: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
                                                         }
+                                                        showContextMenu = false
                                                     }
-                                                    showContextMenu = false
-                                                }
-                                            )
-                                        } else {
-                                            DropdownMenuItem(
-                                                text = { Text("Set Hardware Watchpoint...", fontSize = 12.sp) },
-                                                onClick = {
-                                                    showWatchpointDialog = true
-                                                    showContextMenu = false
-                                                }
-                                            )
+                                                )
+                                            } else {
+                                                DropdownMenuItem(
+                                                    text = { Text("Set Hardware Watchpoint...", fontSize = 12.sp) },
+                                                    onClick = {
+                                                        showWatchpointDialog = true
+                                                        showContextMenu = false
+                                                    }
+                                                )
+                                            }
+                                            HorizontalDivider(color = PS5ThemeColors.BorderColor)
                                         }
-                                        HorizontalDivider(color = PS5ThemeColors.BorderColor)
                                     }
-                                }
-                                
-                                DropdownMenuItem(
-                                    text = { Text("Copy Address", fontSize = 12.sp) },
-                                    onClick = {
-                                        if (contextMenuAddr != null) {
-                                            copyToClipboard(String.format("0x%012X", contextMenuAddr))
-                                        }
-                                        showContextMenu = false
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Copy Hex Bytes", fontSize = 12.sp) },
-                                    onClick = {
-                                        if (contextMenuBytes.isNotEmpty()) {
-                                            copyToClipboard(contextMenuBytes.joinToString(" ") { String.format("%02X", it) })
-                                        }
-                                        showContextMenu = false
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Copy Disassembly", fontSize = 12.sp) },
-                                    onClick = {
-                                        if (contextMenuDisasm.isNotEmpty()) {
-                                            copyToClipboard(contextMenuDisasm)
-                                        }
-                                        showContextMenu = false
-                                    }
-                                )
-                                if (onJumpToHex != null && contextMenuAddr != null) {
-                                    HorizontalDivider(color = PS5ThemeColors.BorderColor)
+
                                     DropdownMenuItem(
-                                        text = { Text("Jump to Hex Viewer", fontSize = 12.sp, color = PS5ThemeColors.AccentCyan) },
+                                        text = { Text("Copy Address", fontSize = 12.sp) },
                                         onClick = {
-                                            onJumpToHex(contextMenuAddr!!)
+                                            if (contextMenuAddr != null) {
+                                                copyToClipboard(String.format("0x%012X", contextMenuAddr))
+                                            }
                                             showContextMenu = false
                                         }
                                     )
+                                    DropdownMenuItem(
+                                        text = { Text("Copy Hex Bytes", fontSize = 12.sp) },
+                                        onClick = {
+                                            if (contextMenuBytes.isNotEmpty()) {
+                                                copyToClipboard(contextMenuBytes.joinToString(" ") { String.format("%02X", it) })
+                                            }
+                                            showContextMenu = false
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Copy Disassembly", fontSize = 12.sp) },
+                                        onClick = {
+                                            if (contextMenuDisasm.isNotEmpty()) {
+                                                copyToClipboard(contextMenuDisasm)
+                                            }
+                                            showContextMenu = false
+                                        }
+                                    )
+                                    if (onJumpToHex != null && contextMenuAddr != null) {
+                                        HorizontalDivider(color = PS5ThemeColors.BorderColor)
+                                        DropdownMenuItem(
+                                            text = { Text("Jump to Hex Viewer", fontSize = 12.sp, color = PS5ThemeColors.AccentCyan) },
+                                            onClick = {
+                                                onJumpToHex(contextMenuAddr!!)
+                                                showContextMenu = false
+                                            }
+                                        )
+                                    }
+                                    if (onJumpToGraph != null && contextMenuAddr != null) {
+                                        DropdownMenuItem(
+                                            text = { Text("Jump to Graph", fontSize = 12.sp, color = PS5ThemeColors.AccentCyan) },
+                                            onClick = {
+                                                onJumpToGraph(contextMenuAddr!!)
+                                                showContextMenu = false
+                                            }
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -670,12 +688,6 @@ fun DisassemblyViewer(
             }
         }
     }
-private fun isInstructionSelected(instr: Ps5DisasmInstr, start: Long?, end: Long?): Boolean {
-    if (start == null || end == null) return false
-    val lo = minOf(start, end)
-    val hi = maxOf(start, end)
-    val instrEnd = instr.addr + instr.length - 1
-    return instrEnd >= lo && instr.addr <= hi
 }
 
 @Composable
@@ -689,9 +701,9 @@ fun DisasmRow(
 ) {
     val windowInfo = androidx.compose.ui.platform.LocalWindowInfo.current
     val instr = line.instr
-    val mnemonic = DisasmFormatter.getMnemonic(instr)
-    val operands = DisasmFormatter.formatOperands(instr)
-    val infoText = DisasmFormatter.getInfoText(instr)
+    val mnemonic = DisasmFormatter.getMnemonic(instr, line.bytes)
+    val operands = DisasmFormatter.formatOperands(instr, line.bytes)
+    val infoText = DisasmFormatter.getInfoText(instr, line.bytes)
     
     // Ghidra Dark Theme Colors
     val addressColor = Color(0xFF90A4AE)      // Gray-blue lavender
@@ -767,11 +779,15 @@ fun DisasmRow(
             fontSize = 12.sp,
             fontWeight = FontWeight.Bold,
             color = mnemonicColor,
-            modifier = Modifier.width(75.dp)
+            modifier = Modifier.width(90.dp),
+            maxLines = 1,
+            softWrap = false
         )
         
+        Spacer(Modifier.width(8.dp))
+        
         // Operands with Ghidra syntax highlight
-        Box(modifier = Modifier.width(180.dp)) {
+        Box(modifier = Modifier.width(280.dp)) {
             val annotatedOps = buildAnnotatedString {
                 val regex = Regex("([\\[\\]\\+\\-\\*\\,\\s+])|(0x[0-9A-Fa-f]+|[0-9]+)|([a-zA-Z0-9_]+)")
                 val matches = regex.findAll(operands)
@@ -810,7 +826,9 @@ fun DisasmRow(
             Text(
                 text = annotatedOps,
                 fontFamily = FontFamily.Monospace,
-                fontSize = 12.sp
+                fontSize = 12.sp,
+                maxLines = 1,
+                softWrap = false
             )
         }
         

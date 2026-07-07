@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -51,9 +52,10 @@ data class CfgNode(
     val endAddr: Long,
     var x: Float = 0f,
     var y: Float = 0f,
-    var width: Float = 400f,
+    var width: Float = 360f,
     var height: Float = 0f,
-    var borderColor: Color = Color(0xFF444444)
+    var borderColor: Color = Color(0xFF444444),
+    val isExternal: Boolean = false
 )
 
 data class CfgEdge(
@@ -74,6 +76,7 @@ fun GraphViewer(
     isLoading: Boolean = false,
     vmMaps: List<MemoryRange> = emptyList(),
     filterFunctionAddr: Long? = null,
+    jumpToAddress: Long? = null,
     modifier: Modifier = Modifier,
     selectionStart: Long? = null,
     selectionEnd: Long? = null,
@@ -92,20 +95,29 @@ fun GraphViewer(
     }
     val nodes = cfg.first
     val edges = cfg.second
+    val nodeHeights = remember(nodes) { androidx.compose.runtime.mutableStateMapOf<Int, Float>() }
+    var selectedEdge by remember { mutableStateOf<CfgEdge?>(null) }
 
     var scale by remember(filterFunctionAddr) { mutableStateOf(0.7f) }
     var offset by remember(filterFunctionAddr) { mutableStateOf(Offset.Zero) }
     
-    // Auto-centering only when the selected function changes
+    // Auto-centering only when the selected function changes or a specific jump is requested
     var lastCenteredId by remember { mutableStateOf<Long?>(null) }
-    LaunchedEffect(nodes.size, filterFunctionAddr) {
-        if (nodes.isNotEmpty() && lastCenteredId != filterFunctionAddr) {
-            val entryNode = if (filterFunctionAddr != null) nodes.firstOrNull { it.startAddr == filterFunctionAddr } else nodes.firstOrNull()
-            if (entryNode != null) {
+    var lastCenteredAddr by remember { mutableStateOf<Long?>(null) }
+    
+    LaunchedEffect(nodes.size, filterFunctionAddr, jumpToAddress) {
+        if (nodes.isNotEmpty() && (lastCenteredId != filterFunctionAddr || (jumpToAddress != null && lastCenteredAddr != jumpToAddress))) {
+            val targetAddr = jumpToAddress ?: filterFunctionAddr ?: instructions.firstOrNull()?.instr?.addr
+            val targetNode = if (targetAddr != null) {
+                nodes.firstOrNull { targetAddr >= it.startAddr && targetAddr <= it.endAddr }
+            } else nodes.firstOrNull()
+
+            if (targetNode != null) {
                 scale = 0.7f
-                offset = Offset(-(entryNode.x * scale * density) + (400f * density), -(entryNode.y * scale * density) + 100f)
+                offset = Offset(-(targetNode.x * scale * density) + (400f * density), -(targetNode.y * scale * density) + 100f)
             }
             lastCenteredId = filterFunctionAddr
+            lastCenteredAddr = jumpToAddress
         }
     }
 
@@ -125,7 +137,7 @@ fun GraphViewer(
         if (isLoading && nodes.isEmpty()) {
             Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator(color = PS5ThemeColors.AccentCyan) }
         } else if (nodes.isEmpty()) {
-            Box(Modifier.fillMaxSize(), Alignment.Center) { Text("No logic blocks found", color = PS5ThemeColors.TextMuted) }
+            Box(Modifier.fillMaxSize(), Alignment.Center) { Text("No reachable logic blocks found for this function.", color = PS5ThemeColors.TextMuted) }
         } else {
             // Pan gesture layer
             Box(
@@ -151,19 +163,29 @@ fun GraphViewer(
                     }
             ) {
                 Box(
-                    Modifier.fillMaxSize()
+                    Modifier
+                        .width(20000.dp)
+                        .height(20000.dp)
                         .graphicsLayer(
                             scaleX = scale, scaleY = scale,
                             translationX = offset.x, translationY = offset.y,
                             transformOrigin = TransformOrigin(0f, 0f)
                         )
                 ) {
-                    Canvas(Modifier.fillMaxSize()) {
+                    Canvas(
+                        Modifier
+                            .fillMaxSize()
+                            .pointerInput(edges, nodes, nodeHeights) {
+                                detectTapGestures { clickOffset ->
+                                    selectedEdge = findClickedEdge(clickOffset, edges, nodes, nodeHeights, density)
+                                }
+                            }
+                    ) {
                         for (edge: CfgEdge in edges) {
                             val fromNode = nodes.firstOrNull { it.id == edge.from }
                             val nodeTo = nodes.firstOrNull { it.id == edge.to }
                             if (fromNode != null && nodeTo != null) {
-                                drawNinjaEdge(fromNode, nodeTo, edge.type)
+                                drawNinjaEdge(fromNode, nodeTo, edge.type, nodeHeights, selectedEdge == edge)
                             }
                         }
                     }
@@ -172,10 +194,12 @@ fun GraphViewer(
                         key(node.id) {
                             NodeBlock(
                                 node = node,
+                                nodeHeights = nodeHeights,
                                 selectionStart = selectionStart,
                                 selectionEnd = selectionEnd,
                                 activeBreakpoints = activeBreakpoints,
                                 activeWatchpoints = activeWatchpoints,
+                                isEntry = node.startAddr == filterFunctionAddr,
                                 onLineClicked = { addr, len, isShift ->
                                     if (isShift && selectionStart != null) {
                                         val startIdx = instructions.indexOfFirst { it.instr.addr == selectionStart }
@@ -233,7 +257,7 @@ fun GraphViewer(
                 IconButton(onClick = { 
                     scale = 0.7f
                     val topNode = nodes.minByOrNull { it.y }
-                    if (topNode != null) offset = Offset(-(topNode.x * scale * density) + 400f, -(topNode.y * scale * density) + 100f)
+                    if (topNode != null) offset = Offset(-(topNode.x * scale * density) + (400f * density), -(topNode.y * scale * density) + 100f)
                 }) { Icon(Icons.Default.Refresh, null, tint = Color.White) }
             }
         }
@@ -243,26 +267,51 @@ fun GraphViewer(
 @Composable
 fun NodeBlock(
     node: CfgNode,
+    nodeHeights: MutableMap<Int, Float>,
     selectionStart: Long?,
     selectionEnd: Long?,
     activeBreakpoints: Map<Int, Long>,
     activeWatchpoints: Map<Int, Long>,
+    isEntry: Boolean,
     onLineClicked: (Long, Int, Boolean) -> Unit,
     onLineRightClicked: (Long, Offset) -> Unit
 ) {
+    val density = LocalDensity.current.density
     Box(
         Modifier
             .offset(x = node.x.dp, y = node.y.dp)
             .width(node.width.dp)
-            .height(node.height.dp)
+            .onGloballyPositioned { coordinates ->
+                val h = coordinates.size.height / density
+                if (nodeHeights[node.id] != h) {
+                    nodeHeights[node.id] = h
+                }
+            }
             .background(Color(0xFF1E1E1E), RoundedCornerShape(4.dp))
             .border(1.5.dp, node.borderColor, RoundedCornerShape(4.dp))
             .padding(8.dp)
     ) {
         Column {
-            Text("sub_${node.startAddr.toString(16).uppercase()}:", color = Color(0xFF64FFDA), fontSize = 11.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+            Text(
+                text = when {
+                    node.isExternal -> "ext_${node.startAddr.toString(16).uppercase()}:"
+                    isEntry -> "entry_sub_${node.startAddr.toString(16).uppercase()}:"
+                    else -> "loc_${node.startAddr.toString(16).uppercase()}:"
+                },
+                color = when {
+                    node.isExternal -> Color(0xFF78909C)
+                    isEntry -> Color(0xFF39D353)
+                    else -> Color(0xFF64FFDA)
+                },
+                fontSize = 10.sp,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                softWrap = false
+            )
             HorizontalDivider(Modifier.padding(vertical = 4.dp), color = Color(0xFF333333))
-            for (line: DisasmLine in node.instructions) {
+            for (idx in node.instructions.indices) {
+                val line = node.instructions[idx]
                 val isSelected = isInstructionSelected(line.instr, selectionStart, selectionEnd)
                 val hasBp = activeBreakpoints.values.contains(line.instr.addr) || activeWatchpoints.values.contains(line.instr.addr)
                 
@@ -301,18 +350,24 @@ fun NodeBlock(
                         Box(Modifier.size(6.dp).background(Color.Red, RoundedCornerShape(3.dp)))
                         Spacer(Modifier.width(4.dp))
                     } else {
-                        Spacer(Modifier.width(10.dp))
+                        Spacer(Modifier.width(8.dp))
                     }
                     
                     val instr = line.instr
-                    val addrHex = instr.addr.toString(16).uppercase()
-                    val bytesHex = line.bytes.joinToString("") { it.toUByte().toString(16).padStart(2, '0').uppercase() }
                     
-                    Text(addrHex, color = Color(0xFF858585), modifier = Modifier.width(90.dp), fontSize = 10.sp, fontFamily = FontFamily.Monospace)
-                    Text(bytesHex, color = Color(0xFF606060), modifier = Modifier.width(110.dp), fontSize = 10.sp, fontFamily = FontFamily.Monospace, maxLines = 1)
+                    val addrText = String.format("%012X", instr.addr)
+                    Text(
+                        text = addrText, 
+                        color = Color(0xFF858585), 
+                        modifier = Modifier.width(85.dp), 
+                        fontSize = 10.sp, 
+                        fontFamily = FontFamily.Monospace,
+                        maxLines = 1,
+                        softWrap = false
+                    )
 
-                    val mnemonic = DisasmFormatter.getMnemonic(instr)
-                    val operands = DisasmFormatter.formatOperands(instr)
+                    val mnemonic = DisasmFormatter.getMnemonic(instr, line.bytes)
+                    val operands = DisasmFormatter.formatOperands(instr, line.bytes)
                     
                     val mnemonicColor = when {
                         instr.isCall || instr.isRet -> Color(0xFFF50057)
@@ -320,10 +375,21 @@ fun NodeBlock(
                         else -> Color(0xFFFFB74D)
                     }
 
-                    Text(mnemonic, color = mnemonicColor, modifier = Modifier.width(60.dp), fontSize = 11.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                    Text(
+                        text = mnemonic, 
+                        color = mnemonicColor, 
+                        modifier = Modifier.width(85.dp), 
+                        fontSize = 10.sp, 
+                        fontFamily = FontFamily.Monospace, 
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                    
+                    Spacer(Modifier.width(4.dp))
                     
                     val annotatedOps = buildAnnotatedString {
-                        val regex = Regex("(\\[|\\]|\\+|\\-|\\*|,|\\s+)|(0x[0-9A-Fa-f]+|[0-9]+)|([a-zA-Z0-9_]+)")
+                        val regex = Regex("([\\[\\]\\+\\-\\*\\,\\s+])|(0x[0-9A-Fa-f]+|[0-9]+)|([a-zA-Z0-9_]+)")
                         val matches = regex.findAll(operands)
                         for (match in matches) {
                             val token = match.value
@@ -340,7 +406,14 @@ fun NodeBlock(
                         if (matches.none()) append(operands)
                     }
                     
-                    Text(annotatedOps, fontSize = 11.sp, fontFamily = FontFamily.Monospace, maxLines = 1, color = Color.White)
+                    Text(
+                        text = annotatedOps, 
+                        fontSize = 10.sp, 
+                        fontFamily = FontFamily.Monospace, 
+                        maxLines = 1, 
+                        softWrap = false,
+                        color = Color.White
+                    )
                 }
             }
         }
@@ -355,45 +428,51 @@ private fun isInstructionSelected(instr: Ps5DisasmInstr, start: Long?, end: Long
     return (instr.addr in lo..hi) || (instrEnd in lo..hi) || (lo in instr.addr..instrEnd)
 }
 
-fun getMnemonicColor(instr: Ps5DisasmInstr) = when {
-    instr.isCall || instr.isRet -> Color(0xFFF50057)
-    instr.isJmp || instr.isCondJmp -> Color(0xFFFF4081)
-    else -> Color(0xFFE0E0E0)
-}
-
-fun DrawScope.drawNinjaEdge(from: CfgNode, to: CfgNode, type: EdgeType) {
+fun DrawScope.drawNinjaEdge(from: CfgNode, to: CfgNode, type: EdgeType, nodeHeights: Map<Int, Float>, isSelected: Boolean) {
     val d = density
-    val color = when(type) {
-        EdgeType.TRUE -> Color(0xFF4CAF50) // Green
-        EdgeType.FALSE -> Color(0xFFF44336) // Red
-        else -> Color(0xFF2196F3) // Blue
+    val color = if (isSelected) {
+        Color(0xFFFFD54F) // Gold/Yellow highlight
+    } else {
+        when(type) {
+            EdgeType.TRUE -> Color(0xFF4CAF50) // Green
+            EdgeType.FALSE -> Color(0xFFF44336) // Red
+            else -> Color(0xFF2196F3) // Blue
+        }
     }
+    val strokeWidth = if (isSelected) 4f * d else 2f * d
     
-    val startX = (from.x + from.width / 2f) * d
-    val startY = (from.y + from.height) * d
-    val endX = (to.x + to.width / 2f) * d
-    val endY = to.y * d
+    val startX = when (type) {
+        EdgeType.TRUE -> (from.x + from.width * 0.25f) * d
+        EdgeType.FALSE -> (from.x + from.width * 0.75f) * d
+        else -> (from.x + from.width / 2f) * d
+    }
+    val fromHeight = nodeHeights[from.id] ?: from.height
+    val startY = (from.y + fromHeight) * d
+    
+    val endX = when {
+        from.x < to.x -> (to.x + to.width * 0.25f) * d
+        from.x > to.x -> (to.x + to.width * 0.75f) * d
+        else -> (to.x + to.width / 2f) * d
+    }
+    val endY = to.y * d - 4f * d
     
     val path = Path().apply {
         moveTo(startX, startY)
-        if (from.id == to.id) { // Self loop
-            cubicTo(startX + 60*d, startY + 60*d, startX + 60*d, startY - 60*d, startX + 10*d, startY - 5*d)
-        } else if (endY > startY) { // Forward edge
-            val midY = startY + (endY - startY) / 2f
-            cubicTo(startX, midY, endX, midY, endX, endY)
-        } else if (kotlin.math.abs(endY - startY) < 10f) { // Same level
-            val midX = (startX + endX) / 2f
-            val curveHeight = 40f * d
-            cubicTo(startX, startY + curveHeight, endX, endY + curveHeight, endX, endY)
-        } else { // Back edge
-            val curveOffset = if (startX <= endX) -100f * d else 100f * d
-            val verticalOffset = 40f * d
-            cubicTo(startX, startY + verticalOffset, startX + curveOffset, startY + verticalOffset, startX + curveOffset, (startY + endY) / 2f)
-            cubicTo(startX + curveOffset, endY - verticalOffset, endX, endY - verticalOffset, endX, endY)
+        if (from.id == to.id) { // Self loop: Draw orthogonal loop on the right side
+            lineTo(startX + 50f * d, startY)
+            lineTo(startX + 50f * d, endY)
+            lineTo(endX, endY)
+        } else if (endY < startY) { // Back edge: Route orthogonally to avoid slicing intermediate nodes
+            val routeX = if (startX <= endX) minOf(startX, endX) - 100f * d else maxOf(startX, endX) + 100f * d
+            lineTo(routeX, startY)
+            lineTo(routeX, endY)
+            lineTo(endX, endY)
+        } else { // Forward or same-level branch: Direct straight line
+            lineTo(endX, endY)
         }
     }
     
-    drawPath(path, color, style = Stroke(width = 2.5f * d))
+    drawPath(path, color, style = Stroke(width = strokeWidth))
     
     // Arrow head
     val arrowSize = 10f * d
@@ -408,162 +487,271 @@ fun DrawScope.drawNinjaEdge(from: CfgNode, to: CfgNode, type: EdgeType) {
 
 fun buildCfg(instructions: List<DisasmLine>, filterAddr: Long?): Pair<List<CfgNode>, List<CfgEdge>> {
     if (instructions.isEmpty()) return Pair(emptyList(), emptyList())
-    val instrs = instructions.sortedBy { it.instr.addr }
     
-    // 1. Identify leaders (start of basic blocks)
+    // Pass 1: Strict Deduplication to prevent redundant lines and address overlap
+    val instrs = instructions.distinctBy { it.instr.addr }.sortedBy { it.instr.addr }
+    val addrToInstr = instrs.associateBy { it.instr.addr }
+    
+    // Pass 2: Identify Leaders strictly by Basic Block rules (jump targets + instructions after branch)
     val leaders = mutableSetOf<Long>()
-    leaders.add(instrs.first().instr.addr)
+    val entryPoint = filterAddr ?: instrs.first().instr.addr
+    leaders.add(entryPoint)
+    
     for (i in instrs.indices) {
-        val instr = instrs[i].instr
-        val mnemonic = DisasmFormatter.getMnemonic(instr).uppercase().trim()
-        
-        if (instr.isJmp || instr.isCondJmp || instr.isRet || mnemonic == "JMP" || (mnemonic.startsWith("J") && mnemonic != "JNOP")) {
-            if (instr.ripRelTarget != 0L) {
+        val line = instrs[i]
+        val instr = line.instr
+        if (instr.isJmp || instr.isCondJmp) {
+            val target = DisasmFormatter.getJumpTarget(instr, line.bytes)
+            if (target != 0L) {
+                leaders.add(target)
+            } else if (instr.ripRelTarget != 0L) {
                 leaders.add(instr.ripRelTarget)
             }
+            if (i + 1 < instrs.size) {
+                leaders.add(instrs[i+1].instr.addr)
+            }
+        } else if (instr.isRet) {
             if (i + 1 < instrs.size) {
                 leaders.add(instrs[i+1].instr.addr)
             }
         }
     }
     
-    // 2. Build Basic Blocks (Nodes)
+    // Pass 3: Build Basic Blocks (Nodes)
     val allNodes = mutableListOf<CfgNode>()
-    var currentBlockInstrs = mutableListOf<DisasmLine>()
+    var currentBlock = mutableListOf<DisasmLine>()
     for (line in instrs) {
-        if (currentBlockInstrs.isNotEmpty() && leaders.contains(line.instr.addr)) {
-            allNodes.add(CfgNode(allNodes.size, currentBlockInstrs, currentBlockInstrs.first().instr.addr, currentBlockInstrs.last().instr.addr))
-            currentBlockInstrs = mutableListOf()
+        if (currentBlock.isNotEmpty() && leaders.contains(line.instr.addr)) {
+            allNodes.add(CfgNode(allNodes.size, currentBlock, currentBlock.first().instr.addr, currentBlock.last().instr.addr))
+            currentBlock = mutableListOf()
         }
-        currentBlockInstrs.add(line)
+        currentBlock.add(line)
     }
-    if (currentBlockInstrs.isNotEmpty()) {
-        allNodes.add(CfgNode(allNodes.size, currentBlockInstrs, currentBlockInstrs.first().instr.addr, currentBlockInstrs.last().instr.addr))
+    if (currentBlock.isNotEmpty()) {
+        allNodes.add(CfgNode(allNodes.size, currentBlock, currentBlock.first().instr.addr, currentBlock.last().instr.addr))
     }
     
-    val addrToNodeId = mutableMapOf<Long, Int>()
-    for (n in allNodes) {
-        for (l in n.instructions) {
-            addrToNodeId[l.instr.addr] = n.id
-        }
-    }
-    
-    // 3. Resolve Edges
+    val startAddrToNodeId = allNodes.associateBy { it.startAddr }.mapValues { it.value.id }
     val allEdges = mutableListOf<CfgEdge>()
-    for (n in allNodes) {
-        val lastLine = n.instructions.lastOrNull() ?: continue
-        val last = lastLine.instr
-        val mnemonic = DisasmFormatter.getMnemonic(last).uppercase().trim()
-        
-        val isUnconditional = last.isJmp || mnemonic == "JMP"
-        val isConditional = last.isCondJmp || (mnemonic.startsWith("J") && !isUnconditional && mnemonic != "JNOP")
-        val isReturn = last.isRet || mnemonic == "RET"
+    val externalNodes = mutableListOf<CfgNode>()
+    val externalNodesMap = mutableMapOf<Long, Int>()
+    // Helper to resolve targets, creating stubs for external targets to ensure branches are visible
+    fun getOrCreateTarget(addr: Long): Int? {
+        startAddrToNodeId[addr]?.let { return it }
+        if (addr == 0L) return null
+        externalNodesMap[addr]?.let { return it }
+        val id = allNodes.size + externalNodes.size
+        externalNodesMap[addr] = id
+        externalNodes.add(CfgNode(id, emptyList(), addr, addr, isExternal = true))
+        return id
+    }
 
-        if (isConditional) {
-            addrToNodeId[last.ripRelTarget]?.let { allEdges.add(CfgEdge(n.id, it, EdgeType.TRUE)) }
-            addrToNodeId[last.addr + last.length]?.let { allEdges.add(CfgEdge(n.id, it, EdgeType.FALSE)) }
-        } else if (isUnconditional) {
-            addrToNodeId[last.ripRelTarget]?.let { allEdges.add(CfgEdge(n.id, it, EdgeType.UNCONDITIONAL)) }
-        } else if (!isReturn) {
-            // Fallthrough to next block
-            addrToNodeId[last.addr + last.length]?.let { if (it != n.id) allEdges.add(CfgEdge(n.id, it, EdgeType.UNCONDITIONAL)) }
+    // Pass 4: Resolve Edges (Accurate Jcc logic)
+    for (node in allNodes) {
+        val lastLine = node.instructions.last()
+        val last = lastLine.instr
+        when {
+            last.isCondJmp -> {
+                val target = DisasmFormatter.getJumpTarget(last, lastLine.bytes)
+                if (target != 0L) {
+                    getOrCreateTarget(target)?.let { allEdges.add(CfgEdge(node.id, it, EdgeType.TRUE)) }
+                } else if (last.ripRelTarget != 0L) {
+                    getOrCreateTarget(last.ripRelTarget)?.let { allEdges.add(CfgEdge(node.id, it, EdgeType.TRUE)) }
+                }
+                startAddrToNodeId[last.addr + last.length]?.let { allEdges.add(CfgEdge(node.id, it, EdgeType.FALSE)) }
+            }
+            last.isJmp -> {
+                val target = DisasmFormatter.getJumpTarget(last, lastLine.bytes)
+                if (target != 0L) {
+                    getOrCreateTarget(target)?.let { allEdges.add(CfgEdge(node.id, it, EdgeType.UNCONDITIONAL)) }
+                } else if (last.ripRelTarget != 0L) {
+                    getOrCreateTarget(last.ripRelTarget)?.let { allEdges.add(CfgEdge(node.id, it, EdgeType.UNCONDITIONAL)) }
+                }
+            }
+            !last.isRet -> {
+                // Sequential fallthrough
+                startAddrToNodeId[last.addr + last.length]?.let { if (it != node.id) allEdges.add(CfgEdge(node.id, it, EdgeType.UNCONDITIONAL)) }
+            }
         }
     }
     
-    // 4. Filter Reachability
-    val reachableNodes: List<CfgNode>
-    val reachableEdges: List<CfgEdge>
-    if (filterAddr != null) {
-        val root = allNodes.firstOrNull { it.startAddr == filterAddr }
-        if (root != null) {
-            val seen = mutableSetOf(root.id)
-            val q = java.util.ArrayDeque<Int>().apply { add(root.id) }
-            while (q.isNotEmpty()) {
-                val u = q.poll()
-                allEdges.filter { it.from == u }.forEach { if (seen.add(it.to)) q.add(it.to) }
-            }
-            reachableNodes = allNodes.filter { it.id in seen }
-            reachableEdges = allEdges.filter { it.from in seen && it.to in seen }
-        } else {
-            reachableNodes = allNodes
-            reachableEdges = allEdges
+    // Pass 5: Reachability Filtering from Entry
+    val totalNodes = allNodes + externalNodes
+    val startNode = allNodes.firstOrNull { it.startAddr == entryPoint } ?: allNodes.firstOrNull()
+    val finalNodes: List<CfgNode>
+    val finalEdges: List<CfgEdge>
+    
+    if (startNode != null) {
+        val seen = mutableSetOf(startNode.id)
+        val q = java.util.ArrayDeque<Int>().apply { add(startNode.id) }
+        while (q.isNotEmpty()) {
+            val u = q.poll()
+            allEdges.filter { it.from == u }.forEach { if (seen.add(it.to)) q.add(it.to) }
         }
+        finalNodes = totalNodes.filter { it.id in seen }
+        finalEdges = allEdges.filter { it.from in seen && it.to in seen }
     } else {
-        reachableNodes = allNodes
-        reachableEdges = allEdges
+        finalNodes = totalNodes
+        finalEdges = allEdges
     }
 
-    for (n in reachableNodes) {
-        val last = n.instructions.last().instr
-        val isRet = last.isRet || DisasmFormatter.getMnemonic(last).uppercase() == "RET"
+    for (n in finalNodes) {
+        val last = n.instructions.lastOrNull()?.instr
         n.borderColor = when {
-            n.startAddr == filterAddr -> Color(0xFF39D353)
-            isRet -> Color(0xFF00BFFF)
-            reachableEdges.none { it.from == n.id } -> Color(0xFFF85149)
+            n.isExternal -> Color(0xFF78909C)
+            n.startAddr == entryPoint -> Color(0xFF39D353)
+            last?.isRet == true -> Color(0xFF00BFFF)
             else -> Color(0xFF444444)
         }
-        // Set fixed dimensions for layout
-        n.width = 400f
-        n.height = n.instructions.size * 16f + 40f
+        n.width = 420f
+        // Refined height calculation: 
+        // 16 (Box padding) + 16 (Label) + 10 (Divider + padding) = 42.
+        // We use 60 to be safe against sub-pixel scaling and larger system fonts.
+        val instructionHeight = n.instructions.size * 16f
+        n.height = (instructionHeight + 60f).coerceIn(44f, 15000f)
     }
     
-    layoutNinja(reachableNodes, reachableEdges, filterAddr)
-    return Pair(reachableNodes, reachableEdges)
+    layoutNinja(finalNodes, finalEdges, entryPoint)
+    return Pair(finalNodes, finalEdges)
 }
 
-fun layoutNinja(nodes: List<CfgNode>, edges: List<CfgEdge>, entryAddr: Long?) {
+fun layoutNinja(nodes: List<CfgNode>, edges: List<CfgEdge>, entryAddr: Long) {
     if (nodes.isEmpty()) return
     
     val layers = mutableMapOf<Int, Int>()
     nodes.forEach { layers[it.id] = 0 }
 
-    // Topological Ranking
-    val inDegree = mutableMapOf<Int, Int>().withDefault { 0 }
-    edges.forEach { inDegree[it.to] = inDegree.getValue(it.to) + 1 }
+    val entryNode = nodes.firstOrNull { it.startAddr == entryAddr } ?: nodes[0]
+    val worklist = java.util.ArrayDeque<Int>().apply { add(entryNode.id) }
     
-    val roots = nodes.filter { inDegree.getValue(it.id) == 0 }
-    val queue = java.util.ArrayDeque<Int>()
+    // Step 1: Compute depth ranking (BFS with visited set to handle loops/back-edges correctly)
+    val visited = mutableSetOf<Int>()
+    visited.add(entryNode.id)
+    layers[entryNode.id] = 0
     
-    // Prioritize entryAddr node
-    val entryNode = nodes.firstOrNull { it.startAddr == entryAddr }
-    if (entryNode != null) {
-        queue.add(entryNode.id)
-    }
-    roots.forEach { if (it.id != entryNode?.id) queue.add(it.id) }
-    
-    if (queue.isEmpty()) queue.add(nodes[0].id)
-
-    val maxIters = nodes.size * nodes.size
-    var iters = 0
-    while (queue.isNotEmpty() && iters < maxIters) {
-        val u = queue.poll()
-        val currentRank = layers[u] ?: 0
-        iters++
-        
+    while (worklist.isNotEmpty()) {
+        val u = worklist.poll()
+        val currentRank = layers[u]!!
         edges.filter { it.from == u }.forEach { edge ->
-            if (layers[edge.to]!! < currentRank + 1) {
+            if (edge.to !in visited) {
+                visited.add(edge.to)
                 layers[edge.to] = currentRank + 1
-                queue.add(edge.to)
+                worklist.add(edge.to)
             }
         }
     }
 
-    // Horizontal Alignment
+    // Step 2: Barycenter Sort for horizontal distribution
     val nodesByLayer = nodes.groupBy { layers[it.id] ?: 0 }.toSortedMap()
-    var currentY = 50f
+    val nodeX = mutableMapOf<Int, Float>()
     
-    for (layer in nodesByLayer.values) {
-        val sortedLayer = layer.sortedBy { it.startAddr }
-        val layerWidth = sortedLayer.size * 400f + (sortedLayer.size - 1) * 80f
-        var currentX = -layerWidth / 2f
-        var maxHeight = 0f
-        
-        for (node in sortedLayer) {
-            node.x = currentX
-            node.y = currentY
-            currentX += 400f + 80f
-            maxHeight = maxOf(maxHeight, node.height)
+    nodesByLayer.forEach { (layerIdx, layerNodes) ->
+        val sortedNodes = if (layerIdx == 0) {
+            layerNodes.sortedBy { it.startAddr }
+        } else {
+            // IDA-style: sort by average parent position to separate branches
+            layerNodes.sortedBy { node ->
+                val parents = edges.filter { it.to == node.id }
+                if (parents.isEmpty()) node.startAddr.toFloat()
+                else parents.map { nodeX[it.from] ?: 0f }.average().toFloat()
+            }
         }
-        currentY += maxHeight + 120f
+        
+        val totalWidth = sortedNodes.size * 420f + (sortedNodes.size - 1) * 150f
+        var startX = -totalWidth / 2f
+        sortedNodes.forEach { node ->
+            node.x = startX
+            nodeX[node.id] = startX
+            startX += 420f + 150f
+        }
     }
+
+    // Step 2.5: Shift all nodes to the positive coordinate space
+    val minX = nodes.minOfOrNull { it.x } ?: 0f
+    val shiftX = 100f - minX
+    nodes.forEach { node ->
+        node.x += shiftX
+        nodeX[node.id] = node.x
+    }
+
+    // Step 3: Vertical coord assignment
+    var currentY = 100f
+    nodesByLayer.forEach { (_, layerNodes) ->
+        val maxHeight = layerNodes.maxOf { it.height }
+        layerNodes.forEach { it.y = currentY }
+        val spacing = 200f
+        currentY = (currentY + maxHeight + spacing).coerceAtMost(200000f)
+    }
+}
+
+private fun distanceToSegment(px: Float, py: Float, ax: Float, ay: Float, bx: Float, by: Float): Float {
+    val abx = bx - ax
+    val aby = by - ay
+    val apx = px - ax
+    val apy = py - ay
+    val ab2 = abx * abx + aby * aby
+    if (ab2 == 0f) return kotlin.math.sqrt(apx * apx + apy * apy)
+    var t = (apx * abx + apy * aby) / ab2
+    t = t.coerceIn(0f, 1f)
+    val qx = ax + t * abx
+    val qy = ay + t * aby
+    val dx = px - qx
+    val dy = py - qy
+    return kotlin.math.sqrt(dx * dx + dy * dy)
+}
+
+private fun findClickedEdge(
+    clickPos: Offset,
+    edges: List<CfgEdge>,
+    nodes: List<CfgNode>,
+    nodeHeights: Map<Int, Float>,
+    d: Float
+): CfgEdge? {
+    var bestEdge: CfgEdge? = null
+    var bestDist = Float.MAX_VALUE
+    
+    for (edge in edges) {
+        val from = nodes.firstOrNull { it.id == edge.from } ?: continue
+        val to = nodes.firstOrNull { it.id == edge.to } ?: continue
+        
+        val startX = when (edge.type) {
+            EdgeType.TRUE -> (from.x + from.width * 0.25f) * d
+            EdgeType.FALSE -> (from.x + from.width * 0.75f) * d
+            else -> (from.x + from.width / 2f) * d
+        }
+        val fromHeight = nodeHeights[from.id] ?: from.height
+        val startY = (from.y + fromHeight) * d
+        
+        val endX = when {
+            from.x < to.x -> (to.x + to.width * 0.25f) * d
+            from.x > to.x -> (to.x + to.width * 0.75f) * d
+            else -> (to.x + to.width / 2f) * d
+        }
+        val endY = to.y * d - 4f * d
+        
+        val dist = when {
+            from.id == to.id -> {
+                val d1 = distanceToSegment(clickPos.x, clickPos.y, startX, startY, startX + 50f * d, startY)
+                val d2 = distanceToSegment(clickPos.x, clickPos.y, startX + 50f * d, startY, startX + 50f * d, endY)
+                val d3 = distanceToSegment(clickPos.x, clickPos.y, startX + 50f * d, endY, endX, endY)
+                minOf(d1, d2, d3)
+            }
+            endY < startY -> {
+                val routeX = if (startX <= endX) minOf(startX, endX) - 100f * d else maxOf(startX, endX) + 100f * d
+                val d1 = distanceToSegment(clickPos.x, clickPos.y, startX, startY, routeX, startY)
+                val d2 = distanceToSegment(clickPos.x, clickPos.y, routeX, startY, routeX, endY)
+                val d3 = distanceToSegment(clickPos.x, clickPos.y, routeX, endY, endX, endY)
+                minOf(d1, d2, d3)
+            }
+            else -> {
+                distanceToSegment(clickPos.x, clickPos.y, startX, startY, endX, endY)
+            }
+        }
+        
+        if (dist < 15f * d && dist < bestDist) {
+            bestDist = dist
+            bestEdge = edge
+        }
+    }
+    return bestEdge
 }

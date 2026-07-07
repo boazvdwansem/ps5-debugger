@@ -83,7 +83,7 @@ class MemoryViewerState(
                 
                 val len = minOf(65536L, map.end - startAddr).toInt()
                 if (len > 0) {
-                    val rawInstrs = client.disassembleRegion(pid, startAddr, len, 500)
+                    val rawInstrs = client.disassembleRegion(pid, startAddr, len, 2000)
                     val rawBytes = try {
                         client.readMemory(pid, startAddr, len)
                     } catch (_: Exception) {
@@ -100,11 +100,38 @@ class MemoryViewerState(
                         DisasmLine(instr, instrBytes)
                     }
                     allLines.addAll(lines)
+
+                    // NEW: Call Target Discovery
+                    // Scan for unique call targets that aren't already loaded
+                    val loadedAddresses = allLines.map { it.instr.addr }.toSet()
+                    val callTargets = rawInstrs
+                        .filter { it.isCall && it.ripRelTarget != 0L && !loadedAddresses.contains(it.ripRelTarget) }
+                        .map { it.ripRelTarget }
+                        .distinct()
+                        .take(5) // Limit to 5 sub-calls to prevent OOM/Performance issues
+
+                    for (target in callTargets) {
+                        try {
+                            val subInstrs = client.disassembleRegion(pid, target, 4096, 200)
+                            val subBytes = try { client.readMemory(pid, target, 1024) } catch(_: Exception) { ByteArray(0) }
+                            
+                            val subLines = subInstrs.map { instr ->
+                                val offset = (instr.addr - target).toInt()
+                                val instrBytes = if (offset >= 0 && offset + instr.length <= subBytes.size) {
+                                    subBytes.copyOfRange(offset, offset + instr.length)
+                                } else ByteArray(0)
+                                DisasmLine(instr, instrBytes)
+                            }
+                            allLines.addAll(subLines)
+                        } catch (_: Exception) {}
+                    }
                 }
             }
             
+            // Final deduplication before updating UI
+            val finalLines = allLines.distinctBy { it.instr.addr }.sortedBy { it.instr.addr }
             instructions.clear()
-            instructions.addAll(allLines)
+            instructions.addAll(finalLines)
         } catch (e: Exception) {
             AppContainer.debuggerUseCase.log("DISASM", "Initial load failed: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
         } finally {

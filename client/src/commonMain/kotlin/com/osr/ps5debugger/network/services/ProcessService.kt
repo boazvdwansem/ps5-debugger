@@ -75,10 +75,10 @@ class ProcessService(private val connection: Ps5Connection) {
         val data = connection.readExactly(inStr, 140)
         val buf = BinaryBuffer(data)
         val pid = buf.readInt()
-        val titleid = buf.readString(16)
-        val contentid = buf.readString(64)
+        val titleId = buf.readString(16)
+        val contentId = buf.readString(64)
         val name = buf.readString(40)
         val appVer = buf.readString(16)
-        Ps5ForegroundApp(pid, titleid, contentid, name, appVer)
+        Ps5ForegroundApp(pid, titleId, contentId, name, appVer)
     }
 }

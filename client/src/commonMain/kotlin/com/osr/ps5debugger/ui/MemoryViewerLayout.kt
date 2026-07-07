@@ -71,12 +71,28 @@ fun MemoryViewerLayout(
             
             Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
                 when (state.viewMode) {
-                    0 -> DisassemblyView(state, state.instructions, activeBreakpoints, activeWatchpoints, functions, isMobile)
+                    0 -> DisassemblyView(
+                        state = state,
+                        instructions = state.instructions,
+                        activeBreakpoints = activeBreakpoints,
+                        activeWatchpoints = activeWatchpoints,
+                        functions = functions,
+                        isMobile = isMobile,
+                        onJumpToGraph = { addr ->
+                            val targetFunc = functions.filter { it <= addr }.maxOrNull()
+                            if (targetFunc != null) {
+                                selectedGraphFunction = targetFunc
+                                state.setViewMode(1)
+                                state.currentJumpAddress = addr
+                            }
+                        }
+                    )
                     1 -> GraphViewer(
                         instructions = state.instructions,
                         isLoading = state.isLoading,
                         vmMaps = AppContainer.debuggerUseCase.vmMaps.collectAsState().value,
                         filterFunctionAddr = selectedGraphFunction,
+                        jumpToAddress = state.currentJumpAddress,
                         modifier = Modifier.fillMaxSize(),
                         selectionStart = state.selectionStart,
                         selectionEnd = state.selectionEnd,
@@ -224,7 +240,8 @@ private fun DisassemblyView(
     activeBreakpoints: MutableMap<Int, Long>,
     activeWatchpoints: MutableMap<Int, Long>,
     functions: List<Long>,
-    isMobile: Boolean
+    isMobile: Boolean,
+    onJumpToGraph: (Long) -> Unit
 ) {
     val isAttached by state.isAttached.collectAsState()
     val functionSet = remember(functions) { functions.toSet() }
@@ -244,6 +261,7 @@ private fun DisassemblyView(
                 },
                 onJumpToAddress = { addr -> state.currentJumpAddress = addr },
                 onJumpToHex = { addr -> state.currentJumpAddress = addr; state.setViewMode(2) },
+                onJumpToGraph = onJumpToGraph,
                 isAttached = isAttached,
                 activeBreakpoints = activeBreakpoints,
                 activeWatchpoints = activeWatchpoints,
@@ -277,6 +295,7 @@ private fun DisassemblyView(
             },
             onJumpToAddress = { addr -> state.currentJumpAddress = addr },
             onJumpToHex = { addr -> state.currentJumpAddress = addr; state.setViewMode(2) },
+            onJumpToGraph = onJumpToGraph,
             isAttached = isAttached,
             activeBreakpoints = activeBreakpoints,
             activeWatchpoints = activeWatchpoints,
