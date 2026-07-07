@@ -26,6 +26,7 @@ import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.isShiftPressed
+import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
@@ -50,7 +51,8 @@ data class CfgNode(
     var x: Float = 0f,
     var y: Float = 0f,
     var width: Float = 0f,
-    var height: Float = 0f
+    var height: Float = 0f,
+    var borderColor: Color = Color(0xFF444444)
 )
 
 data class CfgEdge(
@@ -129,10 +131,23 @@ fun GraphViewer(
             // Pan gesture layer
             Box(
                 Modifier.fillMaxSize()
-                    .pointerInput(Unit) {
+                    .pointerInput(filterFunctionAddr) {
                         detectTransformGestures { _, pan, zoom, _ ->
                             scale = (scale * zoom).coerceIn(0.05f, 4.0f)
                             offset += pan
+                        }
+                    }
+                    .pointerInput(Unit) {
+                        awaitPointerEventScope {
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                if (event.type == PointerEventType.Scroll) {
+                                    val delta = event.changes.first().scrollDelta.y
+                                    val zoom = if (delta > 0) 0.9f else 1.1f
+                                    scale = (scale * zoom).coerceIn(0.05f, 4.0f)
+                                    event.changes.forEach { it.consume() }
+                                }
+                            }
                         }
                     }
             ) {
@@ -236,7 +251,6 @@ fun NodeBlock(
     onLineClicked: (Long, Int, Boolean) -> Unit,
     onLineRightClicked: (Long, Offset) -> Unit
 ) {
-    var blockWindowPosition by remember { mutableStateOf(Offset.Zero) }
     val density = LocalDensity.current.density
     Box(
         Modifier
@@ -244,9 +258,8 @@ fun NodeBlock(
             .width(node.width.dp)
             .height(node.height.dp)
             .background(Color(0xFF1E1E1E), RoundedCornerShape(4.dp))
-            .border(1.dp, Color(0xFF444444), RoundedCornerShape(4.dp))
+            .border(1.5.dp, node.borderColor, RoundedCornerShape(4.dp))
             .padding(8.dp)
-            .onGloballyPositioned { blockWindowPosition = it.localToWindow(Offset.Zero) }
     ) {
         Column {
             Text("sub_${node.startAddr.toString(16).uppercase()}:", color = Color(0xFF64FFDA), fontSize = 11.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
@@ -255,22 +268,31 @@ fun NodeBlock(
                 val isSelected = isInstructionSelected(line.instr, selectionStart, selectionEnd)
                 val hasBp = activeBreakpoints.values.contains(line.instr.addr) || activeWatchpoints.values.contains(line.instr.addr)
                 
+                var rowLayoutCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
+
                 Row(
                     Modifier
                         .fillMaxWidth()
+                        .height(16.dp)
                         .background(if (isSelected) PS5ThemeColors.AccentCyan.copy(alpha = 0.3f) else Color.Transparent)
-                        .pointerInput(line.instr.addr) {
+                        .onGloballyPositioned { rowLayoutCoords = it }
+                        .pointerInput(line.instr.addr, selectionStart, selectionEnd, onLineClicked, onLineRightClicked) {
                             awaitPointerEventScope {
                                 while (true) {
                                     val event = awaitPointerEvent()
                                     if (event.type == PointerEventType.Press) {
                                         val change = event.changes.first()
-                                        if (event.buttons.isSecondaryPressed) {
-                                            onLineRightClicked(line.instr.addr, blockWindowPosition + change.position)
+                                        val isShift = event.keyboardModifiers.isShiftPressed
+                                        val isSecondary = event.buttons.isSecondaryPressed
+                                        
+                                        if (isSecondary) {
+                                            rowLayoutCoords?.let { coords ->
+                                                onLineRightClicked(line.instr.addr, coords.localToWindow(change.position))
+                                            }
                                         } else {
-                                            val isShift = event.keyboardModifiers.isShiftPressed
                                             onLineClicked(line.instr.addr, line.instr.length, isShift)
                                         }
+                                        change.consume()
                                     }
                                 }
                             }
@@ -285,6 +307,12 @@ fun NodeBlock(
                     }
                     
                     val instr = line.instr
+                    val addrHex = instr.addr.toString(16).uppercase()
+                    val bytesHex = line.bytes.joinToString("") { it.toUByte().toString(16).padStart(2, '0').uppercase() }
+                    
+                    Text(addrHex, color = Color(0xFF858585), modifier = Modifier.width(90.dp), fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                    Text(bytesHex, color = Color(0xFF606060), modifier = Modifier.width(110.dp), fontSize = 10.sp, fontFamily = FontFamily.Monospace, maxLines = 1)
+
                     val mnemonic = DisasmFormatter.getMnemonic(instr)
                     val operands = DisasmFormatter.formatOperands(instr)
                     
@@ -314,7 +342,7 @@ fun NodeBlock(
                         if (matches.none()) append(operands)
                     }
                     
-                    Text(annotatedOps, fontSize = 11.sp, fontFamily = FontFamily.Monospace, maxLines = 1)
+                    Text(annotatedOps, fontSize = 11.sp, fontFamily = FontFamily.Monospace, maxLines = 1, color = Color.White)
                 }
             }
         }
@@ -344,13 +372,13 @@ fun DrawScope.drawNinjaEdge(from: CfgNode, to: CfgNode, type: EdgeType) {
     }
     
     val xOff = when(type) {
-        EdgeType.TRUE -> -50f * d
-        EdgeType.FALSE -> 50f * d
+        EdgeType.TRUE -> -30f * d
+        EdgeType.FALSE -> 30f * d
         else -> 0f
     }
     
     val start = Offset((from.x + from.width/2f) * d + xOff, (from.y + from.height) * d)
-    val end = Offset((to.x + to.width/2f) * d, to.y * d)
+    val end = Offset((to.x + to.width/2f) * d + xOff / 2f, to.y * d)
     
     val path = Path().apply {
         moveTo(start.x, start.y)
@@ -358,9 +386,7 @@ fun DrawScope.drawNinjaEdge(from: CfgNode, to: CfgNode, type: EdgeType) {
             cubicTo(start.x + 80f*d, start.y + 80f*d, start.x + 80f*d, start.y - 80f*d, start.x + 15f*d, start.y - 5f*d)
         } else if (end.y > start.y) {
             val midY = start.y + (end.y - start.y) / 2f
-            lineTo(start.x, midY)
-            lineTo(end.x, midY)
-            lineTo(end.x, end.y)
+            cubicTo(start.x, midY, end.x, midY, end.x, end.y)
         } else {
             val side = if (start.x < end.x) -160f*d else 160f*d
             lineTo(start.x, start.y + 30f*d)
@@ -383,16 +409,25 @@ fun DrawScope.drawNinjaEdge(from: CfgNode, to: CfgNode, type: EdgeType) {
 }
 
 fun buildCfg(instructions: List<DisasmLine>, filterAddr: Long?): Pair<List<CfgNode>, List<CfgEdge>> {
-    if (instructions.isEmpty()) return Pair(emptyList<CfgNode>(), emptyList<CfgEdge>())
+    if (instructions.isEmpty()) return Pair(emptyList(), emptyList())
     val instrs = instructions.sortedBy { it.instr.addr }
     
     val leaders = mutableSetOf<Long>()
     leaders.add(instrs.first().instr.addr)
     for (i in instrs.indices) {
         val instr = instrs[i].instr
-        if (instr.isJmp || instr.isCondJmp || instr.isRet) {
+        val mnemonic = DisasmFormatter.getMnemonic(instr)
+        val isUnconditionalJmp = instr.isJmp || mnemonic == "JMP"
+        val isConditionalJmp = instr.isCondJmp || (mnemonic.startsWith("J") && !isUnconditionalJmp)
+        val isReturn = instr.isRet || mnemonic == "RET"
+        
+        if (isUnconditionalJmp || isConditionalJmp || isReturn) {
             if (instr.ripRelTarget != 0L) leaders.add(instr.ripRelTarget)
-            if (i + 1 < instrs.size) leaders.add(instrs[i+1].instr.addr)
+            // Only add fallthrough as leader for conditional jumps or non-branching instructions
+            if (isConditionalJmp && i + 1 < instrs.size) leaders.add(instrs[i+1].instr.addr)
+            if (isReturn || isUnconditionalJmp) {
+                if (i + 1 < instrs.size) leaders.add(instrs[i+1].instr.addr)
+            }
         }
     }
     
@@ -408,29 +443,38 @@ fun buildCfg(instructions: List<DisasmLine>, filterAddr: Long?): Pair<List<CfgNo
     if (cur.isNotEmpty()) allNodes.add(CfgNode(allNodes.size, cur, cur.first().instr.addr, cur.last().instr.addr))
     
     val addrToNodeId = mutableMapOf<Long, Int>()
-    for (n: CfgNode in allNodes) {
-        for (l: DisasmLine in n.instructions) addrToNodeId[l.instr.addr] = n.id
+    for (n in allNodes) {
+        for (l in n.instructions) addrToNodeId[l.instr.addr] = n.id
     }
     
     val allEdges = mutableListOf<CfgEdge>()
-    for (n: CfgNode in allNodes) {
+    for (n in allNodes) {
         val lastLine = n.instructions.lastOrNull() ?: continue
         val last = lastLine.instr
-        if (last.isCondJmp) {
+        
+        // Use mnemonic fallback if flags are weird
+        val mnemonic = DisasmFormatter.getMnemonic(last)
+        val isUnconditionalJmp = last.isJmp || mnemonic == "JMP"
+        val isConditionalJmp = last.isCondJmp || (mnemonic.startsWith("J") && !isUnconditionalJmp)
+        val isReturn = last.isRet || mnemonic == "RET"
+
+        if (isConditionalJmp) {
             val tId = addrToNodeId[last.ripRelTarget]
             if (tId != null) allEdges.add(CfgEdge(n.id, tId, EdgeType.TRUE))
+            
             val fId = addrToNodeId[last.addr + last.length]
             if (fId != null) allEdges.add(CfgEdge(n.id, fId, EdgeType.FALSE))
-        } else if (last.isJmp) {
+        } else if (isUnconditionalJmp) {
             val tId = addrToNodeId[last.ripRelTarget]
             if (tId != null) allEdges.add(CfgEdge(n.id, tId, EdgeType.UNCONDITIONAL))
-        } else if (!last.isRet) {
+        } else if (!isReturn) {
             val nId = addrToNodeId[last.addr + last.length]
             if (nId != null && nId != n.id) allEdges.add(CfgEdge(n.id, nId, EdgeType.UNCONDITIONAL))
         }
     }
+
     
-    val filtered = if (filterAddr != null) {
+    val filteredResult = if (filterAddr != null) {
         val root = allNodes.firstOrNull { it.startAddr == filterAddr }
         if (root != null) {
             val seen = mutableSetOf(root.id)
@@ -445,9 +489,28 @@ fun buildCfg(instructions: List<DisasmLine>, filterAddr: Long?): Pair<List<CfgNo
             Pair(allNodes.filter { it.id in seen }, allEdges.filter { it.from in seen })
         } else Pair(allNodes, allEdges)
     } else Pair(allNodes, allEdges)
+
+    val finalNodes = filteredResult.first
+    val finalEdges = filteredResult.second
+
+    for (n in finalNodes) {
+        val lastLine = n.instructions.lastOrNull() ?: continue
+        val last = lastLine.instr
+        val isUnconditionalJmp = last.isJmp || DisasmFormatter.getMnemonic(last) == "JMP"
+        val isReturn = last.isRet || DisasmFormatter.getMnemonic(last) == "RET"
+        val hasOutgoing = finalEdges.any { it.from == n.id }
+
+        n.borderColor = when {
+            n.startAddr == filterAddr -> Color(0xFF39D353) // Green: Entry
+            isReturn -> Color(0xFF00BFFF) // Blue: Return
+            !hasOutgoing && (isUnconditionalJmp || last.isCall) && last.ripRelTarget == 0L -> Color.White // White: Unresolved terminal
+            !hasOutgoing && !isReturn -> Color(0xFFF85149) // Red: No-return exit
+            else -> Color.Black // Black: Ordinary
+        }
+    }
     
-    layoutNinja(filtered.first, filtered.second)
-    return filtered
+    layoutNinja(finalNodes, finalEdges)
+    return Pair(finalNodes, finalEdges)
 }
 
 fun layoutNinja(nodes: List<CfgNode>, edges: List<CfgEdge>) {
@@ -474,19 +537,19 @@ fun layoutNinja(nodes: List<CfgNode>, edges: List<CfgEdge>) {
     
     val nByL = nodes.groupBy { layers[it.id] ?: 0 }.toSortedMap()
     for (node in nodes) {
-        node.width = 340f
-        node.height = node.instructions.size * 18f + 55f
+        node.width = 540f
+        node.height = node.instructions.size * 16f + 38f
     }
     
     var curY = 50f
     for (entry in nByL) {
         val sorted = entry.value.sortedBy { it.startAddr }
-        val layerW = sorted.size * 340f + (sorted.size - 1) * 220f
+        val layerW = sorted.size * 540f + (sorted.size - 1) * 120f
         var curX = -layerW / 2f
         var maxH = 0f
         for (node in sorted) {
             node.x = curX; node.y = curY
-            curX += 340f + 220f
+            curX += 540f + 120f
             maxH = maxOf(maxH, node.height)
         }
         curY += maxH + 160f

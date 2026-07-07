@@ -70,7 +70,7 @@ fun MemoryViewerLayout(
             
             Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
                 when (state.viewMode) {
-                    0 -> DisassemblyView(state, state.instructions, activeBreakpoints, activeWatchpoints, isMobile)
+                    0 -> DisassemblyView(state, state.instructions, activeBreakpoints, activeWatchpoints, functions, isMobile)
                     1 -> GraphViewer(
                         instructions = state.instructions,
                         isLoading = state.isLoading,
@@ -221,9 +221,11 @@ private fun DisassemblyView(
     instructions: SnapshotStateList<DisasmLine>,
     activeBreakpoints: MutableMap<Int, Long>,
     activeWatchpoints: MutableMap<Int, Long>,
+    functions: List<Long>,
     isMobile: Boolean
 ) {
     val isAttached by state.isAttached.collectAsState()
+    val functionSet = remember(functions) { functions.toSet() }
 
     if (isMobile) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -243,6 +245,7 @@ private fun DisassemblyView(
                 activeBreakpoints = activeBreakpoints,
                 activeWatchpoints = activeWatchpoints,
                 isLoading = state.isLoading,
+                functionAddresses = functionSet,
                 modifier = Modifier.weight(1f)
             )
             HorizontalDivider(color = PS5ThemeColors.BorderColor)
@@ -273,6 +276,7 @@ private fun DisassemblyView(
             activeBreakpoints = activeBreakpoints,
             activeWatchpoints = activeWatchpoints,
             isLoading = state.isLoading,
+            functionAddresses = functionSet,
             modifier = Modifier.fillMaxSize(),
             showHexDetails = true
         )

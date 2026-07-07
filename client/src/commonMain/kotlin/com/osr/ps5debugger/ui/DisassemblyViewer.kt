@@ -89,7 +89,8 @@ fun DisassemblyViewer(
     isLoading: Boolean = false,
     isAttached: Boolean,
     activeBreakpoints: MutableMap<Int, Long>,
-    activeWatchpoints: MutableMap<Int, Long>
+    activeWatchpoints: MutableMap<Int, Long>,
+    functionAddresses: Set<Long> = emptySet()
 ) {
     val coroutineScope = rememberCoroutineScope()
     val client = AppContainer.clientAdapter.client
@@ -329,55 +330,73 @@ fun DisassemblyViewer(
                     itemsIndexed(instructions) { idx, line ->
                         val isSelected = isInstructionSelected(line.instr, selectionStart, selectionEnd)
                         val hasBreakpoint = activeBreakpoints.values.contains(line.instr.addr) || activeWatchpoints.values.contains(line.instr.addr)
-                        
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            if (hasBreakpoint) {
-                                Box(
-                                    modifier = Modifier
-                                        .padding(end = 4.dp)
-                                        .size(8.dp)
-                                        .background(Color.Red, RoundedCornerShape(4.dp))
+                        val isFunctionStart = functionAddresses.contains(line.instr.addr)
+
+                        Column {
+                            if (isFunctionStart) {
+                                Spacer(Modifier.height(12.dp))
+                                Text(
+                                    text = "sub_${line.instr.addr.toString(16).uppercase()}:",
+                                    color = Color(0xFF64FFDA),
+                                    fontSize = 12.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(start = 28.dp, bottom = 4.dp)
                                 )
-                            } else {
-                                Spacer(Modifier.width(12.dp))
                             }
-                            
-                            DisasmRow(
-                                line = line,
-                                isSelected = isSelected,
-                                onAddressClicked = { addr, len, isShift ->
-                                    val firstAddr = instructions.firstOrNull()?.instr?.addr
-                                    val lastAddr = instructions.lastOrNull()?.let { it.instr.addr + it.instr.length }
-                                    val isAnchorInLoadedRange = selectionAnchor != null && firstAddr != null && lastAddr != null &&
-                                            selectionAnchor!! >= firstAddr && selectionAnchor!! <= lastAddr
-                                    
-                                    if (isShift && isAnchorInLoadedRange) {
-                                        val anchor = selectionAnchor!!
-                                        if (addr >= anchor) {
-                                            onSelectionChanged?.invoke(anchor, addr + len - 1)
+
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                if (hasBreakpoint) {
+                                    Box(
+                                        modifier = Modifier
+                                            .padding(end = 4.dp)
+                                            .size(8.dp)
+                                            .background(Color.Red, RoundedCornerShape(4.dp))
+                                    )
+                                } else {
+                                    Spacer(Modifier.width(12.dp))
+                                }
+
+                                DisasmRow(
+                                    line = line,
+                                    isSelected = isSelected,
+                                    isFunctionStart = isFunctionStart,
+                                    onAddressClicked = { addr, len, isShift ->
+                                        val firstAddr = instructions.firstOrNull()?.instr?.addr
+                                        val lastAddr = instructions.lastOrNull()?.let { it.instr.addr + it.instr.length }
+                                        val isAnchorInLoadedRange = selectionAnchor != null && firstAddr != null && lastAddr != null &&
+                                                selectionAnchor!! >= firstAddr && selectionAnchor!! <= lastAddr
+
+                                        if (isShift && isAnchorInLoadedRange) {
+                                            val anchor = selectionAnchor!!
+                                            if (addr >= anchor) {
+                                                onSelectionChanged?.invoke(anchor, addr + len - 1)
+                                            } else {
+                                                val anchorInstr = instructions.firstOrNull { it.instr.addr == anchor }
+                                                val anchorLen = anchorInstr?.instr?.length ?: 1
+                                                onSelectionChanged?.invoke(anchor + anchorLen - 1, addr)
+                                            }
                                         } else {
-                                            val anchorInstr = instructions.firstOrNull { it.instr.addr == anchor }
-                                            val anchorLen = anchorInstr?.instr?.length ?: 1
-                                            onSelectionChanged?.invoke(anchor + anchorLen - 1, addr)
+                                            selectionAnchor = addr
+                                            onSelectionChanged?.invoke(addr, addr + len - 1)
                                         }
-                                    } else {
-                                        selectionAnchor = addr
-                                        onSelectionChanged?.invoke(addr, addr + len - 1)
-                                    }
-                                },
-                                onAddressRightClicked = { addr, bytes, disasmText, offset ->
-                                    contextMenuAddr = addr
-                                    contextMenuBytes = bytes
-                                    contextMenuDisasm = disasmText
-                                    contextMenuOffset = offset
-                                    showContextMenu = true
-                                },
-                                showHexDetails = showHexDetails
-                            )
-                            val isMenuForThisRow = showContextMenu && contextMenuAddr == line.instr.addr
+                                    },
+                                    onAddressRightClicked = { addr, bytes, disasmText, offset ->
+                                        contextMenuAddr = addr
+                                        contextMenuBytes = bytes
+                                        contextMenuDisasm = disasmText
+                                        contextMenuOffset = offset
+                                        showContextMenu = true
+                                    },
+                                    showHexDetails = showHexDetails
+                                )
+                            }
+                        }
+                        
+                        val isMenuForThisRow = showContextMenu && contextMenuAddr == line.instr.addr
                             DropdownMenu(
                                 expanded = isMenuForThisRow,
                                 onDismissRequest = { showContextMenu = false },
@@ -518,104 +537,102 @@ fun DisassemblyViewer(
                 }
             }
         }
-    }
 
-    // Set Hardware Watchpoint Configuration Modal
-    if (showWatchpointDialog) {
-        val addr = contextMenuAddr
-        if (addr != null) {
-            AlertDialog(
-                onDismissRequest = { showWatchpointDialog = false },
-                title = { Text("Configure Hardware Watchpoint", color = PS5ThemeColors.AccentCyan, fontWeight = FontWeight.Bold, fontSize = 14.sp) },
-                text = {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Address: 0x${addr.toString(16).uppercase()}", fontFamily = FontFamily.Monospace, fontSize = 12.sp)
-                        
-                        // Slot selection
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("DR Slot: ", modifier = Modifier.width(60.dp), fontSize = 12.sp)
-                            (0..3).forEach { slot ->
-                                FilterChip(
-                                    selected = watchpointSlot == slot,
-                                    onClick = { watchpointSlot = slot },
-                                    label = { Text("DR$slot", fontSize = 11.sp) },
-                                    modifier = Modifier.padding(horizontal = 2.dp)
-                                )
-                            }
-                        }
-                        
-                        // Watch Type selection
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Type: ", modifier = Modifier.width(60.dp), fontSize = 12.sp)
-                            FilterChip(
-                                selected = watchpointType == 1,
-                                onClick = { watchpointType = 1 },
-                                label = { Text("Write", fontSize = 11.sp) },
-                                modifier = Modifier.padding(horizontal = 2.dp)
-                              )
-                            FilterChip(
-                                selected = watchpointType == 3,
-                                onClick = { watchpointType = 3 },
-                                label = { Text("Read/Write", fontSize = 11.sp) },
-                                modifier = Modifier.padding(horizontal = 2.dp)
-                            )
-                        }
-                        
-                        // Granularity selection
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Size: ", modifier = Modifier.width(60.dp), fontSize = 12.sp)
-                            listOf(1, 2, 4, 8).forEach { sz ->
-                                FilterChip(
-                                    selected = watchpointSize == sz,
-                                    onClick = { watchpointSize = sz },
-                                    label = { Text("${sz}B", fontSize = 11.sp) },
-                                    modifier = Modifier.padding(horizontal = 2.dp)
-                                )
-                            }
-                        }
-                    }
-                },
-                confirmButton = {
-                    TextButton(
-                        onClick = {
-                            coroutineScope.launch {
-                                try {
-                                    val lenField = when (watchpointSize) {
-                                        1 -> 0
-                                        2 -> 1
-                                        8 -> 2
-                                        else -> 3 // 4 bytes
-                                    }
-                                    activeWatchpoints[watchpointSlot] = addr
-                                    val ok = client.setWatchpoint(watchpointSlot, true, lenField, watchpointType, addr)
-                                    if (!ok) {
-                                        activeWatchpoints.remove(watchpointSlot)
-                                        AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to set watchpoint on PS5", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
-                                    } else {
-                                        AppContainer.debuggerUseCase.log("DEBUGGER", "Set Hardware Watchpoint in slot DR$watchpointSlot at 0x${addr.toString(16)} (size: ${watchpointSize}B, type: $watchpointType)", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
-                                    }
-                                } catch (e: Exception) {
-                                    activeWatchpoints.remove(watchpointSlot)
-                                    AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to set watchpoint: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+        // Set Hardware Watchpoint Configuration Modal
+        if (showWatchpointDialog) {
+            val addr = contextMenuAddr
+            if (addr != null) {
+                AlertDialog(
+                    onDismissRequest = { showWatchpointDialog = false },
+                    title = { Text("Configure Hardware Watchpoint", color = PS5ThemeColors.AccentCyan, fontWeight = FontWeight.Bold, fontSize = 14.sp) },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("Address: 0x${addr.toString(16).uppercase()}", fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                            
+                            // Slot selection
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("DR Slot: ", modifier = Modifier.width(60.dp), fontSize = 12.sp)
+                                (0..3).forEach { slot ->
+                                    FilterChip(
+                                        selected = watchpointSlot == slot,
+                                        onClick = { watchpointSlot = slot },
+                                        label = { Text("DR$slot", fontSize = 11.sp) },
+                                        modifier = Modifier.padding(horizontal = 2.dp)
+                                    )
                                 }
                             }
-                            showWatchpointDialog = false
+                            
+                            // Watch Type selection
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("Type: ", modifier = Modifier.width(60.dp), fontSize = 12.sp)
+                                FilterChip(
+                                    selected = watchpointType == 1,
+                                    onClick = { watchpointType = 1 },
+                                    label = { Text("Write", fontSize = 11.sp) },
+                                    modifier = Modifier.padding(horizontal = 2.dp)
+                                  )
+                                FilterChip(
+                                    selected = watchpointType == 3,
+                                    onClick = { watchpointType = 3 },
+                                    label = { Text("Read/Write", fontSize = 11.sp) },
+                                    modifier = Modifier.padding(horizontal = 2.dp)
+                                )
+                            }
+                            
+                            // Granularity selection
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("Size: ", modifier = Modifier.width(60.dp), fontSize = 12.sp)
+                                listOf(1, 2, 4, 8).forEach { sz ->
+                                    FilterChip(
+                                        selected = watchpointSize == sz,
+                                        onClick = { watchpointSize = sz },
+                                        label = { Text("${sz}B", fontSize = 11.sp) },
+                                        modifier = Modifier.padding(horizontal = 2.dp)
+                                    )
+                                }
+                            }
                         }
-                    ) {
-                        Text("Apply", color = PS5ThemeColors.AccentCyan, fontWeight = FontWeight.Bold)
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = { showWatchpointDialog = false }) {
-                        Text("Cancel", color = PS5ThemeColors.TextMuted)
-                    }
-                },
-                containerColor = PS5ThemeColors.SecondaryBg
-            )
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                coroutineScope.launch {
+                                    try {
+                                        val lenField = when (watchpointSize) {
+                                            1 -> 0
+                                            2 -> 1
+                                            8 -> 2
+                                            else -> 3 // 4 bytes
+                                        }
+                                        activeWatchpoints[watchpointSlot] = addr
+                                        val ok = client.setWatchpoint(watchpointSlot, true, lenField, watchpointType, addr)
+                                        if (!ok) {
+                                            activeWatchpoints.remove(watchpointSlot)
+                                            AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to set watchpoint on PS5", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                                        } else {
+                                            AppContainer.debuggerUseCase.log("DEBUGGER", "Set Hardware Watchpoint in slot DR$watchpointSlot at 0x${addr.toString(16)} (size: ${watchpointSize}B, type: $watchpointType)", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                                        }
+                                    } catch (e: Exception) {
+                                        activeWatchpoints.remove(watchpointSlot)
+                                        AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to set watchpoint: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                                    }
+                                }
+                                showWatchpointDialog = false
+                            }
+                        ) {
+                            Text("Apply", color = PS5ThemeColors.AccentCyan, fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showWatchpointDialog = false }) {
+                            Text("Cancel", color = PS5ThemeColors.TextMuted)
+                        }
+                    },
+                    containerColor = PS5ThemeColors.SecondaryBg
+                )
+            }
         }
     }
-}
-
 private fun isInstructionSelected(instr: Ps5DisasmInstr, start: Long?, end: Long?): Boolean {
     if (start == null || end == null) return false
     val lo = minOf(start, end)
@@ -628,6 +645,7 @@ private fun isInstructionSelected(instr: Ps5DisasmInstr, start: Long?, end: Long
 fun DisasmRow(
     line: DisasmLine,
     isSelected: Boolean,
+    isFunctionStart: Boolean = false,
     onAddressClicked: (Long, Int, Boolean) -> Unit,
     onAddressRightClicked: (Long, ByteArray, String, DpOffset) -> Unit,
     showHexDetails: Boolean = false
@@ -654,7 +672,13 @@ fun DisasmRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(if (isSelected) PS5ThemeColors.AccentCyan.copy(alpha = 0.35f) else Color.Transparent)
+            .background(
+                when {
+                    isSelected -> PS5ThemeColors.AccentCyan.copy(alpha = 0.35f)
+                    isFunctionStart -> Color(0xFF2D2D2D)
+                    else -> Color.Transparent
+                }
+            )
             .pointerInput(instr.addr) {
                 awaitPointerEventScope {
                     while (true) {
