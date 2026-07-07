@@ -50,6 +50,11 @@ fun MobileMainView() {
     var showRegionSelector by remember { mutableStateOf(false) }
     var showConsoleLogs by remember { mutableStateOf(false) }
 
+    LaunchedEffect(activeProcess) {
+        activeMap = null
+        jumpToAddress = null
+    }
+
     LaunchedEffect(isConnected) {
         if (isConnected) {
             try {

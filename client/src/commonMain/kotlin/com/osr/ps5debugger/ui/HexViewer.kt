@@ -86,14 +86,19 @@ fun HexViewer(
                 state.startAddress = minStart
                 state.endAddress = maxEnd
                 
-                val currentTarget = activeMap ?: targets.first()
-                if (jumpToAddress != null && jumpToAddress >= currentTarget.start && jumpToAddress < currentTarget.end) {
-                    val targetRow = (jumpToAddress - minStart) / state.bytesPerRow
+                if (jumpToAddress != null && targets.any { jumpToAddress >= it.start && jumpToAddress < it.end }) {
+                    val targetRow = state.getRowForAddress(jumpToAddress)
                     state.updateScrollPosition(targetRow.coerceIn(0L, state.getMaxScrollPosition()))
                     state.selectionStart = jumpToAddress
                     state.selectionEnd = jumpToAddress
                     state.goToAddressText = jumpToAddress.toString(16).uppercase()
                 }
+            } else {
+                state.startAddress = 0L
+                state.endAddress = 0L
+                state.updateScrollPosition(0L)
+                state.selectionStart = null
+                state.selectionEnd = null
             }
         }
 
@@ -108,10 +113,7 @@ fun HexViewer(
                             if (char.code in 32..126) {
                                 state.selectionEnd?.let { cursor ->
                                     state.pendingEdits[cursor] = char.code.toByte()
-                                    if (cursor + 1 < state.endAddress) {
-                                        state.selectionEnd = cursor + 1
-                                        if (state.selectionStart == cursor) state.selectionStart = cursor + 1
-                                    }
+                                    state.advanceCursor()
                                 }
                             }
                         } else {
@@ -145,10 +147,6 @@ fun HexViewer(
 
 @Composable
 private fun HexToolbar(state: HexState, isMobile: Boolean) {
-    val coroutineScope = rememberCoroutineScope()
-    val pid = AppContainer.debuggerUseCase.activeProcess.value?.pid
-    val client = AppContainer.clientAdapter.client
-
     if (isMobile) {
         Column(Modifier.fillMaxWidth().padding(bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(Modifier.fillMaxWidth().height(IntrinsicSize.Max), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -163,9 +161,12 @@ private fun HexToolbar(state: HexState, isMobile: Boolean) {
                 Button(
                     onClick = {
                         val addr = state.goToAddressText.trim().toLongOrNull(16)
-                        if (addr != null && addr in state.startAddress..state.endAddress) {
-                            val rowIdx = (addr - state.startAddress) / state.bytesPerRow
-                            state.updateScrollPosition(rowIdx.coerceIn(0L, state.getMaxScrollPosition()))
+                        if (addr != null) {
+                            val targets = if (state.activeMaps.isNotEmpty()) state.activeMaps.toList() else listOfNotNull(state.activeMap)
+                            if (targets.any { addr >= it.start && addr < it.end }) {
+                                val rowIdx = state.getRowForAddress(addr)
+                                state.updateScrollPosition(rowIdx.coerceIn(0L, state.getMaxScrollPosition()))
+                            }
                         }
                     },
                     modifier = Modifier.height(40.dp)
@@ -190,9 +191,12 @@ private fun HexToolbar(state: HexState, isMobile: Boolean) {
             )
             Button(onClick = {
                 val addr = state.goToAddressText.trim().toLongOrNull(16)
-                if (addr != null && addr in state.startAddress..state.endAddress) {
-                    val rowIdx = (addr - state.startAddress) / state.bytesPerRow
-                    state.updateScrollPosition(rowIdx.coerceIn(0L, state.getMaxScrollPosition()))
+                if (addr != null) {
+                    val targets = if (state.activeMaps.isNotEmpty()) state.activeMaps.toList() else listOfNotNull(state.activeMap)
+                    if (targets.any { addr >= it.start && addr < it.end }) {
+                        val rowIdx = state.getRowForAddress(addr)
+                        state.updateScrollPosition(rowIdx.coerceIn(0L, state.getMaxScrollPosition()))
+                    }
                 }
             }) { Text("Go") }
             Spacer(Modifier.weight(1f))
@@ -261,7 +265,6 @@ private fun ColumnChips(state: HexState) {
 
 @Composable
 private fun HexGrid(state: HexState, isMobile: Boolean, showAddress: Boolean, modifier: Modifier = Modifier) {
-    val density = LocalDensity.current.density
     val horizontalScrollState = rememberScrollState()
     
     val addressWidthDp = if (isMobile) 80.dp else 120.dp
@@ -415,69 +418,74 @@ private fun HexGridBody(state: HexState, isMobile: Boolean, showAddress: Boolean
                 }
             }
         ) {
-            val viewStartAddress = state.startAddress + state.scrollPosition * state.bytesPerRow
+            val totalRows = if (state.activeMaps.isNotEmpty()) {
+                state.activeMaps.sumOf { (it.end - it.start + state.bytesPerRow - 1) / state.bytesPerRow }
+            } else if (state.activeMap != null) {
+                (state.activeMap!!.end - state.activeMap!!.start + state.bytesPerRow - 1) / state.bytesPerRow
+            } else 0L
+
             for (rowIndex in 0 until state.visibleRowsCount) {
-                val rowAddress = viewStartAddress + (rowIndex * state.bytesPerRow)
-                if (rowAddress < state.endAddress) {
-                    val targets = if (state.activeMaps.isNotEmpty()) state.activeMaps.toList() else listOfNotNull(state.activeMap)
-                    val currentMap = targets.firstOrNull { rowAddress >= it.start && rowAddress < it.end }
-                    val prevRowAddress = rowAddress - state.bytesPerRow
-                    val prevMap = targets.firstOrNull { prevRowAddress >= it.start && prevRowAddress < it.end }
+                if (state.scrollPosition + rowIndex >= totalRows) break
+                
+                val rowAddress = state.getAddressForRow(state.scrollPosition + rowIndex)
+                val targets = if (state.activeMaps.isNotEmpty()) state.activeMaps.toList() else listOfNotNull(state.activeMap)
+                val currentMap = targets.firstOrNull { rowAddress >= it.start && rowAddress < it.end }
+                
+                // For cross-map row, we might need a special logic or just use prev row addr
+                val prevRowAddress = if (state.scrollPosition + rowIndex > 0) state.getAddressForRow(state.scrollPosition + rowIndex - 1) else -1L
+                val prevMap = if (prevRowAddress != -1L) targets.firstOrNull { prevRowAddress >= it.start && prevRowAddress < it.end } else null
                     
-                    // Render separator if this row starts a new map or transition
-                    val isNewRegion = currentMap != null && (rowIndex == 0 || prevMap == null || currentMap.start != prevMap.start)
-                    
-                    if (isNewRegion && currentMap != null) {
-                        Spacer(Modifier.height(10.dp))
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(PS5ThemeColors.SecondaryBg.copy(alpha = 0.5f))
-                                .border(1.dp, PS5ThemeColors.BorderColor.copy(alpha = 0.3f), RoundedCornerShape(4.dp))
-                                .padding(horizontal = 8.dp, vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "Region: ${if (currentMap.name.isEmpty()) "unnamed" else currentMap.name} [0x${currentMap.start.toString(16).uppercase()} - 0x${currentMap.end.toString(16).uppercase()}] (${currentMap.getProtString()})",
-                                color = PS5ThemeColors.AccentCyan,
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold,
-                                fontFamily = FontFamily.Monospace
-                            )
-                        }
-                        Spacer(Modifier.height(6.dp))
+                // Render separator if this row starts a new map or transition
+                val isNewRegion = currentMap != null && (rowIndex == 0 || prevMap == null || currentMap.start != prevMap.start)
+                
+                if (isNewRegion && currentMap != null) {
+                    Spacer(Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(PS5ThemeColors.SecondaryBg.copy(alpha = 0.5f))
+                            .border(1.dp, PS5ThemeColors.BorderColor.copy(alpha = 0.3f), RoundedCornerShape(4.dp))
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Region: ${if (currentMap.name.isEmpty()) "unnamed" else currentMap.name} [0x${currentMap.start.toString(16).uppercase()} - 0x${currentMap.end.toString(16).uppercase()}] (${currentMap.getProtString()})",
+                            color = PS5ThemeColors.AccentCyan,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
                     }
-
-                    val pageStart = ((rowAddress - state.startAddress) / state.pageSize) * state.pageSize + state.startAddress
-                    val cachedPage = state.memoryCache[pageStart]
-                    val offsetInPage = (rowAddress - pageStart).toInt()
-                    
-                    val stableRowBytes = remember(rowAddress, cachedPage) {
-                        val bytes = ByteArray(state.bytesPerRow)
-                        if (cachedPage != null && offsetInPage >= 0 && offsetInPage < cachedPage.size) {
-                            val toCopy = minOf(state.bytesPerRow, cachedPage.size - offsetInPage)
-                            if (toCopy > 0) {
-                                System.arraycopy(cachedPage, offsetInPage, bytes, 0, toCopy)
-                            }
-                        }
-                        StableRowBytes(bytes)
-                    }
-
-                    HexRowView(
-                        address = rowAddress,
-                        stableBytes = stableRowBytes,
-                        columns = state.bytesPerRow,
-                        selectionMin = if (state.selectionStart != null && state.selectionEnd != null) minOf(state.selectionStart!!, state.selectionEnd!!) else null,
-                        selectionMax = if (state.selectionStart != null && state.selectionEnd != null) maxOf(state.selectionStart!!, state.selectionEnd!!) else null,
-                        cursorAddress = state.selectionEnd,
-                        pendingEdits = state.pendingEdits,
-                        hexInputBuffer = state.hexInputBuffer,
-                        isMobile = isMobile,
-                        showAddress = showAddress
-                    )
-                } else {
-                    Spacer(Modifier.height(24.dp))
+                    Spacer(Modifier.height(6.dp))
                 }
+
+                val pageStart = (rowAddress / state.pageSize) * state.pageSize
+                val cachedPage = state.memoryCache[pageStart]
+                val offsetInPage = (rowAddress - pageStart).toInt()
+                
+                val stableRowBytes = remember(rowAddress, cachedPage) {
+                    val bytes = ByteArray(state.bytesPerRow)
+                    if (cachedPage != null && offsetInPage >= 0 && offsetInPage < cachedPage.size) {
+                        val toCopy = minOf(state.bytesPerRow, cachedPage.size - offsetInPage)
+                        if (toCopy > 0) {
+                            System.arraycopy(cachedPage, offsetInPage, bytes, 0, toCopy)
+                        }
+                    }
+                    StableRowBytes(bytes)
+                }
+
+                HexRowView(
+                    address = rowAddress,
+                    stableBytes = stableRowBytes,
+                    columns = state.bytesPerRow,
+                    selectionMin = if (state.selectionStart != null && state.selectionEnd != null) minOf(state.selectionStart!!, state.selectionEnd!!) else null,
+                    selectionMax = if (state.selectionStart != null && state.selectionEnd != null) maxOf(state.selectionStart!!, state.selectionEnd!!) else null,
+                    cursorAddress = state.selectionEnd,
+                    pendingEdits = state.pendingEdits,
+                    hexInputBuffer = state.hexInputBuffer,
+                    isMobile = isMobile,
+                    showAddress = showAddress
+                )
             }
         }
         
@@ -490,13 +498,17 @@ private fun HexGridBody(state: HexState, isMobile: Boolean, showAddress: Boolean
 private fun BoxScope.HexScrollbar(state: HexState, modifier: Modifier = Modifier) {
     Box(modifier = modifier.background(PS5ThemeColors.SecondaryBg, RoundedCornerShape(4.dp))) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
-            val totalBytes = maxOf(0L, state.endAddress - state.startAddress)
-            val rowCount = if (totalBytes <= 0L) 0L else (totalBytes + state.bytesPerRow - 1) / state.bytesPerRow
             val trackHeight = maxHeight
             
+            val totalRows = if (state.activeMaps.isNotEmpty()) {
+                state.activeMaps.sumOf { (it.end - it.start + state.bytesPerRow - 1) / state.bytesPerRow }
+            } else if (state.activeMap != null) {
+                (state.activeMap!!.end - state.activeMap!!.start + state.bytesPerRow - 1) / state.bytesPerRow
+            } else 0L
+
             // Calculate thumbHeight carefully using Long math to prevent float overflow/infinity
-            val thumbHeight = if (rowCount > 0L) {
-                val ratio = state.visibleRowsCount.toDouble() / rowCount.toDouble()
+            val thumbHeight = if (totalRows > 0L) {
+                val ratio = state.visibleRowsCount.toDouble() / totalRows.toDouble()
                 val calcHeight = (trackHeight.value * ratio).dp
                 calcHeight.coerceIn(30.dp, trackHeight)
             } else {

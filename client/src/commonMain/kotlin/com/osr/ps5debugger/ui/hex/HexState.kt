@@ -72,7 +72,40 @@ class HexState(
 
     fun updateScrollPosition(newPos: Long) {
         scrollPosition = newPos
-        activeMap?.let { hexViewerScrollPositions[it.start] = newPos }
+        // Store scroll position based on the first map's start to maintain context
+        val sorted = if (activeMaps.isNotEmpty()) activeMaps.sortedBy { it.start } else listOfNotNull(activeMap)
+        sorted.firstOrNull()?.let { hexViewerScrollPositions[it.start] = newPos }
+    }
+
+    fun getAddressForRow(row: Long): Long {
+        var remainingRows = row
+        val sorted = if (activeMaps.isNotEmpty()) activeMaps.sortedBy { it.start } else listOfNotNull(activeMap)
+        for (map in sorted) {
+            val rowsInMap = (map.end - map.start + bytesPerRow - 1) / bytesPerRow
+            if (remainingRows < rowsInMap) {
+                return map.start + remainingRows * bytesPerRow
+            }
+            remainingRows -= rowsInMap
+        }
+        return sorted.lastOrNull()?.end ?: 0L
+    }
+
+    fun getRowForAddress(address: Long): Long {
+        var rowCount = 0L
+        val sorted = if (activeMaps.isNotEmpty()) activeMaps.sortedBy { it.start } else listOfNotNull(activeMap)
+        for (map in sorted) {
+            if (address >= map.start && address < map.end) {
+                return rowCount + (address - map.start) / bytesPerRow
+            }
+            rowCount += (map.end - map.start + bytesPerRow - 1) / bytesPerRow
+        }
+        return rowCount
+    }
+
+    fun getMaxScrollPosition(): Long {
+        val sorted = if (activeMaps.isNotEmpty()) activeMaps.sortedBy { it.start } else listOfNotNull(activeMap)
+        val rowCount = sorted.sumOf { (it.end - it.start + bytesPerRow - 1) / bytesPerRow }
+        return maxOf(0L, rowCount - visibleRowsCount)
     }
 
     fun handleKeyEvent(keyEvent: androidx.compose.ui.input.key.KeyEvent): Boolean {
@@ -90,7 +123,24 @@ class HexState(
         }
         
         if (step != 0) {
-            val nextCursor = (cursor + step).coerceIn(startAddress, endAddress - 1)
+            // Find current row and try to move
+            val currentRow = getRowForAddress(cursor)
+            val nextCursor = if (kotlin.math.abs(step) == 1) {
+                // Horizontal move: try simple add but check if it's still in a valid map
+                val simpleNext = cursor + step
+                val targets = if (activeMaps.isNotEmpty()) activeMaps.toList() else listOfNotNull(activeMap)
+                if (targets.any { simpleNext >= it.start && simpleNext < it.end }) {
+                    simpleNext
+                } else {
+                    // Jump to start/end of next/prev map if we cross a gap
+                    getAddressForRow(getRowForAddress(simpleNext)) 
+                }
+            } else {
+                // Vertical move: jump by row index
+                val nextRow = (currentRow + (step / bytesPerRow)).coerceIn(0L, (if (activeMaps.isNotEmpty()) activeMaps.sortedBy { it.start }.sumOf { (it.end - it.start + bytesPerRow - 1) / bytesPerRow } else 0L) - 1)
+                getAddressForRow(nextRow) + (cursor % bytesPerRow) // Try to maintain column
+            }
+
             selectionEnd = nextCursor
             if (!shiftPressed) {
                 selectionStart = nextCursor
@@ -98,7 +148,7 @@ class HexState(
             hexInputBuffer = ""
             
             // Auto scroll
-            val nextCursorRow = ((nextCursor - startAddress) / bytesPerRow).toInt()
+            val nextCursorRow = getRowForAddress(nextCursor).toInt()
             if (nextCursorRow < scrollPosition) {
                 updateScrollPosition(nextCursorRow.toLong().coerceIn(0L, getMaxScrollPosition()))
             } else if (nextCursorRow >= scrollPosition + visibleRowsCount - 1) {
@@ -140,20 +190,16 @@ class HexState(
         }
     }
 
-    private fun advanceCursor() {
+    fun advanceCursor() {
         val cursor = selectionEnd ?: return
-        if (cursor + 1 < endAddress) {
-            selectionEnd = cursor + 1
+        val nextCursor = cursor + 1
+        val targets = if (activeMaps.isNotEmpty()) activeMaps.toList() else listOfNotNull(activeMap)
+        if (targets.any { nextCursor >= it.start && nextCursor < it.end }) {
+            selectionEnd = nextCursor
             if (selectionStart == cursor) {
-                selectionStart = cursor + 1
+                selectionStart = nextCursor
             }
         }
-    }
-
-    fun getMaxScrollPosition(): Long {
-        val totalBytes = maxOf(0L, endAddress - startAddress)
-        val rowCount = if (totalBytes <= 0L) 0L else (totalBytes + bytesPerRow - 1) / bytesPerRow
-        return maxOf(0L, rowCount - visibleRowsCount)
     }
 
     fun loadMemory() {
@@ -163,37 +209,46 @@ class HexState(
         
         scope.launch {
             delay(100)
-            val visibleStart = startAddress + scrollPosition * bytesPerRow
-            val visibleEnd = minOf(endAddress, visibleStart + visibleRowsCount * bytesPerRow)
+            val visibleStart = getAddressForRow(scrollPosition)
+            val visibleEnd = getAddressForRow(scrollPosition + visibleRowsCount)
             
             withContext(Dispatchers.IO) {
-                var page = ((visibleStart - startAddress) / pageSize) * pageSize + startAddress
+                // Use absolute page alignment to ensure consistency with getByteAt and rendering
+                var page = (visibleStart / pageSize) * pageSize
                 while (page <= visibleEnd) {
                     if (!memoryCache.containsKey(page)) {
                         try {
-                            // Find which map holds this page
-                            val currentMap = targets.firstOrNull { page >= it.start && page < it.end } ?: targets.firstOrNull { it.start <= page + pageSize && it.end > page }
-                            if (currentMap != null) {
-                                val readStart = maxOf(page, currentMap.start)
-                                val readEnd = minOf(page + pageSize, currentMap.end)
+                            val pageData = ByteArray(pageSize)
+                            var hasData = false
+                            
+                            // Find all maps that overlap with this page [page, page + pageSize)
+                            val overlappingMaps = targets.filter { it.start < page + pageSize && it.end > page }
+                            
+                            for (map in overlappingMaps) {
+                                val readStart = maxOf(page, map.start)
+                                val readEnd = minOf(page + pageSize, map.end)
                                 if (readStart < readEnd) {
                                     val readLen = (readEnd - readStart).toInt()
-                                    val data = AppContainer.clientAdapter.client.readMemory(pid, readStart, readLen)
-                                    val pageData = ByteArray(pageSize)
-                                    val destOffset = (readStart - page).toInt()
-                                    System.arraycopy(data, 0, pageData, destOffset, data.size)
-                                    memoryCache[page] = pageData
-                                } else {
-                                    memoryCache[page] = ByteArray(pageSize)
+                                    try {
+                                        val data = AppContainer.clientAdapter.client.readMemory(pid, readStart, readLen)
+                                        val destOffset = (readStart - page).toInt()
+                                        System.arraycopy(data, 0, pageData, destOffset, data.size)
+                                        hasData = true
+                                    } catch (_: Exception) {
+                                        // Individual read failure (e.g. guard page), skip this map segment
+                                    }
                                 }
-                            } else {
-                                memoryCache[page] = ByteArray(pageSize)
                             }
-                        } catch (_: Exception) {
+                            
+                            if (hasData || overlappingMaps.isEmpty()) {
+                                memoryCache[page] = pageData
+                            }
+                        } catch (e: Exception) {
+                            // Page failed entirely, insert empty to prevent infinite retry loop
                             memoryCache[page] = ByteArray(pageSize)
                         }
                     }
-                    page += pageSize
+                    page += pageSize.toLong()
                 }
             }
         }
@@ -211,9 +266,11 @@ class HexState(
         val adjustedY = y - (28f * density)
         val rowIndex = if (adjustedY < 0) 0 else (adjustedY / rowHeightPx).toInt()
         
-        val currentViewStart = startAddress + scrollPosition * bytesPerRow
-        val rowAddress = currentViewStart + rowIndex * bytesPerRow
-        if (rowAddress >= endAddress) return null
+        val rowAddress = getAddressForRow(scrollPosition + rowIndex)
+        
+        val sorted = if (activeMaps.isNotEmpty()) activeMaps.sortedBy { it.start } else listOfNotNull(activeMap)
+        if (sorted.isEmpty()) return null
+        if (rowAddress >= sorted.last().end) return null
         
         val startHexX = addressWidthPx + spacerAddressToHexPx
         val endHexX = startHexX + bytesPerRow * hexCellWidthPx

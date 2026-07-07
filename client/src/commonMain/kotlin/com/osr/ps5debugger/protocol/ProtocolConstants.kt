@@ -90,11 +90,11 @@ object ProtocolConstants {
     const val CMD_DEBUG_PROCESS_STOP = 0xBDBB0500.toInt()
 
     // Console/System UI commands
-    const val CMD_CONSOLE_NOTIFY = 0xBDDD0001.toInt()
-    const val CMD_CONSOLE_PRINT = 0xBDDD0002.toInt()
-    const val CMD_CONSOLE_REBOOT = 0xBDDD0003.toInt()
-    const val CMD_CONSOLE_INFO = 0xBDDD0004.toInt()
-    const val CMD_CONSOLE_END = 0xBDDD0005.toInt()
+    const val CMD_CONSOLE_REBOOT = 0xBDDD0001.toInt()
+    const val CMD_CONSOLE_END = 0xBDDD0002.toInt()
+    const val CMD_CONSOLE_PRINT = 0xBDDD0003.toInt()
+    const val CMD_CONSOLE_NOTIFY = 0xBDDD0004.toInt()
+    const val CMD_CONSOLE_INFO = 0xBDDD0005.toInt()
     const val CMD_CONSOLE_FOREGROUND_APP = 0xBDDD0006.toInt()
 
     // Kernel

@@ -40,6 +40,15 @@ fun MainScreen(onExit: () -> Unit = {}) {
     val state = rememberMainState(onExit = onExit)
     val isConnected by state.isConnected.collectAsState()
     
+    val activeProcess by AppContainer.debuggerUseCase.activeProcess.collectAsState()
+    
+    LaunchedEffect(activeProcess) {
+        state.activeMap = null
+        state.activeMaps.clear()
+        state.selectionStart = null
+        state.selectionEnd = null
+    }
+
     LaunchedEffect(isConnected) {
         if (isConnected) {
             try {
@@ -150,7 +159,9 @@ private fun MainContent(state: MainState) {
                                 onMapsSelected = { maps ->
                                     state.activeMaps.clear()
                                     state.activeMaps.addAll(maps)
-                                    if (maps.isNotEmpty() && (state.activeMap == null || !maps.any { it.start == state.activeMap?.start })) {
+                                    if (maps.isEmpty()) {
+                                        state.activeMap = null
+                                    } else if (state.activeMap == null || !maps.any { it.start == state.activeMap?.start }) {
                                         state.activeMap = maps.first()
                                     }
                                 },

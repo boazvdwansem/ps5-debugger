@@ -275,37 +275,47 @@ fun DisassemblyViewer(
             
             Spacer(Modifier.weight(1f))
             
-            // Prev/Next page navigation (shifts the viewing window backwards or forwards)
+            // Prev/Next function navigation
             Button(
                 onClick = {
                     if (activeMap != null) {
                         val currentTop = instructions.firstOrNull()?.instr?.addr ?: jumpToAddress ?: activeMap.start
-                        val prevAddr = maxOf(activeMap.start, currentTop - 8192)
-                        onJumpToAddress?.invoke(prevAddr)
-                        goToAddressText = prevAddr.toString(16).uppercase()
+                        val prevFunc = functionAddresses.filter { it < currentTop }.maxOrNull()
+                        val targetAddr = prevFunc ?: maxOf(activeMap.start, currentTop - 8192)
+                        onJumpToAddress?.invoke(targetAddr)
+                        goToAddressText = targetAddr.toString(16).uppercase()
                     }
                 },
-                enabled = activeMap != null && (instructions.firstOrNull()?.instr?.addr ?: activeMap.start) > activeMap.start,
+                enabled = activeMap != null,
                 colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.SecondaryBg)
             ) {
-                Text("Prev Page", color = PS5ThemeColors.TextMain)
+                Text("Previous", color = PS5ThemeColors.TextMain)
             }
             
             Button(
                 onClick = {
-                    if (activeMap != null && instructions.isNotEmpty()) {
-                        val lastLine = instructions.last()
-                        val nextAddr = lastLine.instr.addr + lastLine.instr.length
-                        if (nextAddr < activeMap.end) {
-                            onJumpToAddress?.invoke(nextAddr)
-                            goToAddressText = nextAddr.toString(16).uppercase()
+                    if (activeMap != null) {
+                        val currentTop = instructions.firstOrNull()?.instr?.addr ?: jumpToAddress ?: activeMap.start
+                        val nextFunc = functionAddresses.filter { it > currentTop }.minOrNull()
+                        val targetAddr = if (nextFunc != null) {
+                            nextFunc
+                        } else if (instructions.isNotEmpty()) {
+                            val lastLine = instructions.last()
+                            lastLine.instr.addr + lastLine.instr.length
+                        } else {
+                            currentTop + 8192
+                        }
+                        
+                        if (targetAddr < activeMap.end) {
+                            onJumpToAddress?.invoke(targetAddr)
+                            goToAddressText = targetAddr.toString(16).uppercase()
                         }
                     }
                 },
-                enabled = activeMap != null && instructions.isNotEmpty() && (instructions.last().instr.addr + instructions.last().instr.length) < activeMap.end,
+                enabled = activeMap != null,
                 colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.SecondaryBg)
             ) {
-                Text("Next Page", color = PS5ThemeColors.TextMain)
+                Text("Next", color = PS5ThemeColors.TextMain)
             }
         }
         

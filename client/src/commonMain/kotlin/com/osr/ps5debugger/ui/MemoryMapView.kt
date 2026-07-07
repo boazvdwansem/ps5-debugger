@@ -379,69 +379,6 @@ fun MemoryMapView(
                         Divider(color = PS5ThemeColors.BorderColor.copy(alpha = 0.2f), thickness = 0.5.dp)
                     }
                 }
-
-                item {
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "SECTIONS",
-                        color = PS5ThemeColors.AccentCyan,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 1.sp
-                    )
-                }
-
-                // Sections Table Header
-                item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().background(PS5ThemeColors.Surface.copy(alpha = 0.5f)).padding(4.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("Name", modifier = Modifier.weight(1f), fontSize = 10.sp, fontWeight = FontWeight.Bold, color = PS5ThemeColors.TextMuted)
-                        Text("Start Address", modifier = Modifier.weight(1.5f), fontSize = 10.sp, fontWeight = FontWeight.Bold, color = PS5ThemeColors.TextMuted)
-                        Text("End Address", modifier = Modifier.weight(1.5f), fontSize = 10.sp, fontWeight = FontWeight.Bold, color = PS5ThemeColors.TextMuted)
-                    }
-                }
-
-                items(sections) { sec ->
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .pointerInput(Unit) {
-                                detectTapGestures(
-                                    onDoubleTap = {
-                                        onJumpToAddress(sec.start)
-                                    }
-                                )
-                            }
-                            .padding(vertical = 4.dp)
-                    ) {
-                        Row(horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text(
-                                text = sec.name,
-                                modifier = Modifier.weight(1f),
-                                color = if (sec.name == ".text") PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMain,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Text(
-                                text = "0x${sec.start.toString(16).uppercase()}",
-                                modifier = Modifier.weight(1.5f),
-                                color = PS5ThemeColors.TextMain,
-                                fontSize = 11.sp,
-                                fontFamily = FontFamily.Monospace
-                            )
-                            Text(
-                                text = "0x${sec.end.toString(16).uppercase()}",
-                                modifier = Modifier.weight(1.5f),
-                                color = PS5ThemeColors.TextMuted,
-                                fontSize = 11.sp,
-                                fontFamily = FontFamily.Monospace
-                            )
-                        }
-                        Divider(color = PS5ThemeColors.BorderColor.copy(alpha = 0.2f), thickness = 0.5.dp)
-                    }
-                }
             }
         }
     }
