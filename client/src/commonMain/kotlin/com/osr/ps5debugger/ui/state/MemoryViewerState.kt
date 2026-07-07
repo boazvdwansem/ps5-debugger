@@ -124,7 +124,7 @@ fun rememberMemoryViewerState(
     selectionEndParam: Long?,
     onSelectionChanged: ((Long?, Long?) -> Unit)?
 ): MemoryViewerState {
-    val state = remember(activeMap) {
+    val state = remember(activeMap, activeMaps.toList()) {
         MemoryViewerState(activeMap, activeMaps, jumpToAddress, viewModeParam, onViewModeChanged, selectionStartParam, selectionEndParam, onSelectionChanged)
     }
     

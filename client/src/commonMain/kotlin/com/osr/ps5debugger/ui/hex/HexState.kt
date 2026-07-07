@@ -101,8 +101,8 @@ class HexState(
             val nextCursorRow = ((nextCursor - startAddress) / bytesPerRow).toInt()
             if (nextCursorRow < scrollPosition) {
                 updateScrollPosition(nextCursorRow.toLong().coerceIn(0L, getMaxScrollPosition()))
-            } else if (nextCursorRow >= scrollPosition + visibleRowsCount) {
-                updateScrollPosition((nextCursorRow - visibleRowsCount + 1).toLong().coerceIn(0L, getMaxScrollPosition()))
+            } else if (nextCursorRow >= scrollPosition + visibleRowsCount - 1) {
+                updateScrollPosition((nextCursorRow - visibleRowsCount + 2).toLong().coerceIn(0L, getMaxScrollPosition()))
             }
             return true
         } else if (isEditingUnlocked) {
@@ -152,8 +152,8 @@ class HexState(
 
     fun getMaxScrollPosition(): Long {
         val totalBytes = maxOf(0L, endAddress - startAddress)
-        val rowCount = ((totalBytes + bytesPerRow - 1) / bytesPerRow).toInt()
-        return maxOf(0L, (rowCount - visibleRowsCount).toLong())
+        val rowCount = if (totalBytes <= 0L) 0L else (totalBytes + bytesPerRow - 1) / bytesPerRow
+        return maxOf(0L, rowCount - visibleRowsCount)
     }
 
     fun loadMemory() {
@@ -167,7 +167,7 @@ class HexState(
             val visibleEnd = minOf(endAddress, visibleStart + visibleRowsCount * bytesPerRow)
             
             withContext(Dispatchers.IO) {
-                var page = (visibleStart / pageSize) * pageSize
+                var page = ((visibleStart - startAddress) / pageSize) * pageSize + startAddress
                 while (page <= visibleEnd) {
                     if (!memoryCache.containsKey(page)) {
                         try {
@@ -207,7 +207,9 @@ class HexState(
         val spacerHexToAsciiPx = if (isMobile) 12f * density else 16f * density
 
         val rowHeightPx = 24f * density
-        val rowIndex = (y / rowHeightPx).toInt()
+        // Subtract vertical header height from y before dividing by row height
+        val adjustedY = y - (28f * density)
+        val rowIndex = if (adjustedY < 0) 0 else (adjustedY / rowHeightPx).toInt()
         
         val currentViewStart = startAddress + scrollPosition * bytesPerRow
         val rowAddress = currentViewStart + rowIndex * bytesPerRow
@@ -287,15 +289,19 @@ fun rememberHexState(
     onSelectionChanged: ((Long?, Long?) -> Unit)?,
     scope: CoroutineScope = rememberCoroutineScope()
 ): HexState {
-    val state = remember(activeMap) {
+    val state = remember(activeMap, activeMaps.toList()) {
         HexState(activeMap, activeMaps, jumpToAddress, selectionStartParam, selectionEndParam, onSelectionChanged, scope)
     }
     
     SideEffect {
+        val mapsChanged = state.activeMap != activeMap || state.activeMaps.size != activeMaps.size || !state.activeMaps.containsAll(activeMaps)
         state.activeMap = activeMap
         state.activeMaps.clear()
         state.activeMaps.addAll(activeMaps)
         state.onSelectionChanged = onSelectionChanged
+        if (mapsChanged) {
+            state.memoryCache.clear()
+        }
     }
     
     return state

@@ -4,6 +4,7 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -65,15 +66,165 @@ fun MainScreen(onExit: () -> Unit = {}) {
 private fun MainContent(state: MainState) {
     val coroutineScope = rememberCoroutineScope()
     
+    // Track active tool window ids. We use "connections" for left, "debugger" for right.
+    var activeLeftTab by remember { mutableStateOf<String?>("connections") }
+    var activeRightTab by remember { mutableStateOf<String?>(null) }
+    
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
             TopBar(state)
             HorizontalDivider(color = PS5ThemeColors.BorderColor)
 
             Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
-                Sidebar(state)
+                // LEFT STRIP BAR (50px)
+                Column(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .width(50.dp)
+                        .background(PS5ThemeColors.SecondaryBg),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Spacer(Modifier.height(8.dp))
+                    // Connections Icon Tab
+                    Tooltip("Connection Manager") {
+                        IconButton(
+                            onClick = {
+                                activeLeftTab = if (activeLeftTab == "connections") null else "connections"
+                            },
+                            modifier = Modifier
+                                .size(38.dp)
+                                .background(
+                                    if (activeLeftTab == "connections") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
+                                    RoundedCornerShape(6.dp)
+                                )
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.List,
+                                contentDescription = "Connection Manager",
+                                tint = if (activeLeftTab == "connections") PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                    // Memory Map Icon Tab
+                    Tooltip("Memory Map") {
+                        IconButton(
+                            onClick = {
+                                activeLeftTab = if (activeLeftTab == "map") null else "map"
+                            },
+                            modifier = Modifier
+                                .size(38.dp)
+                                .background(
+                                    if (activeLeftTab == "map") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
+                                    RoundedCornerShape(6.dp)
+                                )
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Search,
+                                contentDescription = "Memory Map",
+                                tint = if (activeLeftTab == "map") PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                    // Place future left sidebar tab icons here...
+                }
+                VerticalDivider(modifier = Modifier.fillMaxHeight().width(1.dp), color = PS5ThemeColors.BorderColor)
+
+                // LEFT PANEL (EXPANDED CONTAINER)
+                AnimatedVisibility(
+                    visible = activeLeftTab != null,
+                    enter = slideInHorizontally(initialOffsetX = { -it }, animationSpec = tween(200)) + fadeIn(tween(200)),
+                    exit = slideOutHorizontally(targetOffsetX = { -it }, animationSpec = tween(200)) + fadeOut(tween(200))
+                ) {
+                    Row(modifier = Modifier.fillMaxHeight()) {
+                        when (activeLeftTab) {
+                            "connections" -> ProcessManager(
+                                onMapSelected = {
+                                    state.activeMaps.clear()
+                                    state.activeMap = it
+                                    state.jumpToAddress = it.start
+                                    state.selectedTab = 0
+                                },
+                                activeMap = state.activeMap,
+                                activeMaps = state.activeMaps,
+                                onMapsSelected = { maps ->
+                                    state.activeMaps.clear()
+                                    state.activeMaps.addAll(maps)
+                                },
+                                onCollapse = { activeLeftTab = null }
+                            )
+                            "map" -> MemoryMapView(
+                                onJumpToAddress = { addr ->
+                                    val map = AppContainer.debuggerUseCase.vmMaps.value.firstOrNull { addr >= it.start && addr < it.end }
+                                    if (map != null) {
+                                        state.activeMap = map
+                                        state.jumpToAddress = addr
+                                        state.selectedTab = 0
+                                    }
+                                },
+                                onCollapse = { activeLeftTab = null }
+                            )
+                        }
+                        VerticalDivider(modifier = Modifier.fillMaxHeight().width(1.dp), color = PS5ThemeColors.BorderColor)
+                    }
+                }
+
+                // MAIN CONTENT AREA
                 MainArea(state, modifier = Modifier.fillMaxHeight().weight(1f))
-                DebugSidebarContainer(state)
+
+                // RIGHT PANEL (EXPANDED CONTAINER)
+                AnimatedVisibility(
+                    visible = activeRightTab != null,
+                    enter = slideInHorizontally(initialOffsetX = { it }, animationSpec = tween(200)) + fadeIn(tween(200)),
+                    exit = slideOutHorizontally(targetOffsetX = { it }, animationSpec = tween(200)) + fadeOut(tween(200))
+                ) {
+                    Row(modifier = Modifier.fillMaxHeight()) {
+                        VerticalDivider(modifier = Modifier.fillMaxHeight().width(1.dp), color = PS5ThemeColors.BorderColor)
+                        when (activeRightTab) {
+                            "debugger" -> DebugSidebar(
+                                state = state,
+                                onCollapse = { activeRightTab = null }
+                            )
+                        }
+                    }
+                }
+
+                VerticalDivider(modifier = Modifier.fillMaxHeight().width(1.dp), color = PS5ThemeColors.BorderColor)
+                // RIGHT STRIP BAR (50px)
+                Column(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .width(50.dp)
+                        .background(PS5ThemeColors.SecondaryBg),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Spacer(Modifier.height(8.dp))
+                    // Debugger Icon Tab
+                    Tooltip("Debugger") {
+                        IconButton(
+                            onClick = {
+                                activeRightTab = if (activeRightTab == "debugger") null else "debugger"
+                            },
+                            modifier = Modifier
+                                .size(38.dp)
+                                .background(
+                                    if (activeRightTab == "debugger") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
+                                    RoundedCornerShape(6.dp)
+                                )
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Build,
+                                contentDescription = "Debugger",
+                                tint = if (activeRightTab == "debugger") PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                    // Place future right sidebar tab icons here...
+                }
             }
 
             ConsolePanel(state)
@@ -85,157 +236,6 @@ private fun MainContent(state: MainState) {
                 modifier = Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = 16.dp)
             )
         }
-    }
-}
-
-@Composable
-private fun TopBar(state: MainState) {
-    val coroutineScope = rememberCoroutineScope()
-    
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(48.dp)
-            .background(MaterialTheme.colorScheme.surface)
-            .padding(horizontal = 16.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        TopMenuBar(
-            onFileAction = state::handleFileAction,
-            onEditAction = state::handleEditAction,
-            onViewAction = state::handleViewAction
-        )
-
-        Spacer(modifier = Modifier.weight(1f))
-
-        Tooltip("Disconnect") {
-            Button(
-                onClick = {
-                    coroutineScope.launch {
-                        AppContainer.debuggerUseCase.disconnect()
-                    }
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.StatusRed),
-                contentPadding = PaddingValues(0.dp),
-                modifier = Modifier.size(36.dp),
-                shape = RoundedCornerShape(4.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ExitToApp,
-                    contentDescription = "Disconnect",
-                    tint = Color.White,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun Sidebar(state: MainState) {
-    AnimatedVisibility(
-        visible = state.isSidebarVisible,
-        enter = slideInHorizontally(initialOffsetX = { -it }, animationSpec = tween(200)) + fadeIn(tween(200)),
-        exit = slideOutHorizontally(targetOffsetX = { -it }, animationSpec = tween(200)) + fadeOut(tween(200))
-    ) {
-        Row(modifier = Modifier.fillMaxHeight()) {
-            ProcessManager(
-                onMapSelected = {
-                    state.activeMap = it
-                    state.selectedTab = 0
-                    state.isSidebarVisible = false
-                },
-                activeMap = state.activeMap,
-                activeMaps = state.activeMaps,
-                onMapsSelected = { maps ->
-                    state.activeMaps.clear()
-                    state.activeMaps.addAll(maps)
-                },
-                onCollapse = { state.isSidebarVisible = false }
-            )
-            VerticalDivider(modifier = Modifier.fillMaxHeight().width(1.dp), color = PS5ThemeColors.BorderColor)
-        }
-    }
-
-    if (!state.isSidebarVisible) {
-        SidebarToggle(onClick = { state.isSidebarVisible = true })
-        VerticalDivider(modifier = Modifier.fillMaxHeight().width(1.dp), color = PS5ThemeColors.BorderColor)
-    }
-}
-
-@Composable
-private fun SidebarToggle(onClick: () -> Unit) {
-    Box(
-        modifier = Modifier
-            .fillMaxHeight()
-            .width(28.dp)
-            .background(PS5ThemeColors.SecondaryBg)
-            .clickable { onClick() },
-        contentAlignment = Alignment.Center
-    ) {
-        val density = LocalDensity.current.density
-        Canvas(modifier = Modifier.size(24.dp)) {
-            val tintColor = PS5ThemeColors.AccentCyan
-            val path = androidx.compose.ui.graphics.Path().apply {
-                moveTo(9f * density, 6f * density)
-                lineTo(15f * density, 12f * density)
-                lineTo(9f * density, 18f * density)
-            }
-            drawPath(
-                path = path,
-                color = tintColor,
-                style = Stroke(width = 2f * density, cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round)
-            )
-        }
-    }
-}
-
-@Composable
-private fun DebugSidebarToggle(onClick: () -> Unit) {
-    Box(
-        modifier = Modifier
-            .fillMaxHeight()
-            .width(28.dp)
-            .background(PS5ThemeColors.SecondaryBg)
-            .clickable { onClick() },
-        contentAlignment = Alignment.Center
-    ) {
-        val density = LocalDensity.current.density
-        Canvas(modifier = Modifier.size(24.dp)) {
-            val tintColor = PS5ThemeColors.AccentCyan
-            val path = androidx.compose.ui.graphics.Path().apply {
-                moveTo(15f * density, 6f * density)
-                lineTo(9f * density, 12f * density)
-                lineTo(15f * density, 18f * density)
-            }
-            drawPath(
-                path = path,
-                color = tintColor,
-                style = Stroke(width = 2f * density, cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round)
-            )
-        }
-    }
-}
-
-@Composable
-private fun DebugSidebarContainer(state: MainState) {
-    AnimatedVisibility(
-        visible = state.isDebugSidebarVisible,
-        enter = slideInHorizontally(initialOffsetX = { it }, animationSpec = tween(200)) + fadeIn(tween(200)),
-        exit = slideOutHorizontally(targetOffsetX = { it }, animationSpec = tween(200)) + fadeOut(tween(200))
-    ) {
-        Row(modifier = Modifier.fillMaxHeight()) {
-            VerticalDivider(modifier = Modifier.fillMaxHeight().width(1.dp), color = PS5ThemeColors.BorderColor)
-            DebugSidebar(
-                state = state,
-                onCollapse = { state.isDebugSidebarVisible = false }
-            )
-        }
-    }
-
-    if (!state.isDebugSidebarVisible) {
-        VerticalDivider(modifier = Modifier.fillMaxHeight().width(1.dp), color = PS5ThemeColors.BorderColor)
-        DebugSidebarToggle(onClick = { state.isDebugSidebarVisible = true })
     }
 }
 
@@ -336,6 +336,49 @@ private fun ConsolePanel(state: MainState) {
                     )
                 }
             )
+        }
+    }
+}
+
+@Composable
+private fun TopBar(state: MainState) {
+    val coroutineScope = rememberCoroutineScope()
+    
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(48.dp)
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(horizontal = 16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        TopMenuBar(
+            onFileAction = state::handleFileAction,
+            onEditAction = state::handleEditAction,
+            onViewAction = state::handleViewAction
+        )
+
+        Spacer(modifier = Modifier.weight(1f))
+
+        Tooltip("Disconnect") {
+            Button(
+                onClick = {
+                    coroutineScope.launch {
+                        AppContainer.debuggerUseCase.disconnect()
+                    }
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.StatusRed),
+                contentPadding = PaddingValues(0.dp),
+                modifier = Modifier.size(36.dp),
+                shape = RoundedCornerShape(4.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ExitToApp,
+                    contentDescription = "Disconnect",
+                    tint = Color.White,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
         }
     }
 }

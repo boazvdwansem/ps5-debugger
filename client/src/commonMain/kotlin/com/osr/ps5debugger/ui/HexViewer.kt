@@ -78,7 +78,7 @@ fun HexViewer(
             state.loadMemory()
         }
 
-        LaunchedEffect(activeMap, activeMaps.size, jumpToAddress, state.bytesPerRow, state.visibleRowsCount) {
+        LaunchedEffect(activeMap, activeMaps.toList(), jumpToAddress, state.bytesPerRow, state.visibleRowsCount) {
             val targets = if (activeMaps.isNotEmpty()) activeMaps.toList() else listOfNotNull(activeMap)
             if (targets.isNotEmpty()) {
                 val minStart = targets.minOf { it.start }
@@ -127,7 +127,7 @@ fun HexViewer(
         Column(
             modifier = modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = if (isMobile) 0.dp else 8.dp)
                 .focusRequester(state.focusRequester).focusable()
-                .pointerInput(Unit) { detectTapGestures(onTap = { if (!isMobile) state.focusRequester.requestFocus() }) }
+                .pointerInput(Unit) { detectTapGestures(onTap = { if (!isMobile) try { state.focusRequester.requestFocus() } catch (_: Exception) {} }) }
                 .onKeyEvent(state::handleKeyEvent)
         ) {
             HexToolbar(state, isMobile)
@@ -300,7 +300,7 @@ private fun HexGridBody(state: HexState, isMobile: Boolean, showAddress: Boolean
 
     Box(modifier = modifier) {
         Column(
-            modifier = Modifier.fillMaxSize().pointerInput(state.activeMap, state.bytesPerRow, density) {
+            modifier = Modifier.fillMaxSize().pointerInput(state, density) {
                 awaitPointerEventScope {
                     while (true) {
                         val event = awaitPointerEvent()
@@ -315,7 +315,11 @@ private fun HexGridBody(state: HexState, isMobile: Boolean, showAddress: Boolean
                             }
                             PointerEventType.Press -> {
                                 state.isMouseDown = true
-                                if (!isMobile) focusRequester.requestFocus()
+                                if (!isMobile) {
+                                    try {
+                                        focusRequester.requestFocus()
+                                    } catch (_: Exception) {}
+                                }
                                 state.touchStartPos = position
                                 state.touchStartScroll = state.scrollPosition
                                 state.isDraggingToScroll = false
@@ -444,15 +448,17 @@ private fun HexGridBody(state: HexState, isMobile: Boolean, showAddress: Boolean
                         Spacer(Modifier.height(6.dp))
                     }
 
-                    val pageStart = (rowAddress / state.pageSize) * state.pageSize
+                    val pageStart = ((rowAddress - state.startAddress) / state.pageSize) * state.pageSize + state.startAddress
                     val cachedPage = state.memoryCache[pageStart]
                     val offsetInPage = (rowAddress - pageStart).toInt()
                     
                     val stableRowBytes = remember(rowAddress, cachedPage) {
                         val bytes = ByteArray(state.bytesPerRow)
-                        if (cachedPage != null) {
+                        if (cachedPage != null && offsetInPage >= 0 && offsetInPage < cachedPage.size) {
                             val toCopy = minOf(state.bytesPerRow, cachedPage.size - offsetInPage)
-                            System.arraycopy(cachedPage, offsetInPage, bytes, 0, toCopy)
+                            if (toCopy > 0) {
+                                System.arraycopy(cachedPage, offsetInPage, bytes, 0, toCopy)
+                            }
                         }
                         StableRowBytes(bytes)
                     }
@@ -485,25 +491,40 @@ private fun BoxScope.HexScrollbar(state: HexState, modifier: Modifier = Modifier
     Box(modifier = modifier.background(PS5ThemeColors.SecondaryBg, RoundedCornerShape(4.dp))) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val totalBytes = maxOf(0L, state.endAddress - state.startAddress)
-            val rowCount = ((totalBytes + state.bytesPerRow - 1) / state.bytesPerRow).toInt()
+            val rowCount = if (totalBytes <= 0L) 0L else (totalBytes + state.bytesPerRow - 1) / state.bytesPerRow
             val trackHeight = maxHeight
-            val thumbHeight = if (rowCount > 0) (trackHeight * state.visibleRowsCount.toFloat() / rowCount).coerceAtLeast(30.dp) else trackHeight
+            
+            // Calculate thumbHeight carefully using Long math to prevent float overflow/infinity
+            val thumbHeight = if (rowCount > 0L) {
+                val ratio = state.visibleRowsCount.toDouble() / rowCount.toDouble()
+                val calcHeight = (trackHeight.value * ratio).dp
+                calcHeight.coerceIn(30.dp, trackHeight)
+            } else {
+                trackHeight
+            }
+            
             val maxOffset = trackHeight - thumbHeight
-            val thumbOffset = if (state.getMaxScrollPosition() > 0) maxOffset * (state.scrollPosition.toFloat() / state.getMaxScrollPosition()) else 0.dp
+            val maxScroll = state.getMaxScrollPosition()
+            val thumbOffset = if (maxScroll > 0L) {
+                val ratio = state.scrollPosition.toDouble() / maxScroll.toDouble()
+                (maxOffset.value * ratio).dp
+            } else {
+                0.dp
+            }
             
             Box(modifier = Modifier.fillMaxSize().pointerInput(thumbOffset, thumbHeight) {
                 detectTapGestures { pressOffset ->
-                    if (pressOffset.y < thumbOffset.toPx()) state.updateScrollPosition((state.scrollPosition - state.visibleRowsCount).coerceIn(0L, state.getMaxScrollPosition()))
-                    else if (pressOffset.y > (thumbOffset + thumbHeight).toPx()) state.updateScrollPosition((state.scrollPosition + state.visibleRowsCount).coerceIn(0L, state.getMaxScrollPosition()))
+                    if (pressOffset.y < thumbOffset.toPx()) state.updateScrollPosition((state.scrollPosition - state.visibleRowsCount).coerceIn(0L, maxScroll))
+                    else if (pressOffset.y > (thumbOffset + thumbHeight).toPx()) state.updateScrollPosition((state.scrollPosition + state.visibleRowsCount).coerceIn(0L, maxScroll))
                 }
             }) {
                 Box(modifier = Modifier.offset(y = thumbOffset).fillMaxWidth().height(thumbHeight).background(PS5ThemeColors.AccentCyan, RoundedCornerShape(4.dp))
-                    .pointerInput(maxOffset, state.getMaxScrollPosition()) {
+                    .pointerInput(maxOffset, maxScroll) {
                         detectDragGestures { _, dragAmount ->
                             val maxOffsetPx = maxOffset.toPx()
                             if (maxOffsetPx > 0f) {
-                                val deltaRows = (dragAmount.y / maxOffsetPx * state.getMaxScrollPosition()).toLong()
-                                state.updateScrollPosition((state.scrollPosition + deltaRows).coerceIn(0L, state.getMaxScrollPosition()))
+                                val deltaRows = (dragAmount.y / maxOffsetPx * maxScroll).toLong()
+                                state.updateScrollPosition((state.scrollPosition + deltaRows).coerceIn(0L, maxScroll))
                             }
                         }
                     }
