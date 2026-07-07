@@ -40,6 +40,7 @@ import androidx.compose.ui.text.withStyle
 import com.osr.ps5debugger.PS5ThemeColors
 import com.osr.ps5debugger.domain.model.MemoryRange
 import com.osr.ps5debugger.protocol.Ps5DisasmInstr
+import com.osr.ps5debugger.protocol.ProtocolConstants
 import com.osr.ps5debugger.ui.disasm.DisasmFormatter
 import com.osr.ps5debugger.util.copyToClipboard
 
@@ -50,7 +51,7 @@ data class CfgNode(
     val endAddr: Long,
     var x: Float = 0f,
     var y: Float = 0f,
-    var width: Float = 0f,
+    var width: Float = 400f,
     var height: Float = 0f,
     var borderColor: Color = Color(0xFF444444)
 )
@@ -99,13 +100,11 @@ fun GraphViewer(
     var lastCenteredId by remember { mutableStateOf<Long?>(null) }
     LaunchedEffect(nodes.size, filterFunctionAddr) {
         if (nodes.isNotEmpty() && lastCenteredId != filterFunctionAddr) {
-            val minX = nodes.minOf { it.x }
-            val maxX = nodes.maxOf { it.x + it.width }
-            val minY = nodes.minOf { it.y }
-            val graphWidth = maxX - minX
-            
-            scale = 0.7f
-            offset = Offset(-((minX + graphWidth / 2f) * scale * density) + (400f * density), -(minY * scale * density) + 100f)
+            val entryNode = if (filterFunctionAddr != null) nodes.firstOrNull { it.startAddr == filterFunctionAddr } else nodes.firstOrNull()
+            if (entryNode != null) {
+                scale = 0.7f
+                offset = Offset(-(entryNode.x * scale * density) + (400f * density), -(entryNode.y * scale * density) + 100f)
+            }
             lastCenteredId = filterFunctionAddr
         }
     }
@@ -251,7 +250,6 @@ fun NodeBlock(
     onLineClicked: (Long, Int, Boolean) -> Unit,
     onLineRightClicked: (Long, Offset) -> Unit
 ) {
-    val density = LocalDensity.current.density
     Box(
         Modifier
             .offset(x = node.x.dp, y = node.y.dp)
@@ -366,192 +364,206 @@ fun getMnemonicColor(instr: Ps5DisasmInstr) = when {
 fun DrawScope.drawNinjaEdge(from: CfgNode, to: CfgNode, type: EdgeType) {
     val d = density
     val color = when(type) {
-        EdgeType.TRUE -> Color(0xFF00FF00) // GREEN
-        EdgeType.FALSE -> Color(0xFFFF0000) // RED
-        EdgeType.UNCONDITIONAL -> Color(0xFF00BFFF) // BLUE
+        EdgeType.TRUE -> Color(0xFF4CAF50) // Green
+        EdgeType.FALSE -> Color(0xFFF44336) // Red
+        else -> Color(0xFF2196F3) // Blue
     }
     
-    val xOff = when(type) {
-        EdgeType.TRUE -> -30f * d
-        EdgeType.FALSE -> 30f * d
-        else -> 0f
-    }
-    
-    val start = Offset((from.x + from.width/2f) * d + xOff, (from.y + from.height) * d)
-    val end = Offset((to.x + to.width/2f) * d + xOff / 2f, to.y * d)
+    val startX = (from.x + from.width / 2f) * d
+    val startY = (from.y + from.height) * d
+    val endX = (to.x + to.width / 2f) * d
+    val endY = to.y * d
     
     val path = Path().apply {
-        moveTo(start.x, start.y)
-        if (from.id == to.id) {
-            cubicTo(start.x + 80f*d, start.y + 80f*d, start.x + 80f*d, start.y - 80f*d, start.x + 15f*d, start.y - 5f*d)
-        } else if (end.y > start.y) {
-            val midY = start.y + (end.y - start.y) / 2f
-            cubicTo(start.x, midY, end.x, midY, end.x, end.y)
-        } else {
-            val side = if (start.x < end.x) -160f*d else 160f*d
-            lineTo(start.x, start.y + 30f*d)
-            lineTo(start.x + side, start.y + 30f*d)
-            lineTo(start.x + side, end.y - 30f*d)
-            lineTo(end.x, end.y - 30f*d)
-            lineTo(end.x, end.y)
+        moveTo(startX, startY)
+        if (from.id == to.id) { // Self loop
+            cubicTo(startX + 60*d, startY + 60*d, startX + 60*d, startY - 60*d, startX + 10*d, startY - 5*d)
+        } else if (endY > startY) { // Forward edge
+            val midY = startY + (endY - startY) / 2f
+            cubicTo(startX, midY, endX, midY, endX, endY)
+        } else if (kotlin.math.abs(endY - startY) < 10f) { // Same level
+            val midX = (startX + endX) / 2f
+            val curveHeight = 40f * d
+            cubicTo(startX, startY + curveHeight, endX, endY + curveHeight, endX, endY)
+        } else { // Back edge
+            val curveOffset = if (startX <= endX) -100f * d else 100f * d
+            val verticalOffset = 40f * d
+            cubicTo(startX, startY + verticalOffset, startX + curveOffset, startY + verticalOffset, startX + curveOffset, (startY + endY) / 2f)
+            cubicTo(startX + curveOffset, endY - verticalOffset, endX, endY - verticalOffset, endX, endY)
         }
     }
-    drawPath(path, color, style = Stroke(3f * d))
     
-    val sz = 12f * d
-    val arrow = Path().apply {
-        moveTo(end.x, end.y)
-        lineTo(end.x - sz/1.5f, end.y - sz)
-        lineTo(end.x + sz/1.5f, end.y - sz)
+    drawPath(path, color, style = Stroke(width = 2.5f * d))
+    
+    // Arrow head
+    val arrowSize = 10f * d
+    val arrowPath = Path().apply {
+        moveTo(endX, endY)
+        lineTo(endX - arrowSize/2, endY - arrowSize)
+        lineTo(endX + arrowSize/2, endY - arrowSize)
         close()
     }
-    drawPath(arrow, color)
+    drawPath(arrowPath, color)
 }
 
 fun buildCfg(instructions: List<DisasmLine>, filterAddr: Long?): Pair<List<CfgNode>, List<CfgEdge>> {
     if (instructions.isEmpty()) return Pair(emptyList(), emptyList())
     val instrs = instructions.sortedBy { it.instr.addr }
     
+    // 1. Identify leaders (start of basic blocks)
     val leaders = mutableSetOf<Long>()
     leaders.add(instrs.first().instr.addr)
     for (i in instrs.indices) {
         val instr = instrs[i].instr
-        val mnemonic = DisasmFormatter.getMnemonic(instr)
-        val isUnconditionalJmp = instr.isJmp || mnemonic == "JMP"
-        val isConditionalJmp = instr.isCondJmp || (mnemonic.startsWith("J") && !isUnconditionalJmp)
-        val isReturn = instr.isRet || mnemonic == "RET"
+        val mnemonic = DisasmFormatter.getMnemonic(instr).uppercase().trim()
         
-        if (isUnconditionalJmp || isConditionalJmp || isReturn) {
-            if (instr.ripRelTarget != 0L) leaders.add(instr.ripRelTarget)
-            // Only add fallthrough as leader for conditional jumps or non-branching instructions
-            if (isConditionalJmp && i + 1 < instrs.size) leaders.add(instrs[i+1].instr.addr)
-            if (isReturn || isUnconditionalJmp) {
-                if (i + 1 < instrs.size) leaders.add(instrs[i+1].instr.addr)
+        if (instr.isJmp || instr.isCondJmp || instr.isRet || mnemonic == "JMP" || (mnemonic.startsWith("J") && mnemonic != "JNOP")) {
+            if (instr.ripRelTarget != 0L) {
+                leaders.add(instr.ripRelTarget)
+            }
+            if (i + 1 < instrs.size) {
+                leaders.add(instrs[i+1].instr.addr)
             }
         }
     }
     
+    // 2. Build Basic Blocks (Nodes)
     val allNodes = mutableListOf<CfgNode>()
-    var cur = mutableListOf<DisasmLine>()
+    var currentBlockInstrs = mutableListOf<DisasmLine>()
     for (line in instrs) {
-        if (cur.isNotEmpty() && leaders.contains(line.instr.addr)) {
-            allNodes.add(CfgNode(allNodes.size, cur, cur.first().instr.addr, cur.last().instr.addr))
-            cur = mutableListOf()
+        if (currentBlockInstrs.isNotEmpty() && leaders.contains(line.instr.addr)) {
+            allNodes.add(CfgNode(allNodes.size, currentBlockInstrs, currentBlockInstrs.first().instr.addr, currentBlockInstrs.last().instr.addr))
+            currentBlockInstrs = mutableListOf()
         }
-        cur.add(line)
+        currentBlockInstrs.add(line)
     }
-    if (cur.isNotEmpty()) allNodes.add(CfgNode(allNodes.size, cur, cur.first().instr.addr, cur.last().instr.addr))
+    if (currentBlockInstrs.isNotEmpty()) {
+        allNodes.add(CfgNode(allNodes.size, currentBlockInstrs, currentBlockInstrs.first().instr.addr, currentBlockInstrs.last().instr.addr))
+    }
     
     val addrToNodeId = mutableMapOf<Long, Int>()
     for (n in allNodes) {
-        for (l in n.instructions) addrToNodeId[l.instr.addr] = n.id
+        for (l in n.instructions) {
+            addrToNodeId[l.instr.addr] = n.id
+        }
     }
     
+    // 3. Resolve Edges
     val allEdges = mutableListOf<CfgEdge>()
     for (n in allNodes) {
         val lastLine = n.instructions.lastOrNull() ?: continue
         val last = lastLine.instr
+        val mnemonic = DisasmFormatter.getMnemonic(last).uppercase().trim()
         
-        // Use mnemonic fallback if flags are weird
-        val mnemonic = DisasmFormatter.getMnemonic(last)
-        val isUnconditionalJmp = last.isJmp || mnemonic == "JMP"
-        val isConditionalJmp = last.isCondJmp || (mnemonic.startsWith("J") && !isUnconditionalJmp)
+        val isUnconditional = last.isJmp || mnemonic == "JMP"
+        val isConditional = last.isCondJmp || (mnemonic.startsWith("J") && !isUnconditional && mnemonic != "JNOP")
         val isReturn = last.isRet || mnemonic == "RET"
 
-        if (isConditionalJmp) {
-            val tId = addrToNodeId[last.ripRelTarget]
-            if (tId != null) allEdges.add(CfgEdge(n.id, tId, EdgeType.TRUE))
-            
-            val fId = addrToNodeId[last.addr + last.length]
-            if (fId != null) allEdges.add(CfgEdge(n.id, fId, EdgeType.FALSE))
-        } else if (isUnconditionalJmp) {
-            val tId = addrToNodeId[last.ripRelTarget]
-            if (tId != null) allEdges.add(CfgEdge(n.id, tId, EdgeType.UNCONDITIONAL))
+        if (isConditional) {
+            addrToNodeId[last.ripRelTarget]?.let { allEdges.add(CfgEdge(n.id, it, EdgeType.TRUE)) }
+            addrToNodeId[last.addr + last.length]?.let { allEdges.add(CfgEdge(n.id, it, EdgeType.FALSE)) }
+        } else if (isUnconditional) {
+            addrToNodeId[last.ripRelTarget]?.let { allEdges.add(CfgEdge(n.id, it, EdgeType.UNCONDITIONAL)) }
         } else if (!isReturn) {
-            val nId = addrToNodeId[last.addr + last.length]
-            if (nId != null && nId != n.id) allEdges.add(CfgEdge(n.id, nId, EdgeType.UNCONDITIONAL))
+            // Fallthrough to next block
+            addrToNodeId[last.addr + last.length]?.let { if (it != n.id) allEdges.add(CfgEdge(n.id, it, EdgeType.UNCONDITIONAL)) }
         }
     }
-
     
-    val filteredResult = if (filterAddr != null) {
+    // 4. Filter Reachability
+    val reachableNodes: List<CfgNode>
+    val reachableEdges: List<CfgEdge>
+    if (filterAddr != null) {
         val root = allNodes.firstOrNull { it.startAddr == filterAddr }
         if (root != null) {
             val seen = mutableSetOf(root.id)
-            val q = java.util.ArrayDeque<Int>()
-            q.add(root.id)
-            while(q.isNotEmpty()) {
+            val q = java.util.ArrayDeque<Int>().apply { add(root.id) }
+            while (q.isNotEmpty()) {
                 val u = q.poll()
-                for (edge in allEdges) {
-                    if (edge.from == u && seen.add(edge.to)) q.add(edge.to)
-                }
+                allEdges.filter { it.from == u }.forEach { if (seen.add(it.to)) q.add(it.to) }
             }
-            Pair(allNodes.filter { it.id in seen }, allEdges.filter { it.from in seen })
-        } else Pair(allNodes, allEdges)
-    } else Pair(allNodes, allEdges)
-
-    val finalNodes = filteredResult.first
-    val finalEdges = filteredResult.second
-
-    for (n in finalNodes) {
-        val lastLine = n.instructions.lastOrNull() ?: continue
-        val last = lastLine.instr
-        val isUnconditionalJmp = last.isJmp || DisasmFormatter.getMnemonic(last) == "JMP"
-        val isReturn = last.isRet || DisasmFormatter.getMnemonic(last) == "RET"
-        val hasOutgoing = finalEdges.any { it.from == n.id }
-
-        n.borderColor = when {
-            n.startAddr == filterAddr -> Color(0xFF39D353) // Green: Entry
-            isReturn -> Color(0xFF00BFFF) // Blue: Return
-            !hasOutgoing && (isUnconditionalJmp || last.isCall) && last.ripRelTarget == 0L -> Color.White // White: Unresolved terminal
-            !hasOutgoing && !isReturn -> Color(0xFFF85149) // Red: No-return exit
-            else -> Color.Black // Black: Ordinary
+            reachableNodes = allNodes.filter { it.id in seen }
+            reachableEdges = allEdges.filter { it.from in seen && it.to in seen }
+        } else {
+            reachableNodes = allNodes
+            reachableEdges = allEdges
         }
+    } else {
+        reachableNodes = allNodes
+        reachableEdges = allEdges
+    }
+
+    for (n in reachableNodes) {
+        val last = n.instructions.last().instr
+        val isRet = last.isRet || DisasmFormatter.getMnemonic(last).uppercase() == "RET"
+        n.borderColor = when {
+            n.startAddr == filterAddr -> Color(0xFF39D353)
+            isRet -> Color(0xFF00BFFF)
+            reachableEdges.none { it.from == n.id } -> Color(0xFFF85149)
+            else -> Color(0xFF444444)
+        }
+        // Set fixed dimensions for layout
+        n.width = 400f
+        n.height = n.instructions.size * 16f + 40f
     }
     
-    layoutNinja(finalNodes, finalEdges)
-    return Pair(finalNodes, finalEdges)
+    layoutNinja(reachableNodes, reachableEdges, filterAddr)
+    return Pair(reachableNodes, reachableEdges)
 }
 
-fun layoutNinja(nodes: List<CfgNode>, edges: List<CfgEdge>) {
+fun layoutNinja(nodes: List<CfgNode>, edges: List<CfgEdge>, entryAddr: Long?) {
     if (nodes.isEmpty()) return
+    
     val layers = mutableMapOf<Int, Int>()
-    val adj = nodes.associate { n: CfgNode -> n.id to edges.filter { e: CfgEdge -> e.from == n.id }.map { it.to } }
+    nodes.forEach { layers[it.id] = 0 }
+
+    // Topological Ranking
     val inDegree = mutableMapOf<Int, Int>().withDefault { 0 }
-    for (edge in edges) inDegree[edge.to] = inDegree.getValue(edge.to) + 1
+    edges.forEach { inDegree[it.to] = inDegree.getValue(it.to) + 1 }
     
-    val q = java.util.ArrayDeque<Int>()
-    for (node in nodes) {
-        if (inDegree.getValue(node.id) == 0) {
-            q.add(node.id)
-            layers[node.id] = 0
+    val roots = nodes.filter { inDegree.getValue(it.id) == 0 }
+    val queue = java.util.ArrayDeque<Int>()
+    
+    // Prioritize entryAddr node
+    val entryNode = nodes.firstOrNull { it.startAddr == entryAddr }
+    if (entryNode != null) {
+        queue.add(entryNode.id)
+    }
+    roots.forEach { if (it.id != entryNode?.id) queue.add(it.id) }
+    
+    if (queue.isEmpty()) queue.add(nodes[0].id)
+
+    val maxIters = nodes.size * nodes.size
+    var iters = 0
+    while (queue.isNotEmpty() && iters < maxIters) {
+        val u = queue.poll()
+        val currentRank = layers[u] ?: 0
+        iters++
+        
+        edges.filter { it.from == u }.forEach { edge ->
+            if (layers[edge.to]!! < currentRank + 1) {
+                layers[edge.to] = currentRank + 1
+                queue.add(edge.to)
+            }
         }
     }
-    if (q.isEmpty() && nodes.isNotEmpty()) { q.add(nodes[0].id); layers[nodes[0].id] = 0 }
+
+    // Horizontal Alignment
+    val nodesByLayer = nodes.groupBy { layers[it.id] ?: 0 }.toSortedMap()
+    var currentY = 50f
     
-    while(q.isNotEmpty()) {
-        val u = q.poll()
-        val l = layers[u] ?: 0
-        adj[u]?.forEach { v -> if ((layers[v] ?: -1) < l + 1) { layers[v] = l + 1; q.add(v) } }
-    }
-    
-    val nByL = nodes.groupBy { layers[it.id] ?: 0 }.toSortedMap()
-    for (node in nodes) {
-        node.width = 540f
-        node.height = node.instructions.size * 16f + 38f
-    }
-    
-    var curY = 50f
-    for (entry in nByL) {
-        val sorted = entry.value.sortedBy { it.startAddr }
-        val layerW = sorted.size * 540f + (sorted.size - 1) * 120f
-        var curX = -layerW / 2f
-        var maxH = 0f
-        for (node in sorted) {
-            node.x = curX; node.y = curY
-            curX += 540f + 120f
-            maxH = maxOf(maxH, node.height)
+    for (layer in nodesByLayer.values) {
+        val sortedLayer = layer.sortedBy { it.startAddr }
+        val layerWidth = sortedLayer.size * 400f + (sortedLayer.size - 1) * 80f
+        var currentX = -layerWidth / 2f
+        var maxHeight = 0f
+        
+        for (node in sortedLayer) {
+            node.x = currentX
+            node.y = currentY
+            currentX += 400f + 80f
+            maxHeight = maxOf(maxHeight, node.height)
         }
-        curY += maxH + 160f
+        currentY += maxHeight + 120f
     }
 }
