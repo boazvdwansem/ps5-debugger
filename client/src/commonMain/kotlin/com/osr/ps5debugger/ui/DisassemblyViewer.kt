@@ -83,35 +83,20 @@ fun DisassemblyViewer(
     selectionStart: Long? = null,
     selectionEnd: Long? = null,
     onSelectionChanged: ((Long?, Long?) -> Unit)? = null,
+    onJumpToAddress: ((Long) -> Unit)? = null,
     onJumpToHex: ((Long) -> Unit)? = null,
     showHexDetails: Boolean = false,
-    // Hoisted Debugger Session State
+    isLoading: Boolean = false,
     isAttached: Boolean,
-    onAttachedChanged: (Boolean) -> Unit,
     activeBreakpoints: MutableMap<Int, Long>,
-    activeWatchpoints: MutableMap<Int, Long>,
-    threadList: List<Int>,
-    onThreadListChanged: (List<Int>) -> Unit,
-    selectedLwpid: Int?,
-    onSelectedLwpidChanged: (Int?) -> Unit,
-    selectedRegs: GpRegs?,
-    onSelectedRegsChanged: (GpRegs?) -> Unit,
-    selectedDbRegs: DbRegs?,
-    onSelectedDbRegsChanged: (DbRegs?) -> Unit,
-    selectedFsGs: Pair<Long, Long>?,
-    onSelectedFsGsChanged: (Pair<Long, Long>?) -> Unit
+    activeWatchpoints: MutableMap<Int, Long>
 ) {
     val coroutineScope = rememberCoroutineScope()
     val client = AppContainer.clientAdapter.client
-    val pid = AppContainer.debuggerUseCase.activeProcess.value?.pid
-    val isConnectedFlow = AppContainer.debuggerUseCase.isConnected.collectAsState()
+    val activeProcess by AppContainer.debuggerUseCase.activeProcess.collectAsState()
+    val isConnected by AppContainer.debuggerUseCase.isConnected.collectAsState()
     
-    var startAddress by remember { mutableStateOf(activeMap?.start ?: 0L) }
     var goToAddressText by remember { mutableStateOf("") }
-    var isLoading by remember { mutableStateOf(false) }
-    
-    // Panels visibility
-    var isDebugPanelVisible by remember { mutableStateOf(true) }
     
     // Context Menu & Watchpoint Setup Dialog
     var showContextMenu by remember { mutableStateOf(false) }
@@ -139,15 +124,14 @@ fun DisassemblyViewer(
         }
     }
     
-    // Auto-update startAddress when map changes or jumpToAddress is requested
-    LaunchedEffect(activeMap, jumpToAddress) {
+    // Auto-update scrolling when jumpToAddress is requested
+    LaunchedEffect(activeMap, jumpToAddress, selectionStart, selectionEnd) {
         if (activeMap != null) {
             val target = jumpToAddress
             if (target != null && target >= activeMap.start && target < activeMap.end) {
                 // Determine if this jump is external or internal selection click
                 val isLocalSelection = target == selectionStart || target == selectionEnd
                 if (!isLocalSelection) {
-                    startAddress = target
                     goToAddressText = target.toString(16).uppercase()
                     
                     // Try to find the item in our loaded list and scroll to it
@@ -158,146 +142,17 @@ fun DisassemblyViewer(
                         } catch (_: Exception) {}
                     }
                 }
-            } else if (startAddress < activeMap.start || startAddress >= activeMap.end) {
-                startAddress = activeMap.start
             }
         }
     }
     
-    // Load initial disassembly instructions sequentially to prevent async propagation crashes
-    LaunchedEffect(pid, activeMap, startAddress, isConnectedFlow.value) {
-        if (pid != null && activeMap != null && isConnectedFlow.value) {
-            isLoading = true
-            try {
-                val len = minOf(65536L, activeMap.end - startAddress).toInt() // Load larger initial chunk (64KB)
-                if (len > 0) {
-                    val rawInstrs = client.disassembleRegion(pid, startAddress, len, 500)
-                    val rawBytes = try {
-                        client.readMemory(pid, startAddress, len)
-                    } catch (_: Exception) {
-                        ByteArray(0)
-                    }
-                    
-                    val lines = rawInstrs.map { instr ->
-                        val offset = (instr.addr - startAddress).toInt()
-                        val instrBytes = if (offset >= 0 && offset + instr.length <= rawBytes.size) {
-                            rawBytes.copyOfRange(offset, offset + instr.length)
-                        } else {
-                            ByteArray(0)
-                        }
-                        DisasmLine(instr, instrBytes)
-                    }
-                    
-                    instructions.clear()
-                    instructions.addAll(lines)
-                    isLoading = false
-                    
-                    // Scroll to the jump target if selected
-                    if (jumpToAddress != null) {
-                        val index = instructions.indexOfFirst { it.instr.addr == jumpToAddress }
-                        if (index != -1) {
-                            try {
-                                listState.scrollToItem(index)
-                            } catch (_: Exception) {}
-                        }
-                    }
-                } else {
-                    isLoading = false
-                }
-            } catch (e: Exception) {
-                AppContainer.debuggerUseCase.log("DISASM", "Disassembly failed, falling back to raw hex formatting: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.WARN)
-                try {
-                    val fallbackLen = minOf(4096, (activeMap.end - startAddress).toInt()) // Load smaller chunk for raw hex view fallback (4KB)
-                    if (fallbackLen > 0) {
-                        val rawData = client.readMemory(pid, startAddress, fallbackLen)
-                        val fallbackList = mutableListOf<DisasmLine>()
-                        var addrOffset = 0
-                        while (addrOffset < rawData.size) {
-                            val byteVal = rawData[addrOffset]
-                            val dummyInstr = Ps5DisasmInstr(
-                                addr = startAddress + addrOffset,
-                                ripRelTarget = 0L,
-                                memDisp = (byteVal.toInt() and 0xFF).toLong(),
-                                length = 1,
-                                kind = 0,
-                                memBaseReg = -1,
-                                memIndexReg = -1,
-                                memScale = 0,
-                                mnemonicLo = -1
-                            )
-                            fallbackList.add(DisasmLine(dummyInstr, byteArrayOf(byteVal)))
-                            addrOffset += 1
-                        }
-                        instructions.clear()
-                        instructions.addAll(fallbackList)
-                        
-                        if (jumpToAddress != null) {
-                            val index = instructions.indexOfFirst { it.instr.addr == jumpToAddress }
-                            if (index != -1) {
-                                try {
-                                    listState.scrollToItem(index)
-                                } catch (_: Exception) {}
-                            }
-                        }
-                    }
-                } catch (readErr: Exception) {
-                    AppContainer.debuggerUseCase.log("DISASM", "Fallback raw memory read failed: ${readErr.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
-                }
-                isLoading = false
-            }
-        }
-    }
-
-    // Refresh threads and registers helper
-    val refreshThreadData: suspend () -> Unit = {
-        if (pid != null && isAttached && isConnectedFlow.value) {
-            try {
-                val threads = client.getThreadList()
-                onThreadListChanged(threads)
-                if (selectedLwpid == null || !threads.contains(selectedLwpid)) {
-                    onSelectedLwpidChanged(threads.firstOrNull())
-                }
-                val currentLwpid = selectedLwpid ?: threads.firstOrNull()
-                if (currentLwpid != null) {
-                    onSelectedRegsChanged(client.getRegs(currentLwpid))
-                    onSelectedDbRegsChanged(client.getDbRegs(currentLwpid))
-                    onSelectedFsGsChanged(client.getFsGsBase(currentLwpid))
-                } else {
-                    onSelectedRegsChanged(null)
-                    onSelectedDbRegsChanged(null)
-                    onSelectedFsGsChanged(null)
-                }
-            } catch (e: Exception) {
-                AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to retrieve thread/register values: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.WARN)
-            }
-        }
-    }
-
-    // Watch selected thread changes to reload registers
-    LaunchedEffect(selectedLwpid) {
-        val lwpid = selectedLwpid
-        if (isAttached && lwpid != null && isConnectedFlow.value) {
-            try {
-                onSelectedRegsChanged(client.getRegs(lwpid))
-                onSelectedDbRegsChanged(client.getDbRegs(lwpid))
-                onSelectedFsGsChanged(client.getFsGsBase(lwpid))
-            } catch (_: Exception) {}
-        }
-    }
-
-    // Auto-refresh thread and register info on load if attached
-    LaunchedEffect(isAttached) {
-        if (isAttached) {
-            refreshThreadData()
-        }
-    }
-
     // Infinite Scroll & Bidirectional Loading
     val firstVisibleIndex by remember { derivedStateOf { listState.firstVisibleItemIndex } }
     
     // Load next block (scrolling down)
-    LaunchedEffect(firstVisibleIndex, instructions.size, isLoading, isConnectedFlow.value) {
-        if (!isLoading && activeMap != null && pid != null && instructions.isNotEmpty() && isConnectedFlow.value) {
+    LaunchedEffect(firstVisibleIndex, instructions.size, isLoading, isConnected) {
+        val pid = activeProcess?.pid
+        if (!isLoading && activeMap != null && pid != null && instructions.isNotEmpty() && isConnected) {
             if (firstVisibleIndex + 50 >= instructions.size) {
                 val lastLine = instructions.last()
                 val nextStart = lastLine.instr.addr + lastLine.instr.length
@@ -331,8 +186,9 @@ fun DisassemblyViewer(
     }
 
     // Prepend previous block (scrolling up)
-    LaunchedEffect(firstVisibleIndex, isLoading, isConnectedFlow.value) {
-        if (!isLoading && activeMap != null && pid != null && instructions.isNotEmpty() && isConnectedFlow.value) {
+    LaunchedEffect(firstVisibleIndex, isLoading, isConnected) {
+        val pid = activeProcess?.pid
+        if (!isLoading && activeMap != null && pid != null && instructions.isNotEmpty() && isConnected) {
             if (firstVisibleIndex <= 5) {
                 val firstLine = instructions.first()
                 if (firstLine.instr.addr > activeMap.start) {
@@ -400,7 +256,7 @@ fun DisassemblyViewer(
                 onClick = {
                     val addr = goToAddressText.trim().toLongOrNull(16)
                     if (activeMap != null && addr != null && addr in activeMap.start..activeMap.end) {
-                        startAddress = addr
+                        onJumpToAddress?.invoke(addr)
                     } else {
                         AppContainer.debuggerUseCase.log("DISASM", "Address out of range or invalid", com.osr.ps5debugger.domain.model.LogEntry.Level.WARN)
                     }
@@ -421,12 +277,13 @@ fun DisassemblyViewer(
             Button(
                 onClick = {
                     if (activeMap != null) {
-                        val prevAddr = maxOf(activeMap.start, startAddress - 8192)
-                        startAddress = prevAddr
+                        val currentTop = instructions.firstOrNull()?.instr?.addr ?: jumpToAddress ?: activeMap.start
+                        val prevAddr = maxOf(activeMap.start, currentTop - 8192)
+                        onJumpToAddress?.invoke(prevAddr)
                         goToAddressText = prevAddr.toString(16).uppercase()
                     }
                 },
-                enabled = activeMap != null && startAddress > activeMap.start,
+                enabled = activeMap != null && (instructions.firstOrNull()?.instr?.addr ?: activeMap.start) > activeMap.start,
                 colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.SecondaryBg)
             ) {
                 Text("Prev Page", color = PS5ThemeColors.TextMain)
@@ -438,7 +295,7 @@ fun DisassemblyViewer(
                         val lastLine = instructions.last()
                         val nextAddr = lastLine.instr.addr + lastLine.instr.length
                         if (nextAddr < activeMap.end) {
-                            startAddress = nextAddr
+                            onJumpToAddress?.invoke(nextAddr)
                             goToAddressText = nextAddr.toString(16).uppercase()
                         }
                     }
@@ -450,7 +307,7 @@ fun DisassemblyViewer(
             }
         }
         
-        if (activeMap == null || pid == null) {
+        if (activeMap == null || activeProcess == null) {
             Box(Modifier.fillMaxSize().weight(1f), contentAlignment = Alignment.Center) {
                 Text("Select a Process and Virtual Memory Map to disassemble", style = MaterialTheme.typography.bodyLarge)
             }
@@ -459,539 +316,202 @@ fun DisassemblyViewer(
                 CircularProgressIndicator(color = PS5ThemeColors.AccentCyan)
             }
         } else {
-            Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
-                // Left Side: Disassembly List
-                Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(PS5ThemeColors.Surface, RoundedCornerShape(4.dp))
-                            .border(1.dp, PS5ThemeColors.BorderColor, RoundedCornerShape(4.dp))
-                            .padding(8.dp)
-                    ) {
-                        itemsIndexed(instructions) { idx, line ->
-                            val isSelected = isInstructionSelected(line.instr, selectionStart, selectionEnd)
-                            val hasBreakpoint = activeBreakpoints.values.contains(line.instr.addr) || activeWatchpoints.values.contains(line.instr.addr)
-                            
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                if (hasBreakpoint) {
-                                    Box(
-                                        modifier = Modifier
-                                            .padding(end = 4.dp)
-                                            .size(8.dp)
-                                            .background(Color.Red, RoundedCornerShape(4.dp))
-                                    )
-                                } else {
-                                    Spacer(Modifier.width(12.dp))
-                                }
-                                
-                                DisasmRow(
-                                    line = line,
-                                    isSelected = isSelected,
-                                    onAddressClicked = { addr, len, isShift ->
-                                        val firstAddr = instructions.firstOrNull()?.instr?.addr
-                                        val lastAddr = instructions.lastOrNull()?.let { it.instr.addr + it.instr.length }
-                                        val isAnchorInLoadedRange = selectionAnchor != null && firstAddr != null && lastAddr != null &&
-                                                selectionAnchor!! >= firstAddr && selectionAnchor!! <= lastAddr
-                                        
-                                        if (isShift && isAnchorInLoadedRange) {
-                                            val anchor = selectionAnchor!!
-                                            if (addr >= anchor) {
-                                                onSelectionChanged?.invoke(anchor, addr + len - 1)
-                                            } else {
-                                                val anchorInstr = instructions.firstOrNull { it.instr.addr == anchor }
-                                                val anchorLen = anchorInstr?.instr?.length ?: 1
-                                                onSelectionChanged?.invoke(anchor + anchorLen - 1, addr)
-                                            }
-                                        } else {
-                                            selectionAnchor = addr
-                                            onSelectionChanged?.invoke(addr, addr + len - 1)
-                                        }
-                                    },
-                                    onAddressRightClicked = { addr, bytes, disasmText, offset ->
-                                        contextMenuAddr = addr
-                                        contextMenuBytes = bytes
-                                        contextMenuDisasm = disasmText
-                                        contextMenuOffset = offset
-                                        showContextMenu = true
-                                    },
-                                    showHexDetails = showHexDetails
-                                )
-                                val isMenuForThisRow = showContextMenu && contextMenuAddr == line.instr.addr
-                                DropdownMenu(
-                                    expanded = isMenuForThisRow,
-                                    onDismissRequest = { showContextMenu = false },
-                                    offset = contextMenuOffset
-                                ) {
-                                    val addr = contextMenuAddr
-                                    if (addr != null) {
-                                        if (isAttached) { // Only show breakpoint options if debugger is attached!
-                                            val activeBpIndex = activeBreakpoints.entries.firstOrNull { it.value == addr }?.key
-                                            if (activeBpIndex != null) {
-                                                DropdownMenuItem(
-                                                    text = { Text("Remove Breakpoint", color = Color.Red, fontSize = 12.sp) },
-                                                    onClick = {
-                                                        coroutineScope.launch {
-                                                            try {
-                                                                // Speculative local toggle
-                                                                activeBreakpoints.remove(activeBpIndex)
-                                                                val ok = client.setBreakpoint(activeBpIndex, false, addr)
-                                                                if (!ok) {
-                                                                    activeBreakpoints[activeBpIndex] = addr
-                                                                    AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to remove breakpoint on PS5", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
-                                                                } else {
-                                                                    AppContainer.debuggerUseCase.log("DEBUGGER", "Removed breakpoint at 0x${addr.toString(16)}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
-                                                                }
-                                                            } catch (e: Exception) {
-                                                                activeBreakpoints[activeBpIndex] = addr
-                                                                AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to remove breakpoint: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
-                                                            }
-                                                        }
-                                                        showContextMenu = false
-                                                    }
-                                                )
-                                            } else {
-                                                DropdownMenuItem(
-                                                    text = { Text("Set Software Breakpoint", fontSize = 12.sp) },
-                                                    onClick = {
-                                                        coroutineScope.launch {
-                                                            try {
-                                                                // Find first free slot (0-29)
-                                                                val freeIndex = (0..29).firstOrNull { !activeBreakpoints.containsKey(it) }
-                                                                if (freeIndex != null) {
-                                                                    // Speculative local toggle
-                                                                    activeBreakpoints[freeIndex] = addr
-                                                                    val ok = client.setBreakpoint(freeIndex, true, addr)
-                                                                    if (!ok) {
-                                                                        activeBreakpoints.remove(freeIndex)
-                                                                        AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to set breakpoint on PS5", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
-                                                                    } else {
-                                                                        AppContainer.debuggerUseCase.log("DEBUGGER", "Set Software Breakpoint in slot $freeIndex at 0x${addr.toString(16)}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
-                                                                    }
-                                                                } else {
-                                                                    AppContainer.debuggerUseCase.log("DEBUGGER", "No software breakpoint slots remaining! (Max 30)", com.osr.ps5debugger.domain.model.LogEntry.Level.WARN)
-                                                                }
-                                                            } catch (e: Exception) {
-                                                                AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to set breakpoint: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
-                                                            }
-                                                        }
-                                                        showContextMenu = false
-                                                    }
-                                                )
-                                            }
-                                            
-                                            val activeWpSlot = activeWatchpoints.entries.firstOrNull { it.value == addr }?.key
-                                            if (activeWpSlot != null) {
-                                                DropdownMenuItem(
-                                                    text = { Text("Remove Watchpoint", color = Color.Red, fontSize = 12.sp) },
-                                                    onClick = {
-                                                        coroutineScope.launch {
-                                                            try {
-                                                                activeWatchpoints.remove(activeWpSlot)
-                                                                val ok = client.setWatchpoint(activeWpSlot, false, 1, 1, addr)
-                                                                if (!ok) {
-                                                                    activeWatchpoints[activeWpSlot] = addr
-                                                                    AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to remove watchpoint on PS5", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
-                                                                } else {
-                                                                    AppContainer.debuggerUseCase.log("DEBUGGER", "Removed hardware watchpoint at 0x${addr.toString(16)}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
-                                                                }
-                                                            } catch (e: Exception) {
-                                                                activeWatchpoints[activeWpSlot] = addr
-                                                                AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to remove watchpoint: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
-                                                            }
-                                                        }
-                                                        showContextMenu = false
-                                                    }
-                                                )
-                                            } else {
-                                                DropdownMenuItem(
-                                                    text = { Text("Set Hardware Watchpoint...", fontSize = 12.sp) },
-                                                    onClick = {
-                                                        showWatchpointDialog = true
-                                                        showContextMenu = false
-                                                    }
-                                                )
-                                            }
-                                            HorizontalDivider(color = PS5ThemeColors.BorderColor)
-                                        }
-                                    }
-                                    
-                                    DropdownMenuItem(
-                                        text = { Text("Copy Address", fontSize = 12.sp) },
-                                        onClick = {
-                                            if (contextMenuAddr != null) {
-                                                copyToClipboard(String.format("0x%012X", contextMenuAddr))
-                                            }
-                                            showContextMenu = false
-                                        }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("Copy Hex Bytes", fontSize = 12.sp) },
-                                        onClick = {
-                                            if (contextMenuBytes.isNotEmpty()) {
-                                                copyToClipboard(contextMenuBytes.joinToString(" ") { String.format("%02X", it) })
-                                            }
-                                            showContextMenu = false
-                                        }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("Copy Disassembly", fontSize = 12.sp) },
-                                        onClick = {
-                                            if (contextMenuDisasm.isNotEmpty()) {
-                                                copyToClipboard(contextMenuDisasm)
-                                            }
-                                            showContextMenu = false
-                                        }
-                                    )
-                                    if (onJumpToHex != null && contextMenuAddr != null) {
-                                        HorizontalDivider(color = PS5ThemeColors.BorderColor)
-                                        DropdownMenuItem(
-                                            text = { Text("Jump to Hex Viewer", fontSize = 12.sp, color = PS5ThemeColors.AccentCyan) },
-                                            onClick = {
-                                                onJumpToHex(contextMenuAddr!!)
-                                                showContextMenu = false
-                                            }
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                // Right Side: Debugger & Control Panel
-                if (isDebugPanelVisible) {
-                    VerticalDivider(color = PS5ThemeColors.BorderColor, modifier = Modifier.padding(horizontal = 8.dp))
-                    
-                    Column(
-                        modifier = Modifier
-                            .width(340.dp)
-                            .fillMaxHeight()
-                            .background(PS5ThemeColors.SecondaryBg, RoundedCornerShape(4.dp))
-                            .border(1.dp, PS5ThemeColors.BorderColor, RoundedCornerShape(4.dp))
-                            .padding(12.dp)
-                    ) {
-                        Text(
-                            text = "DEBUGGER",
-                            color = PS5ThemeColors.AccentCyan,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(bottom = 8.dp)
-                        )
+            // Main Disassembly List
+            Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(PS5ThemeColors.Surface, RoundedCornerShape(4.dp))
+                        .border(1.dp, PS5ThemeColors.BorderColor, RoundedCornerShape(4.dp))
+                        .padding(8.dp)
+                ) {
+                    itemsIndexed(instructions) { idx, line ->
+                        val isSelected = isInstructionSelected(line.instr, selectionStart, selectionEnd)
+                        val hasBreakpoint = activeBreakpoints.values.contains(line.instr.addr) || activeWatchpoints.values.contains(line.instr.addr)
                         
-                        // Attach / Detach controls
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            Button(
-                                onClick = {
-                                    coroutineScope.launch {
-                                        try {
-                                            if (isAttached) {
-                                                try {
-                                                    client.detach()
-                                                } catch (_: Exception) {}
-                                                onAttachedChanged(false)
-                                                activeBreakpoints.clear()
-                                                activeWatchpoints.clear()
-                                                onThreadListChanged(emptyList())
-                                                onSelectedLwpidChanged(null)
-                                                onSelectedRegsChanged(null)
-                                                AppContainer.debuggerUseCase.log("DEBUGGER", "Detached from target process", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
-                                            } else {
-                                                if (client.attach(pid)) {
-                                                    onAttachedChanged(true)
-                                                    AppContainer.debuggerUseCase.log("DEBUGGER", "Attached to process pid $pid. (Async interrupt channel ready on port 755)", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
-                                                    refreshThreadData()
-                                                }
-                                            }
-                                        } catch (e: Exception) {
-                                            AppContainer.debuggerUseCase.log("DEBUGGER", "Attach/Detach failed: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                            if (hasBreakpoint) {
+                                Box(
+                                    modifier = Modifier
+                                        .padding(end = 4.dp)
+                                        .size(8.dp)
+                                        .background(Color.Red, RoundedCornerShape(4.dp))
+                                )
+                            } else {
+                                Spacer(Modifier.width(12.dp))
+                            }
+                            
+                            DisasmRow(
+                                line = line,
+                                isSelected = isSelected,
+                                onAddressClicked = { addr, len, isShift ->
+                                    val firstAddr = instructions.firstOrNull()?.instr?.addr
+                                    val lastAddr = instructions.lastOrNull()?.let { it.instr.addr + it.instr.length }
+                                    val isAnchorInLoadedRange = selectionAnchor != null && firstAddr != null && lastAddr != null &&
+                                            selectionAnchor!! >= firstAddr && selectionAnchor!! <= lastAddr
+                                    
+                                    if (isShift && isAnchorInLoadedRange) {
+                                        val anchor = selectionAnchor!!
+                                        if (addr >= anchor) {
+                                            onSelectionChanged?.invoke(anchor, addr + len - 1)
+                                        } else {
+                                            val anchorInstr = instructions.firstOrNull { it.instr.addr == anchor }
+                                            val anchorLen = anchorInstr?.instr?.length ?: 1
+                                            onSelectionChanged?.invoke(anchor + anchorLen - 1, addr)
                                         }
+                                    } else {
+                                        selectionAnchor = addr
+                                        onSelectionChanged?.invoke(addr, addr + len - 1)
                                     }
                                 },
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = if (isAttached) Color.Red else PS5ThemeColors.AccentCyan,
-                                    contentColor = Color.Black
-                                ),
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Text(if (isAttached) "Detach" else "Attach Target", fontWeight = FontWeight.Bold)
-                            }
-                            
-                            if (isAttached) {
-                                Button(
-                                    onClick = {
-                                        coroutineScope.launch {
-                                            try {
-                                                refreshThreadData()
-                                            } catch (_: Exception) {}
-                                        }
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.Surface)
-                                ) {
-                                    Text("Sync", color = PS5ThemeColors.TextMain)
-                                }
-                            }
-                        }
-                        
-                        if (isAttached) {
-                            Spacer(Modifier.height(12.dp))
-                            Text(
-                                text = "PROCESS CONTROLS",
-                                color = PS5ThemeColors.TextMuted,
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold
+                                onAddressRightClicked = { addr, bytes, disasmText, offset ->
+                                    contextMenuAddr = addr
+                                    contextMenuBytes = bytes
+                                    contextMenuDisasm = disasmText
+                                    contextMenuOffset = offset
+                                    showContextMenu = true
+                                },
+                                showHexDetails = showHexDetails
                             )
-                            Spacer(Modifier.height(4.dp))
-                            
-                            // Process execution control
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            val isMenuForThisRow = showContextMenu && contextMenuAddr == line.instr.addr
+                            DropdownMenu(
+                                expanded = isMenuForThisRow,
+                                onDismissRequest = { showContextMenu = false },
+                                offset = contextMenuOffset
                             ) {
-                                Button(
-                                    onClick = {
-                                        coroutineScope.launch {
-                                            try {
-                                                if (client.resumeProcess()) {
-                                                    AppContainer.debuggerUseCase.log("DEBUGGER", "Process continued", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
-                                                }
-                                            } catch (e: Exception) {
-                                                AppContainer.debuggerUseCase.log("DEBUGGER", "Resume failed: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
-                                            }
-                                        }
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
-                                    modifier = Modifier.weight(1f),
-                                    contentPadding = PaddingValues(horizontal = 4.dp)
-                                ) {
-                                    Text("Continue", color = Color.White, fontSize = 11.sp)
-                                }
-                                Button(
-                                    onClick = {
-                                        coroutineScope.launch {
-                                            try {
-                                                if (client.stopProcess()) {
-                                                    AppContainer.debuggerUseCase.log("DEBUGGER", "Process halted/stopped", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
-                                                    refreshThreadData()
-                                                }
-                                            } catch (e: Exception) {
-                                                AppContainer.debuggerUseCase.log("DEBUGGER", "Halt failed: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
-                                            }
-                                        }
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC62828)),
-                                    modifier = Modifier.weight(1f),
-                                    contentPadding = PaddingValues(horizontal = 4.dp)
-                                ) {
-                                    Text("Halt", color = Color.White, fontSize = 11.sp)
-                                }
-                                Button(
-                                    onClick = {
-                                        coroutineScope.launch {
-                                            try {
-                                                if (client.stepProcess()) {
-                                                    AppContainer.debuggerUseCase.log("DEBUGGER", "Process single stepped", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
-                                                    refreshThreadData()
-                                                }
-                                            } catch (e: Exception) {
-                                                AppContainer.debuggerUseCase.log("DEBUGGER", "Step failed: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
-                                            }
-                                        }
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.Surface),
-                                    modifier = Modifier.weight(1f),
-                                    contentPadding = PaddingValues(horizontal = 4.dp)
-                                ) {
-                                    Text("Step", color = PS5ThemeColors.TextMain, fontSize = 11.sp)
-                                }
-                            }
-                            
-                            Spacer(Modifier.height(12.dp))
-                            Text(
-                                text = "THREADS (${threadList.size})",
-                                color = PS5ThemeColors.TextMuted,
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Spacer(Modifier.height(4.dp))
-                            
-                            // Threads dropdown selection
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                var expandedThreads by remember { mutableStateOf(false) }
-                                Box(modifier = Modifier.weight(1f)) {
-                                    OutlinedButton(
-                                        onClick = { expandedThreads = true },
-                                        modifier = Modifier.fillMaxWidth(),
-                                        shape = RoundedCornerShape(4.dp)
-                                    ) {
-                                        Text(
-                                            text = selectedLwpid?.let { "Thread LWPID: $it" } ?: "Select Thread",
-                                            color = PS5ThemeColors.TextMain,
-                                            fontSize = 11.sp
-                                        )
-                                    }
-                                    DropdownMenu(
-                                        expanded = expandedThreads,
-                                        onDismissRequest = { expandedThreads = false }
-                                    ) {
-                                        threadList.forEach { lwpid ->
+                                val addr = contextMenuAddr
+                                if (addr != null) {
+                                    if (isAttached) { // Only show breakpoint options if debugger is attached!
+                                        val activeBpIndex = activeBreakpoints.entries.firstOrNull { it.value == addr }?.key
+                                        if (activeBpIndex != null) {
                                             DropdownMenuItem(
-                                                text = { Text("LWPID: $lwpid", fontSize = 12.sp) },
+                                                text = { Text("Remove Breakpoint", color = Color.Red, fontSize = 12.sp) },
                                                 onClick = {
-                                                    onSelectedLwpidChanged(lwpid)
-                                                    expandedThreads = false
+                                                    coroutineScope.launch {
+                                                        try {
+                                                            activeBreakpoints.remove(activeBpIndex)
+                                                            val ok = client.setBreakpoint(activeBpIndex, false, addr)
+                                                            if (!ok) {
+                                                                activeBreakpoints[activeBpIndex] = addr
+                                                                AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to remove breakpoint on PS5", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                                                            } else {
+                                                                AppContainer.debuggerUseCase.log("DEBUGGER", "Removed breakpoint at 0x${addr.toString(16)}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                                                            }
+                                                        } catch (e: Exception) {
+                                                            activeBreakpoints[activeBpIndex] = addr
+                                                            AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to remove breakpoint: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                                                        }
+                                                    }
+                                                    showContextMenu = false
+                                                }
+                                            )
+                                        } else {
+                                            DropdownMenuItem(
+                                                text = { Text("Set Software Breakpoint", fontSize = 12.sp) },
+                                                onClick = {
+                                                    coroutineScope.launch {
+                                                        try {
+                                                            val freeIndex = (0..29).firstOrNull { !activeBreakpoints.containsKey(it) }
+                                                            if (freeIndex != null) {
+                                                                activeBreakpoints[freeIndex] = addr
+                                                                val ok = client.setBreakpoint(freeIndex, true, addr)
+                                                                if (!ok) {
+                                                                    activeBreakpoints.remove(freeIndex)
+                                                                    AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to set breakpoint on PS5", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                                                                } else {
+                                                                    AppContainer.debuggerUseCase.log("DEBUGGER", "Set Software Breakpoint in slot $freeIndex at 0x${addr.toString(16)}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                                                                }
+                                                            } else {
+                                                                AppContainer.debuggerUseCase.log("DEBUGGER", "No software breakpoint slots remaining! (Max 30)", com.osr.ps5debugger.domain.model.LogEntry.Level.WARN)
+                                                            }
+                                                        } catch (e: Exception) {
+                                                            val indexToRemove = activeBreakpoints.entries.firstOrNull { it.value == addr }?.key
+                                                            if (indexToRemove != null) activeBreakpoints.remove(indexToRemove)
+                                                            AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to set breakpoint: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                                                        }
+                                                    }
+                                                    showContextMenu = false
                                                 }
                                             )
                                         }
+                                        
+                                        val activeWpSlot = activeWatchpoints.entries.firstOrNull { it.value == addr }?.key
+                                        if (activeWpSlot != null) {
+                                            DropdownMenuItem(
+                                                text = { Text("Remove Watchpoint", color = Color.Red, fontSize = 12.sp) },
+                                                onClick = {
+                                                    coroutineScope.launch {
+                                                        try {
+                                                            activeWatchpoints.remove(activeWpSlot)
+                                                            val ok = client.setWatchpoint(activeWpSlot, false, 1, 1, addr)
+                                                            if (!ok) {
+                                                                activeWatchpoints[activeWpSlot] = addr
+                                                                AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to remove watchpoint on PS5", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                                                            } else {
+                                                                AppContainer.debuggerUseCase.log("DEBUGGER", "Removed hardware watchpoint at 0x${addr.toString(16)}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                                                            }
+                                                        } catch (e: Exception) {
+                                                            activeWatchpoints[activeWpSlot] = addr
+                                                            AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to remove watchpoint: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                                                        }
+                                                    }
+                                                    showContextMenu = false
+                                                }
+                                            )
+                                        } else {
+                                            DropdownMenuItem(
+                                                text = { Text("Set Hardware Watchpoint...", fontSize = 12.sp) },
+                                                onClick = {
+                                                    showWatchpointDialog = true
+                                                    showContextMenu = false
+                                                }
+                                            )
+                                        }
+                                        HorizontalDivider(color = PS5ThemeColors.BorderColor)
                                     }
                                 }
-                            }
-                            
-                            val curLwpid = selectedLwpid
-                            if (curLwpid != null) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    Button(
-                                        onClick = {
-                                            coroutineScope.launch {
-                                                try {
-                                                    if (client.suspendThread(curLwpid)) {
-                                                        AppContainer.debuggerUseCase.log("DEBUGGER", "Suspended thread $curLwpid", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
-                                                    }
-                                                } catch (e: Exception) {
-                                                    AppContainer.debuggerUseCase.log("DEBUGGER", "Suspend thread failed: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
-                                                }
-                                            }
-                                        },
-                                        colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.Surface),
-                                        modifier = Modifier.weight(1f),
-                                        contentPadding = PaddingValues(horizontal = 2.dp)
-                                    ) {
-                                        Text("Suspend", fontSize = 10.sp, color = PS5ThemeColors.TextMain)
-                                    }
-                                    Button(
-                                        onClick = {
-                                            coroutineScope.launch {
-                                                try {
-                                                    if (client.resumeThread(curLwpid)) {
-                                                        AppContainer.debuggerUseCase.log("DEBUGGER", "Resumed thread $curLwpid", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
-                                                    }
-                                                } catch (e: Exception) {
-                                                    AppContainer.debuggerUseCase.log("DEBUGGER", "Resume thread failed: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
-                                                }
-                                            }
-                                        },
-                                        colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.Surface),
-                                        modifier = Modifier.weight(1f),
-                                        contentPadding = PaddingValues(horizontal = 2.dp)
-                                    ) {
-                                        Text("Resume", fontSize = 10.sp, color = PS5ThemeColors.TextMain)
-                                    }
-                                    Button(
-                                        onClick = {
-                                            coroutineScope.launch {
-                                                try {
-                                                    if (client.stepThread(curLwpid)) {
-                                                        AppContainer.debuggerUseCase.log("DEBUGGER", "Stepped thread $curLwpid", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
-                                                        refreshThreadData()
-                                                    }
-                                                } catch (e: Exception) {
-                                                    AppContainer.debuggerUseCase.log("DEBUGGER", "Step thread failed: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
-                                                }
-                                            }
-                                        },
-                                        colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.Surface),
-                                        modifier = Modifier.weight(1f),
-                                        contentPadding = PaddingValues(horizontal = 2.dp)
-                                    ) {
-                                        Text("Step", fontSize = 10.sp, color = PS5ThemeColors.TextMain)
-                                    }
-                                }
-                            }
-                            
-                            Spacer(Modifier.height(12.dp))
-                            Text(
-                                text = "REGISTERS (LWPID: ${selectedLwpid ?: "-"})",
-                                color = PS5ThemeColors.TextMuted,
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Spacer(Modifier.height(4.dp))
-                            
-                            // Registers values inspector list
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .fillMaxWidth()
-                                    .background(PS5ThemeColors.Surface, RoundedCornerShape(4.dp))
-                                    .border(1.dp, PS5ThemeColors.BorderColor, RoundedCornerShape(4.dp))
-                                    .padding(6.dp)
-                            ) {
-                                val regs = selectedRegs
-                                val dbregs = selectedDbRegs
-                                val fsgs = selectedFsGs
                                 
-                                if (regs != null) {
-                                    LazyColumn(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                        // GPR registers
-                                        item { RegisterRow("RIP", regs.rip) }
-                                        item { RegisterRow("RSP", regs.rsp) }
-                                        item { RegisterRow("RAX", regs.rax) }
-                                        item { RegisterRow("RBX", regs.rbx) }
-                                        item { RegisterRow("RCX", regs.rcx) }
-                                        item { RegisterRow("RDX", regs.rdx) }
-                                        item { RegisterRow("RSI", regs.rsi) }
-                                        item { RegisterRow("RDI", regs.rdi) }
-                                        item { RegisterRow("RBP", regs.rbp) }
-                                        item { RegisterRow("R8 ", regs.r8) }
-                                        item { RegisterRow("R9 ", regs.r9) }
-                                        item { RegisterRow("R10", regs.r10) }
-                                        item { RegisterRow("R11", regs.r11) }
-                                        item { RegisterRow("R12", regs.r12) }
-                                        item { RegisterRow("R13", regs.r13) }
-                                        item { RegisterRow("R14", regs.r14) }
-                                        item { RegisterRow("R15", regs.r15) }
-                                        item { RegisterRow("RFL", regs.rflags) }
-                                        
-                                        // FS/GS Base Addresses
-                                        if (fsgs != null) {
-                                            item { RegisterRow("FS_BASE", fsgs.first) }
-                                            item { RegisterRow("GS_BASE", fsgs.second) }
+                                DropdownMenuItem(
+                                    text = { Text("Copy Address", fontSize = 12.sp) },
+                                    onClick = {
+                                        if (contextMenuAddr != null) {
+                                            copyToClipboard(String.format("0x%012X", contextMenuAddr))
                                         }
-                                        
-                                        // Hardware Debug registers
-                                        if (dbregs != null) {
-                                            item { RegisterRow("DR0", dbregs.dr0) }
-                                            item { RegisterRow("DR1", dbregs.dr1) }
-                                            item { RegisterRow("DR2", dbregs.dr2) }
-                                            item { RegisterRow("DR3", dbregs.dr3) }
-                                            item { RegisterRow("DR6", dbregs.dr6) }
-                                            item { RegisterRow("DR7", dbregs.dr7) }
+                                        showContextMenu = false
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Copy Hex Bytes", fontSize = 12.sp) },
+                                    onClick = {
+                                        if (contextMenuBytes.isNotEmpty()) {
+                                            copyToClipboard(contextMenuBytes.joinToString(" ") { String.format("%02X", it) })
                                         }
+                                        showContextMenu = false
                                     }
-                                } else {
-                                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                        Text("No thread/register data", fontSize = 11.sp, color = PS5ThemeColors.TextMuted)
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Copy Disassembly", fontSize = 12.sp) },
+                                    onClick = {
+                                        if (contextMenuDisasm.isNotEmpty()) {
+                                            copyToClipboard(contextMenuDisasm)
+                                        }
+                                        showContextMenu = false
                                     }
+                                )
+                                if (onJumpToHex != null && contextMenuAddr != null) {
+                                    HorizontalDivider(color = PS5ThemeColors.BorderColor)
+                                    DropdownMenuItem(
+                                        text = { Text("Jump to Hex Viewer", fontSize = 12.sp, color = PS5ThemeColors.AccentCyan) },
+                                        onClick = {
+                                            onJumpToHex(contextMenuAddr!!)
+                                            showContextMenu = false
+                                        }
+                                    )
                                 }
-                            }
-                        } else {
-                            Box(Modifier.fillMaxSize().weight(1f), contentAlignment = Alignment.Center) {
-                                Text("Attach to target to inspect registers", fontSize = 11.sp, color = PS5ThemeColors.TextMuted)
                             }
                         }
                     }
@@ -1032,7 +552,7 @@ fun DisassemblyViewer(
                                 onClick = { watchpointType = 1 },
                                 label = { Text("Write", fontSize = 11.sp) },
                                 modifier = Modifier.padding(horizontal = 2.dp)
-                            )
+                              )
                             FilterChip(
                                 selected = watchpointType == 3,
                                 onClick = { watchpointType = 3 },
@@ -1060,7 +580,6 @@ fun DisassemblyViewer(
                         onClick = {
                             coroutineScope.launch {
                                 try {
-                                    // Translate size: 1B=0, 2B=1, 8B=2, 4B=3 (x86 values)
                                     val lenField = when (watchpointSize) {
                                         1 -> 0
                                         2 -> 1
@@ -1097,30 +616,6 @@ fun DisassemblyViewer(
     }
 }
 
-@Composable
-fun RegisterRow(name: String, value: Long) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = name,
-            fontFamily = FontFamily.Monospace,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Bold,
-            color = PS5ThemeColors.TextMuted,
-            modifier = Modifier.width(65.dp)
-        )
-        Text(
-            text = String.format("0x%016X", value),
-            fontFamily = FontFamily.Monospace,
-            fontSize = 11.sp,
-            color = Color(0xFF64FFDA) // Teal registers color
-        )
-    }
-}
-
 private fun isInstructionSelected(instr: Ps5DisasmInstr, start: Long?, end: Long?): Boolean {
     if (start == null || end == null) return false
     val lo = minOf(start, end)
@@ -1128,13 +623,6 @@ private fun isInstructionSelected(instr: Ps5DisasmInstr, start: Long?, end: Long
     val instrEnd = instr.addr + instr.length - 1
     return instrEnd >= lo && instr.addr <= hi
 }
-
-private val regNames = setOf(
-    "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15", "rip",
-    "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi", "r8d", "r9d", "r10d", "r11d", "r12d", "r13d", "r14d", "r15d",
-    "ax", "cx", "dx", "bx", "sp", "bp", "si", "di",
-    "al", "cl", "dl", "bl", "ah", "ch", "dh", "bh"
-)
 
 @Composable
 fun DisasmRow(
@@ -1224,7 +712,7 @@ fun DisasmRow(
         // Operands with Ghidra syntax highlight
         Box(modifier = Modifier.width(180.dp)) {
             val annotatedOps = buildAnnotatedString {
-                val regex = Regex("(\\[|\\]|\\+|\\-|\\*|,|\\s+)|(0x[0-9A-Fa-f]+|[0-9]+)|([a-zA-Z0-9_]+)")
+                val regex = Regex("([\\[\\]\\+\\-\\*\\,\\s+])|(0x[0-9A-Fa-f]+|[0-9]+)|([a-zA-Z0-9_]+)")
                 val matches = regex.findAll(operands)
                 for (match in matches) {
                     val token = match.value
@@ -1313,5 +801,3 @@ fun DisasmRow(
         }
     }
 }
-
-

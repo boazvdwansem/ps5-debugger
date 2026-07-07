@@ -43,10 +43,11 @@ fun ProcessManager(
     val activeProcessInfo by AppContainer.debuggerUseCase.activeProcessInfo.collectAsState()
     
     var processSearchText by remember { mutableStateOf("") }
+    var mapSearchText by remember { mutableStateOf("") }
     val maps by AppContainer.debuggerUseCase.vmMaps.collectAsState()
     val isLoadingMaps = false
 
-    var activeTab by remember { mutableStateOf(0) } // 0 = Processes, 1 = Memory Regions
+    var activeTab by remember { mutableStateOf(if (activeMap != null || activeProcess != null) 1 else 0) }
 
     Column(modifier = modifier.fillMaxHeight().width(320.dp).background(PS5ThemeColors.DarkBg).padding(8.dp)) {
         // Sidebar header
@@ -191,11 +192,26 @@ fun ProcessManager(
                     Text("Select a process first to view memory regions", fontSize = 13.sp, color = PS5ThemeColors.TextMuted)
                 }
             } else {
+                // Search Bar for Regions
+                OutlinedTextField(
+                    value = mapSearchText,
+                    onValueChange = { mapSearchText = it },
+                    placeholder = { Text("Search regions (name or address)...") },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+                )
+
                 if (isLoadingMaps) {
                     Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator(modifier = Modifier.size(24.dp), color = PS5ThemeColors.AccentCyan)
                     }
                 } else {
+                    val filteredMaps = maps.filter { 
+                        it.name.contains(mapSearchText, ignoreCase = true) || 
+                        it.start.toString(16).contains(mapSearchText, ignoreCase = true) ||
+                        it.end.toString(16).contains(mapSearchText, ignoreCase = true)
+                    }
                     LazyColumn(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -204,7 +220,7 @@ fun ProcessManager(
                             .background(PS5ThemeColors.Surface)
                             .border(1.dp, PS5ThemeColors.BorderColor, RoundedCornerShape(4.dp))
                     ) {
-                        items(maps) { map ->
+                        items(filteredMaps) { map ->
                             val isSelectedMap = activeMap?.start == map.start
                             Column(
                                 modifier = Modifier

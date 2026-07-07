@@ -20,6 +20,10 @@ class MainState(
     
     var isConsoleVisible by mutableStateOf(false)
     var isSidebarVisible by mutableStateOf(true)
+    var isDebugSidebarVisible by mutableStateOf(false)
+    
+    val activeBreakpoints = mutableStateMapOf<Int, Long>()
+    val activeWatchpoints = mutableStateMapOf<Int, Long>()
     
     var selectionStart by mutableStateOf<Long?>(null)
     var selectionEnd by mutableStateOf<Long?>(null)

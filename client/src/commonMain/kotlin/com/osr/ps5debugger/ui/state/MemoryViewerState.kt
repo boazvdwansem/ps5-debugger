@@ -3,6 +3,11 @@ package com.osr.ps5debugger.ui.state
 import androidx.compose.runtime.*
 import com.osr.ps5debugger.di.AppContainer
 import com.osr.ps5debugger.domain.model.MemoryRange
+import com.osr.ps5debugger.ui.DisasmLine
+import com.osr.ps5debugger.protocol.Ps5DisasmInstr
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
 
 class MemoryViewerState(
     activeMapInitial: MemoryRange?,
@@ -29,6 +34,8 @@ class MemoryViewerState(
     }
 
     var currentJumpAddress by mutableStateOf(jumpToAddressInitial)
+    var instructions = mutableStateListOf<DisasmLine>()
+    var isLoading by mutableStateOf(false)
 
     var internalSelectionStart by mutableStateOf<Long?>(null)
     var internalSelectionEnd by mutableStateOf<Long?>(null)
@@ -49,6 +56,58 @@ class MemoryViewerState(
     val selectedRegs = AppContainer.debuggerUseCase.selectedRegs
     val selectedDbRegs = AppContainer.debuggerUseCase.selectedDbRegs
     val selectedFsGs = AppContainer.debuggerUseCase.selectedFsGs
+
+    suspend fun loadInitialInstructions() {
+        val pid = AppContainer.debuggerUseCase.activeProcess.value?.pid ?: return
+        val map = activeMap ?: return
+        val isConnected = AppContainer.debuggerUseCase.isConnected.value
+        if (!isConnected) return
+
+        val startAddr = currentJumpAddress ?: map.start
+        
+        // Prevent reloading if the address is already within the loaded range.
+        // This avoids list-clearing jumps during simple selection.
+        if (instructions.isNotEmpty()) {
+            val firstAddr = instructions.first().instr.addr
+            val lastLine = instructions.last()
+            val lastAddr = lastLine.instr.addr + lastLine.instr.length
+            if (startAddr in firstAddr until lastAddr) {
+                return
+            }
+        }
+
+        isLoading = true
+        
+        try {
+            val client = AppContainer.clientAdapter.client
+            val len = minOf(65536L, map.end - startAddr).toInt()
+            if (len > 0) {
+                val rawInstrs = client.disassembleRegion(pid, startAddr, len, 500)
+                val rawBytes = try {
+                    client.readMemory(pid, startAddr, len)
+                } catch (_: Exception) {
+                    ByteArray(0)
+                }
+                
+                val lines = rawInstrs.map { instr ->
+                    val offset = (instr.addr - startAddr).toInt()
+                    val instrBytes = if (offset >= 0 && offset + instr.length <= rawBytes.size) {
+                        rawBytes.copyOfRange(offset, offset + instr.length)
+                    } else {
+                        ByteArray(0)
+                    }
+                    DisasmLine(instr, instrBytes)
+                }
+                
+                instructions.clear()
+                instructions.addAll(lines)
+            }
+        } catch (e: Exception) {
+            AppContainer.debuggerUseCase.log("DISASM", "Initial load failed: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+        } finally {
+            isLoading = false
+        }
+    }
 }
 
 @Composable
@@ -78,6 +137,13 @@ fun rememberMemoryViewerState(
     LaunchedEffect(jumpToAddress) {
         if (jumpToAddress != null) {
             state.currentJumpAddress = jumpToAddress
+        }
+    }
+
+    val isConnected by AppContainer.debuggerUseCase.isConnected.collectAsState()
+    LaunchedEffect(state.activeMap, state.currentJumpAddress, isConnected) {
+        if (state.activeMap != null && isConnected) {
+            state.loadInitialInstructions()
         }
     }
     

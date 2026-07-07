@@ -73,6 +73,7 @@ private fun MainContent(state: MainState) {
             Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
                 Sidebar(state)
                 MainArea(state, modifier = Modifier.fillMaxHeight().weight(1f))
+                DebugSidebarContainer(state)
             }
 
             ConsolePanel(state)
@@ -185,6 +186,55 @@ private fun SidebarToggle(onClick: () -> Unit) {
 }
 
 @Composable
+private fun DebugSidebarToggle(onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxHeight()
+            .width(28.dp)
+            .background(PS5ThemeColors.SecondaryBg)
+            .clickable { onClick() },
+        contentAlignment = Alignment.Center
+    ) {
+        val density = LocalDensity.current.density
+        Canvas(modifier = Modifier.size(24.dp)) {
+            val tintColor = PS5ThemeColors.AccentCyan
+            val path = androidx.compose.ui.graphics.Path().apply {
+                moveTo(15f * density, 6f * density)
+                lineTo(9f * density, 12f * density)
+                lineTo(15f * density, 18f * density)
+            }
+            drawPath(
+                path = path,
+                color = tintColor,
+                style = Stroke(width = 2f * density, cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round)
+            )
+        }
+    }
+}
+
+@Composable
+private fun DebugSidebarContainer(state: MainState) {
+    AnimatedVisibility(
+        visible = state.isDebugSidebarVisible,
+        enter = slideInHorizontally(initialOffsetX = { it }, animationSpec = tween(200)) + fadeIn(tween(200)),
+        exit = slideOutHorizontally(targetOffsetX = { it }, animationSpec = tween(200)) + fadeOut(tween(200))
+    ) {
+        Row(modifier = Modifier.fillMaxHeight()) {
+            VerticalDivider(modifier = Modifier.fillMaxHeight().width(1.dp), color = PS5ThemeColors.BorderColor)
+            DebugSidebar(
+                state = state,
+                onCollapse = { state.isDebugSidebarVisible = false }
+            )
+        }
+    }
+
+    if (!state.isDebugSidebarVisible) {
+        VerticalDivider(modifier = Modifier.fillMaxHeight().width(1.dp), color = PS5ThemeColors.BorderColor)
+        DebugSidebarToggle(onClick = { state.isDebugSidebarVisible = true })
+    }
+}
+
+@Composable
 private fun MainArea(state: MainState, modifier: Modifier = Modifier) {
     val tabs = listOf("Memory Viewer", "Memory Search", "Watch List", "Memory Dumper")
     
@@ -234,7 +284,9 @@ private fun TabContent(state: MainState) {
             onSelectionChanged = { start, end ->
                 state.selectionStart = start
                 state.selectionEnd = end
-            }
+            },
+            activeBreakpoints = state.activeBreakpoints,
+            activeWatchpoints = state.activeWatchpoints
         )
         1 -> MemoryScannerView(
             activeMap = state.activeMap,
