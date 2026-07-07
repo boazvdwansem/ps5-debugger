@@ -24,6 +24,7 @@ private val hexViewerScrollPositions = mutableMapOf<Long, Long>()
 
 class HexState(
     activeMapInitial: MemoryRange?,
+    activeMapsInitial: List<MemoryRange> = emptyList(),
     val jumpToAddressInitial: Long?,
     val selectionStartParamInitial: Long?,
     val selectionEndParamInitial: Long?,
@@ -35,6 +36,7 @@ class HexState(
     val pendingEdits = mutableStateMapOf<Long, Byte>()
     
     var activeMap by mutableStateOf(activeMapInitial)
+    val activeMaps = mutableStateListOf<MemoryRange>().apply { addAll(activeMapsInitial) }
     var onSelectionChanged by mutableStateOf(onSelectionChangedInitial)
     
     var startAddress by mutableStateOf(activeMapInitial?.start ?: 0L)
@@ -156,7 +158,8 @@ class HexState(
 
     fun loadMemory() {
         val pid = AppContainer.debuggerUseCase.activeProcess.value?.pid ?: return
-        val map = activeMap ?: return
+        val targets = if (activeMaps.isNotEmpty()) activeMaps.toList() else listOfNotNull(activeMap)
+        if (targets.isEmpty()) return
         
         scope.launch {
             delay(100)
@@ -168,15 +171,21 @@ class HexState(
                 while (page <= visibleEnd) {
                     if (!memoryCache.containsKey(page)) {
                         try {
-                            val readStart = maxOf(page, startAddress)
-                            val readEnd = minOf(page + pageSize, endAddress)
-                            if (readStart < readEnd) {
-                                val readLen = (readEnd - readStart).toInt()
-                                val data = AppContainer.clientAdapter.client.readMemory(pid, readStart, readLen)
-                                val pageData = ByteArray(pageSize)
-                                val destOffset = (readStart - page).toInt()
-                                System.arraycopy(data, 0, pageData, destOffset, data.size)
-                                memoryCache[page] = pageData
+                            // Find which map holds this page
+                            val currentMap = targets.firstOrNull { page >= it.start && page < it.end } ?: targets.firstOrNull { it.start <= page + pageSize && it.end > page }
+                            if (currentMap != null) {
+                                val readStart = maxOf(page, currentMap.start)
+                                val readEnd = minOf(page + pageSize, currentMap.end)
+                                if (readStart < readEnd) {
+                                    val readLen = (readEnd - readStart).toInt()
+                                    val data = AppContainer.clientAdapter.client.readMemory(pid, readStart, readLen)
+                                    val pageData = ByteArray(pageSize)
+                                    val destOffset = (readStart - page).toInt()
+                                    System.arraycopy(data, 0, pageData, destOffset, data.size)
+                                    memoryCache[page] = pageData
+                                } else {
+                                    memoryCache[page] = ByteArray(pageSize)
+                                }
                             } else {
                                 memoryCache[page] = ByteArray(pageSize)
                             }
@@ -271,6 +280,7 @@ class HexState(
 @Composable
 fun rememberHexState(
     activeMap: MemoryRange?,
+    activeMaps: List<MemoryRange> = emptyList(),
     jumpToAddress: Long?,
     selectionStartParam: Long?,
     selectionEndParam: Long?,
@@ -278,11 +288,13 @@ fun rememberHexState(
     scope: CoroutineScope = rememberCoroutineScope()
 ): HexState {
     val state = remember(activeMap) {
-        HexState(activeMap, jumpToAddress, selectionStartParam, selectionEndParam, onSelectionChanged, scope)
+        HexState(activeMap, activeMaps, jumpToAddress, selectionStartParam, selectionEndParam, onSelectionChanged, scope)
     }
     
     SideEffect {
         state.activeMap = activeMap
+        state.activeMaps.clear()
+        state.activeMaps.addAll(activeMaps)
         state.onSelectionChanged = onSelectionChanged
     }
     

@@ -47,6 +47,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun HexViewer(
     activeMap: MemoryRange?,
+    activeMaps: List<MemoryRange> = emptyList(),
     jumpToAddress: Long? = null,
     modifier: Modifier = Modifier,
     showAddress: Boolean = true,
@@ -55,7 +56,7 @@ fun HexViewer(
     onSelectionChanged: ((Long?, Long?) -> Unit)? = null
 ) {
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
-        val state = rememberHexState(activeMap, jumpToAddress, selectionStartParam, selectionEndParam, onSelectionChanged)
+        val state = rememberHexState(activeMap, activeMaps, jumpToAddress, selectionStartParam, selectionEndParam, onSelectionChanged)
         val density = LocalDensity.current.density
         val isMobile = maxWidth < 600.dp
         val coroutineScope = rememberCoroutineScope()
@@ -77,13 +78,17 @@ fun HexViewer(
             state.loadMemory()
         }
 
-        LaunchedEffect(activeMap, jumpToAddress, state.bytesPerRow, state.visibleRowsCount) {
-            if (activeMap != null) {
-                state.startAddress = activeMap.start
-                state.endAddress = activeMap.end
+        LaunchedEffect(activeMap, activeMaps.size, jumpToAddress, state.bytesPerRow, state.visibleRowsCount) {
+            val targets = if (activeMaps.isNotEmpty()) activeMaps.toList() else listOfNotNull(activeMap)
+            if (targets.isNotEmpty()) {
+                val minStart = targets.minOf { it.start }
+                val maxEnd = targets.maxOf { it.end }
+                state.startAddress = minStart
+                state.endAddress = maxEnd
                 
-                if (jumpToAddress != null && jumpToAddress >= activeMap.start && jumpToAddress < activeMap.end) {
-                    val targetRow = (jumpToAddress - activeMap.start) / state.bytesPerRow
+                val currentTarget = activeMap ?: targets.first()
+                if (jumpToAddress != null && jumpToAddress >= currentTarget.start && jumpToAddress < currentTarget.end) {
+                    val targetRow = (jumpToAddress - minStart) / state.bytesPerRow
                     state.updateScrollPosition(targetRow.coerceIn(0L, state.getMaxScrollPosition()))
                     state.selectionStart = jumpToAddress
                     state.selectionEnd = jumpToAddress
@@ -127,7 +132,7 @@ fun HexViewer(
         ) {
             HexToolbar(state, isMobile)
             
-            if (activeMap == null) {
+            if (activeMap == null && state.activeMaps.isEmpty()) {
                 Box(Modifier.fillMaxSize().weight(1f), contentAlignment = Alignment.Center) {
                     Text("Select a Process and Virtual Memory Map to view hex memory")
                 }
@@ -410,6 +415,35 @@ private fun HexGridBody(state: HexState, isMobile: Boolean, showAddress: Boolean
             for (rowIndex in 0 until state.visibleRowsCount) {
                 val rowAddress = viewStartAddress + (rowIndex * state.bytesPerRow)
                 if (rowAddress < state.endAddress) {
+                    val targets = if (state.activeMaps.isNotEmpty()) state.activeMaps.toList() else listOfNotNull(state.activeMap)
+                    val currentMap = targets.firstOrNull { rowAddress >= it.start && rowAddress < it.end }
+                    val prevRowAddress = rowAddress - state.bytesPerRow
+                    val prevMap = targets.firstOrNull { prevRowAddress >= it.start && prevRowAddress < it.end }
+                    
+                    // Render separator if this row starts a new map or transition
+                    val isNewRegion = currentMap != null && (rowIndex == 0 || prevMap == null || currentMap.start != prevMap.start)
+                    
+                    if (isNewRegion && currentMap != null) {
+                        Spacer(Modifier.height(10.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(PS5ThemeColors.SecondaryBg.copy(alpha = 0.5f))
+                                .border(1.dp, PS5ThemeColors.BorderColor.copy(alpha = 0.3f), RoundedCornerShape(4.dp))
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Region: ${if (currentMap.name.isEmpty()) "unnamed" else currentMap.name} [0x${currentMap.start.toString(16).uppercase()} - 0x${currentMap.end.toString(16).uppercase()}] (${currentMap.getProtString()})",
+                                color = PS5ThemeColors.AccentCyan,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                        Spacer(Modifier.height(6.dp))
+                    }
+
                     val pageStart = (rowAddress / state.pageSize) * state.pageSize
                     val cachedPage = state.memoryCache[pageStart]
                     val offsetInPage = (rowAddress - pageStart).toInt()

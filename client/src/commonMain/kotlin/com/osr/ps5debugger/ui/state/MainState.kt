@@ -14,6 +14,7 @@ class MainState(
     private val onExit: () -> Unit
 ) {
     var activeMap by mutableStateOf<MemoryRange?>(null)
+    val activeMaps = mutableStateListOf<MemoryRange>()
     var selectedTab by mutableIntStateOf(0)
     var jumpToAddress by mutableStateOf<Long?>(null)
     var viewMode by mutableIntStateOf(2) // 0 = Disassembly, 1 = Graph, 2 = Hex Viewer

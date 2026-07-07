@@ -146,6 +146,11 @@ private fun Sidebar(state: MainState) {
                     state.isSidebarVisible = false
                 },
                 activeMap = state.activeMap,
+                activeMaps = state.activeMaps,
+                onMapsSelected = { maps ->
+                    state.activeMaps.clear()
+                    state.activeMaps.addAll(maps)
+                },
                 onCollapse = { state.isSidebarVisible = false }
             )
             VerticalDivider(modifier = Modifier.fillMaxHeight().width(1.dp), color = PS5ThemeColors.BorderColor)
@@ -276,6 +281,7 @@ private fun TabContent(state: MainState) {
     when (state.selectedTab) {
         0 -> MemoryViewerLayout(
             activeMap = state.activeMap,
+            activeMaps = state.activeMaps,
             jumpToAddress = state.jumpToAddress,
             viewModeParam = state.viewMode,
             onViewModeChanged = { state.viewMode = it },

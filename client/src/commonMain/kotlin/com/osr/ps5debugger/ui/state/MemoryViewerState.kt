@@ -11,6 +11,7 @@ import kotlinx.coroutines.launch
 
 class MemoryViewerState(
     activeMapInitial: MemoryRange?,
+    activeMapsInitial: List<MemoryRange> = emptyList(),
     jumpToAddressInitial: Long?,
     viewModeParamInitial: Int?,
     onViewModeChangedInitial: ((Int) -> Unit)?,
@@ -19,6 +20,7 @@ class MemoryViewerState(
     onSelectionChangedInitial: ((Long?, Long?) -> Unit)?
 ) {
     var activeMap by mutableStateOf(activeMapInitial)
+    val activeMaps = mutableStateListOf<MemoryRange>().apply { addAll(activeMapsInitial) }
     var jumpToAddress by mutableStateOf(jumpToAddressInitial)
     var viewModeParam by mutableStateOf(viewModeParamInitial)
     var onViewModeChanged by mutableStateOf(onViewModeChangedInitial)
@@ -59,49 +61,50 @@ class MemoryViewerState(
 
     suspend fun loadInitialInstructions() {
         val pid = AppContainer.debuggerUseCase.activeProcess.value?.pid ?: return
-        val map = activeMap ?: return
         val isConnected = AppContainer.debuggerUseCase.isConnected.value
         if (!isConnected) return
 
-        val startAddr = currentJumpAddress ?: map.start
-        
-        // Prevent reloading if the address is already within the loaded range.
-        // This avoids list-clearing jumps during simple selection.
-        if (instructions.isNotEmpty()) {
-            val firstAddr = instructions.first().instr.addr
-            val lastLine = instructions.last()
-            val lastAddr = lastLine.instr.addr + lastLine.instr.length
-            if (startAddr in firstAddr until lastAddr) {
-                return
-            }
-        }
+        val targets = if (activeMaps.isNotEmpty()) activeMaps.toList() else listOfNotNull(activeMap)
+        if (targets.isEmpty()) return
 
         isLoading = true
         
         try {
             val client = AppContainer.clientAdapter.client
-            val len = minOf(65536L, map.end - startAddr).toInt()
-            if (len > 0) {
-                val rawInstrs = client.disassembleRegion(pid, startAddr, len, 500)
-                val rawBytes = try {
-                    client.readMemory(pid, startAddr, len)
-                } catch (_: Exception) {
-                    ByteArray(0)
+            val allLines = mutableListOf<DisasmLine>()
+            
+            for (map in targets) {
+                // If this is the map containing the current jump address, start disassemble from there
+                val startAddr = if (currentJumpAddress != null && currentJumpAddress!! >= map.start && currentJumpAddress!! < map.end) {
+                    currentJumpAddress!!
+                } else {
+                    map.start
                 }
                 
-                val lines = rawInstrs.map { instr ->
-                    val offset = (instr.addr - startAddr).toInt()
-                    val instrBytes = if (offset >= 0 && offset + instr.length <= rawBytes.size) {
-                        rawBytes.copyOfRange(offset, offset + instr.length)
-                    } else {
+                val len = minOf(65536L, map.end - startAddr).toInt()
+                if (len > 0) {
+                    val rawInstrs = client.disassembleRegion(pid, startAddr, len, 500)
+                    val rawBytes = try {
+                        client.readMemory(pid, startAddr, len)
+                    } catch (_: Exception) {
                         ByteArray(0)
                     }
-                    DisasmLine(instr, instrBytes)
+                    
+                    val lines = rawInstrs.map { instr ->
+                        val offset = (instr.addr - startAddr).toInt()
+                        val instrBytes = if (offset >= 0 && offset + instr.length <= rawBytes.size) {
+                            rawBytes.copyOfRange(offset, offset + instr.length)
+                        } else {
+                            ByteArray(0)
+                        }
+                        DisasmLine(instr, instrBytes)
+                    }
+                    allLines.addAll(lines)
                 }
-                
-                instructions.clear()
-                instructions.addAll(lines)
             }
+            
+            instructions.clear()
+            instructions.addAll(allLines)
         } catch (e: Exception) {
             AppContainer.debuggerUseCase.log("DISASM", "Initial load failed: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
         } finally {
@@ -113,6 +116,7 @@ class MemoryViewerState(
 @Composable
 fun rememberMemoryViewerState(
     activeMap: MemoryRange?,
+    activeMaps: List<MemoryRange> = emptyList(),
     jumpToAddress: Long?,
     viewModeParam: Int?,
     onViewModeChanged: ((Int) -> Unit)?,
@@ -121,11 +125,13 @@ fun rememberMemoryViewerState(
     onSelectionChanged: ((Long?, Long?) -> Unit)?
 ): MemoryViewerState {
     val state = remember(activeMap) {
-        MemoryViewerState(activeMap, jumpToAddress, viewModeParam, onViewModeChanged, selectionStartParam, selectionEndParam, onSelectionChanged)
+        MemoryViewerState(activeMap, activeMaps, jumpToAddress, viewModeParam, onViewModeChanged, selectionStartParam, selectionEndParam, onSelectionChanged)
     }
     
     SideEffect {
         state.activeMap = activeMap
+        state.activeMaps.clear()
+        state.activeMaps.addAll(activeMaps)
         state.jumpToAddress = jumpToAddress
         state.viewModeParam = viewModeParam
         state.onViewModeChanged = onViewModeChanged
@@ -141,8 +147,8 @@ fun rememberMemoryViewerState(
     }
 
     val isConnected by AppContainer.debuggerUseCase.isConnected.collectAsState()
-    LaunchedEffect(state.activeMap, state.currentJumpAddress, isConnected) {
-        if (state.activeMap != null && isConnected) {
+    LaunchedEffect(state.activeMap, state.activeMaps.size, state.currentJumpAddress, isConnected) {
+        if ((state.activeMap != null || state.activeMaps.isNotEmpty()) && isConnected) {
             state.loadInitialInstructions()
         }
     }

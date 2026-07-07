@@ -77,6 +77,7 @@ fun ByteAsciiCellCompact(byte: Byte) {
 @Composable
 fun DisassemblyViewer(
     activeMap: MemoryRange?,
+    activeMaps: List<MemoryRange> = emptyList(),
     instructions: androidx.compose.runtime.snapshots.SnapshotStateList<DisasmLine>,
     jumpToAddress: Long? = null,
     modifier: Modifier = Modifier,
@@ -332,7 +333,33 @@ fun DisassemblyViewer(
                         val hasBreakpoint = activeBreakpoints.values.contains(line.instr.addr) || activeWatchpoints.values.contains(line.instr.addr)
                         val isFunctionStart = functionAddresses.contains(line.instr.addr)
 
+                        val prevLine = if (idx > 0) instructions[idx - 1] else null
+                        val currentMap = activeMaps.firstOrNull { line.instr.addr >= it.start && line.instr.addr < it.end } ?: activeMap
+                        val prevMap = prevLine?.let { pl -> activeMaps.firstOrNull { pl.instr.addr >= it.start && pl.instr.addr < it.end } ?: activeMap }
+                        val isNewRegionStart = idx == 0 || (currentMap != null && prevMap != null && currentMap.start != prevMap.start)
+
                         Column {
+                            if (isNewRegionStart && currentMap != null) {
+                                Spacer(Modifier.height(16.dp))
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(PS5ThemeColors.SecondaryBg.copy(alpha = 0.5f))
+                                        .border(1.dp, PS5ThemeColors.BorderColor.copy(alpha = 0.3f), RoundedCornerShape(4.dp))
+                                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Region: ${if (currentMap.name.isEmpty()) "unnamed" else currentMap.name} [0x${currentMap.start.toString(16).uppercase()} - 0x${currentMap.end.toString(16).uppercase()}] (${currentMap.getProtString()})",
+                                        color = PS5ThemeColors.AccentCyan,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                }
+                                Spacer(Modifier.height(8.dp))
+                            }
+
                             if (isFunctionStart) {
                                 Spacer(Modifier.height(12.dp))
                                 Text(

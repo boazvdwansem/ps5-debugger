@@ -22,6 +22,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun MemoryViewerLayout(
     activeMap: MemoryRange?,
+    activeMaps: List<MemoryRange> = emptyList(),
     jumpToAddress: Long? = null,
     modifier: Modifier = Modifier,
     viewModeParam: Int? = null,
@@ -33,7 +34,7 @@ fun MemoryViewerLayout(
     activeWatchpoints: MutableMap<Int, Long> = remember { mutableStateMapOf() }
 ) {
     val state = rememberMemoryViewerState(
-        activeMap, jumpToAddress, viewModeParam, onViewModeChanged,
+        activeMap, activeMaps, jumpToAddress, viewModeParam, onViewModeChanged,
         selectionStartParam, selectionEndParam, onSelectionChanged
     )
     
@@ -115,6 +116,7 @@ fun MemoryViewerLayout(
                     )
                     2 -> HexViewer(
                         activeMap = state.activeMap,
+                        activeMaps = state.activeMaps,
                         jumpToAddress = state.currentJumpAddress,
                         modifier = Modifier.fillMaxSize(),
                         selectionStartParam = state.selectionStart,
@@ -231,6 +233,7 @@ private fun DisassemblyView(
         Column(modifier = Modifier.fillMaxSize()) {
             DisassemblyViewer(
                 activeMap = state.activeMap,
+                activeMaps = state.activeMaps,
                 instructions = instructions,
                 jumpToAddress = state.currentJumpAddress,
                 selectionStart = state.selectionStart,
@@ -251,6 +254,7 @@ private fun DisassemblyView(
             HorizontalDivider(color = PS5ThemeColors.BorderColor)
             HexViewer(
                 activeMap = state.activeMap,
+                activeMaps = state.activeMaps,
                 jumpToAddress = state.currentJumpAddress,
                 modifier = Modifier.weight(1f),
                 showAddress = false,
@@ -262,6 +266,7 @@ private fun DisassemblyView(
     } else {
         DisassemblyViewer(
             activeMap = state.activeMap,
+            activeMaps = state.activeMaps,
             instructions = instructions,
             jumpToAddress = state.currentJumpAddress,
             selectionStart = state.selectionStart,

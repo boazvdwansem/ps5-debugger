@@ -34,6 +34,8 @@ import kotlinx.coroutines.launch
 fun ProcessManager(
     onMapSelected: (MemoryRange) -> Unit,
     activeMap: MemoryRange?,
+    activeMaps: List<MemoryRange> = emptyList(),
+    onMapsSelected: ((List<MemoryRange>) -> Unit)? = null,
     modifier: Modifier = Modifier,
     onCollapse: (() -> Unit)? = null
 ) {
@@ -202,6 +204,38 @@ fun ProcessManager(
                     modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
                 )
 
+                // Select All / Select None Button
+                if (onMapsSelected != null) {
+                    val filteredMaps = maps.filter { 
+                        it.name.contains(mapSearchText, ignoreCase = true) || 
+                        it.start.toString(16).contains(mapSearchText, ignoreCase = true) ||
+                        it.end.toString(16).contains(mapSearchText, ignoreCase = true)
+                    }
+                    val isAnySelected = activeMaps.isNotEmpty()
+                    val buttonText = if (isAnySelected) "Select None" else "Select All"
+                    
+                    Button(
+                        onClick = {
+                            if (isAnySelected) {
+                                onMapsSelected(emptyList())
+                            } else {
+                                onMapsSelected(filteredMaps)
+                                if (filteredMaps.isNotEmpty()) {
+                                    onMapSelected(filteredMaps.first())
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = PS5ThemeColors.SecondaryBg,
+                            contentColor = PS5ThemeColors.AccentCyan
+                        ),
+                        shape = RoundedCornerShape(4.dp)
+                    ) {
+                        Text(buttonText, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+
                 if (isLoadingMaps) {
                     Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator(modifier = Modifier.size(24.dp), color = PS5ThemeColors.AccentCyan)
@@ -221,21 +255,43 @@ fun ProcessManager(
                             .border(1.dp, PS5ThemeColors.BorderColor, RoundedCornerShape(4.dp))
                     ) {
                         items(filteredMaps) { map ->
-                            val isSelectedMap = activeMap?.start == map.start
+                            val isSelectedMap = activeMap?.start == map.start || activeMaps.any { it.start == map.start }
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .background(if (isSelectedMap) PS5ThemeColors.AccentCyan.copy(alpha = 0.15f) else Color.Transparent)
-                                    .clickable { onMapSelected(map) }
+                                    .clickable { 
+                                        // Clicking outside the checkbox selects the map and closes sidebar
+                                        onMapSelected(map)
+                                    }
                                     .padding(8.dp)
                             ) {
                                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                    Text(
-                                        text = if (map.name.isEmpty()) "unnamed" else map.name,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = PS5ThemeColors.TextMain
-                                    )
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        if (onMapsSelected != null) {
+                                            Checkbox(
+                                                checked = activeMaps.any { it.start == map.start },
+                                                onCheckedChange = { checked ->
+                                                    val newList = activeMaps.toMutableList()
+                                                    if (checked) {
+                                                        if (!newList.any { it.start == map.start }) newList.add(map)
+                                                    } else {
+                                                        newList.removeAll { it.start == map.start }
+                                                    }
+                                                    newList.sortBy { it.start }
+                                                    onMapsSelected(newList)
+                                                },
+                                                colors = CheckboxDefaults.colors(checkedColor = PS5ThemeColors.AccentCyan),
+                                                modifier = Modifier.padding(end = 4.dp).size(20.dp)
+                                            )
+                                        }
+                                        Text(
+                                            text = if (map.name.isEmpty()) "unnamed" else map.name,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = PS5ThemeColors.TextMain
+                                        )
+                                    }
                                     Text(
                                         text = map.getProtString(),
                                         fontSize = 11.sp,
@@ -248,7 +304,8 @@ fun ProcessManager(
                                           text = String.format("0x%X - 0x%X", map.start, map.end),
                                           fontSize = 10.sp,
                                           color = Color.Gray,
-                                          fontFamily = FontFamily.Monospace
+                                          fontFamily = FontFamily.Monospace,
+                                          modifier = Modifier.padding(start = if (onMapsSelected != null) 24.dp else 0.dp)
                                       )
                                       Text(
                                           text = String.format("%.2f MB", map.size.toDouble() / (1024 * 1024)),
