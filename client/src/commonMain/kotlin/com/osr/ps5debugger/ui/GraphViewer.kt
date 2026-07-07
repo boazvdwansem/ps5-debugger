@@ -137,7 +137,7 @@ fun GraphViewer(
                             offset += pan
                         }
                     }
-                    .pointerInput(Unit) {
+                    .pointerInput(filterFunctionAddr) {
                         awaitPointerEventScope {
                             while (true) {
                                 val event = awaitPointerEvent()
