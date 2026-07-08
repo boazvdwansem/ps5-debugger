@@ -45,6 +45,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isShiftPressed
 import com.osr.ps5debugger.ui.disasm.DisasmFormatter
+import com.osr.ps5debugger.ui.disasm.DisassemblyState
 
 data class DisasmLine(
     val instr: Ps5DisasmInstr,
@@ -92,6 +93,39 @@ private fun isInstructionSelected(instr: Ps5DisasmInstr, start: Long?, end: Long
     val hi = maxOf(start, end)
     val instrEnd = instr.addr + instr.length - 1
     return instrEnd >= lo && instr.addr <= hi
+}
+
+@Composable
+fun DisassemblyViewer(
+    state: DisassemblyState,
+    jumpToAddress: Long? = null,
+    modifier: Modifier = Modifier,
+    onJumpToAddress: ((Long) -> Unit)? = null,
+    onJumpToHex: ((Long) -> Unit)? = null,
+    onJumpToGraph: ((Long) -> Unit)? = null,
+    showHexDetails: Boolean = false,
+    isLoading: Boolean = false,
+    isAttached: Boolean
+) {
+    DisassemblyViewer(
+        activeMap = state.activeMap,
+        activeMaps = state.activeMaps,
+        instructions = state.instructions as androidx.compose.runtime.snapshots.SnapshotStateList<DisasmLine>,
+        jumpToAddress = jumpToAddress,
+        modifier = modifier,
+        selectionStart = state.selectionStart,
+        selectionEnd = state.selectionEnd,
+        onSelectionChanged = state.onSelectionChanged,
+        onJumpToAddress = onJumpToAddress,
+        onJumpToHex = onJumpToHex,
+        onJumpToGraph = onJumpToGraph,
+        showHexDetails = showHexDetails,
+        isLoading = isLoading,
+        isAttached = isAttached,
+        activeBreakpoints = state.activeBreakpoints as MutableMap<Int, Long>,
+        activeWatchpoints = state.activeWatchpoints as MutableMap<Int, Long>,
+        functionAddresses = state.functionAddresses
+    )
 }
 
 @Composable
@@ -951,6 +985,7 @@ fun DisasmRow(
                     var isLongPressActive = false
                     var hasTriggeredLongPress = false
                     var isDragging = false
+                    var isSecondaryClick = false
                     while (true) {
                         val event = awaitPointerEvent()
                         val change = event.changes.first()
@@ -960,9 +995,13 @@ fun DisasmRow(
                                 isDragging = false
                                 hasTriggeredLongPress = false
                                 val isSecondary = event.buttons.isSecondaryPressed
+                                isSecondaryClick = isSecondary
                                 
                                 if (isSecondary) {
                                     val offset = DpOffset(change.position.x.toDp(), change.position.y.toDp())
+                                    if (!isSelected) {
+                                        onAddressClicked(instr.addr, instr.length, false)
+                                    }
                                     onAddressRightClicked(instr.addr, line.bytes, fullDisasmString, offset)
                                 } else {
                                     isLongPressActive = true
@@ -971,6 +1010,9 @@ fun DisasmRow(
                                         if (isLongPressActive) {
                                             hasTriggeredLongPress = true
                                             val offset = DpOffset(change.position.x.toDp(), change.position.y.toDp())
+                                            if (!isSelected) {
+                                                onAddressClicked(instr.addr, instr.length, false)
+                                            }
                                             onAddressRightClicked(instr.addr, line.bytes, fullDisasmString, offset)
                                             isLongPressActive = false
                                         }
@@ -999,7 +1041,7 @@ fun DisasmRow(
                             }
                             PointerEventType.Release -> {
                                 isLongPressActive = false
-                                if (!hasTriggeredLongPress && !isDragging) {
+                                if (!hasTriggeredLongPress && !isDragging && !isSecondaryClick) {
                                     val isShift = event.keyboardModifiers.isShiftPressed || windowInfo.keyboardModifiers.isShiftPressed
                                     onAddressClicked(instr.addr, instr.length, isShift)
                                 }

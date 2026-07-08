@@ -262,24 +262,26 @@ private fun DisassemblyView(
     val isAttached by state.isAttached.collectAsState()
     val functionSet = remember(functions) { functions.toSet() }
 
-    DisassemblyViewer(
+    val disasmState = com.osr.ps5debugger.ui.disasm.rememberDisassemblyState(
         activeMap = state.activeMap,
         activeMaps = state.activeMaps,
         instructions = instructions,
-        jumpToAddress = state.currentJumpAddress,
         selectionStart = state.selectionStart,
         selectionEnd = state.selectionEnd,
-        onSelectionChanged = { start, end ->
-            state.updateSelection(start, end)
-        },
+        onSelectionChanged = { start, end -> state.updateSelection(start, end) },
+        activeBreakpoints = activeBreakpoints,
+        activeWatchpoints = activeWatchpoints,
+        functionAddresses = functionSet
+    )
+
+    DisassemblyViewer(
+        state = disasmState,
+        jumpToAddress = state.currentJumpAddress,
         onJumpToAddress = { addr -> state.currentJumpAddress = addr },
         onJumpToHex = { addr -> state.currentJumpAddress = addr; state.setViewMode(2) },
         onJumpToGraph = onJumpToGraph,
         isAttached = isAttached,
-        activeBreakpoints = activeBreakpoints,
-        activeWatchpoints = activeWatchpoints,
         isLoading = state.isLoading,
-        functionAddresses = functionSet,
         modifier = Modifier.fillMaxSize(),
         showHexDetails = !isMobile
     )
