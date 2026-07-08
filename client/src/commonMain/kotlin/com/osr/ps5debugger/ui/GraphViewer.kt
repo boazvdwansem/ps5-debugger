@@ -82,6 +82,7 @@ fun GraphViewer(
     selectionEnd: Long? = null,
     onSelectionChanged: ((Long?, Long?) -> Unit)? = null,
     onAddressClicked: (Long) -> Unit = {},
+    onJumpToHex: (Long) -> Unit = {},
     isAttached: Boolean = false,
     activeBreakpoints: Map<Int, Long> = emptyMap(),
     activeWatchpoints: Map<Int, Long> = emptyMap(),
@@ -235,19 +236,93 @@ fun GraphViewer(
         }
 
         DropdownMenu(expanded = showContextMenu, onDismissRequest = { showContextMenu = false }, offset = contextMenuOffset) {
-            DropdownMenuItem(text = { Text("Copy Address") }, onClick = {
-                contextMenuAddr?.let { copyToClipboard(String.format("0x%012X", it)) }
-                showContextMenu = false
-            })
-            if (isAttached) {
-                DropdownMenuItem(text = { Text("Set Software Breakpoint") }, onClick = {
-                    contextMenuAddr?.let { onSetBreakpoint(it) }
-                    showContextMenu = false
-                })
-                DropdownMenuItem(text = { Text("Set Hardware Watchpoint...") }, onClick = {
-                    contextMenuAddr?.let { onSetWatchpoint(it) }
-                    showContextMenu = false
-                })
+            val addr = contextMenuAddr
+            if (addr != null) {
+                val contextLine = instructions.firstOrNull { it.instr.addr == addr }
+                val start = selectionStart
+                val end = selectionEnd
+                val selectedLines = if (start != null && end != null) {
+                    val lo = minOf(start, end)
+                    val hi = maxOf(start, end)
+                    instructions.filter { it.instr.addr in lo..hi }
+                } else emptyList()
+
+                DropdownMenuItem(
+                    text = { Text("Copy Address(es)") },
+                    onClick = {
+                        val textToCopy = if (selectedLines.isNotEmpty()) {
+                            selectedLines.joinToString("\n") { "0x" + it.instr.addr.toString(16).uppercase() }
+                        } else {
+                            "0x" + addr.toString(16).uppercase()
+                        }
+                        copyToClipboard(textToCopy)
+                        showContextMenu = false
+                    }
+                )
+
+                DropdownMenuItem(
+                    text = { Text("Copy Disassembly") },
+                    onClick = {
+                        val textToCopy = if (selectedLines.isNotEmpty()) {
+                            selectedLines.joinToString("\n") { 
+                                DisasmFormatter.getMnemonic(it.instr, it.bytes) + " " + DisasmFormatter.formatOperands(it.instr, it.bytes)
+                            }
+                        } else if (contextLine != null) {
+                            DisasmFormatter.getMnemonic(contextLine.instr, contextLine.bytes) + " " + DisasmFormatter.formatOperands(contextLine.instr, contextLine.bytes)
+                        } else ""
+                        if (textToCopy.isNotEmpty()) {
+                            copyToClipboard(textToCopy)
+                        }
+                        showContextMenu = false
+                    }
+                )
+
+                DropdownMenuItem(
+                    text = { Text("Copy All") },
+                    onClick = {
+                        val textToCopy = if (selectedLines.isNotEmpty()) {
+                            selectedLines.joinToString("\n") { 
+                                String.format("0x%012X: %-10s %s", it.instr.addr, DisasmFormatter.getMnemonic(it.instr, it.bytes), DisasmFormatter.formatOperands(it.instr, it.bytes))
+                            }
+                        } else if (contextLine != null) {
+                            String.format("0x%012X: %-10s %s", contextLine.instr.addr, DisasmFormatter.getMnemonic(contextLine.instr, contextLine.bytes), DisasmFormatter.formatOperands(contextLine.instr, contextLine.bytes))
+                        } else ""
+                        if (textToCopy.isNotEmpty()) {
+                            copyToClipboard(textToCopy)
+                        }
+                        showContextMenu = false
+                    }
+                )
+
+                HorizontalDivider(color = PS5ThemeColors.BorderColor)
+
+                DropdownMenuItem(
+                    text = { Text("Jump to Disassembly View", color = PS5ThemeColors.AccentCyan) },
+                    onClick = {
+                        onAddressClicked(addr)
+                        showContextMenu = false
+                    }
+                )
+
+                DropdownMenuItem(
+                    text = { Text("Jump to Hex View", color = PS5ThemeColors.AccentCyan) },
+                    onClick = {
+                        onJumpToHex(addr)
+                        showContextMenu = false
+                    }
+                )
+
+                if (isAttached) {
+                    HorizontalDivider(color = PS5ThemeColors.BorderColor)
+                    DropdownMenuItem(text = { Text("Set Software Breakpoint") }, onClick = {
+                        onSetBreakpoint(addr)
+                        showContextMenu = false
+                    })
+                    DropdownMenuItem(text = { Text("Set Hardware Watchpoint...") }, onClick = {
+                        onSetWatchpoint(addr)
+                        showContextMenu = false
+                    })
+                }
             }
         }
 

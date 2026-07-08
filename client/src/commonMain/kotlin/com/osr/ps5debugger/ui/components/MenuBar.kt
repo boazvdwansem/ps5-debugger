@@ -22,7 +22,7 @@ fun TopMenuBar(
     ) {
         MenuDropdown(
             title = "File",
-            options = listOf("Save", "Load", "Preferences", "Exit").map { it to { onFileAction(it) } }
+            options = listOf("Save", "Load", "Exit").map { it to { onFileAction(it) } }
         )
 
         MenuDropdown(
@@ -38,7 +38,8 @@ fun TopMenuBar(
                 "Select None",
                 "Find",
                 "Find next",
-                "Go to address"
+                "Go to address",
+                "Preferences"
             ).map { it to { onEditAction(it) } }
         )
 

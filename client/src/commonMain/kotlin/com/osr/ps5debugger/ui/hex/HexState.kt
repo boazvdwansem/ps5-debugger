@@ -254,11 +254,11 @@ class HexState(
         }
     }
 
-    fun getAddressAtOffset(x: Float, y: Float, density: Float, isMobile: Boolean): Pair<Long, ClickedArea>? {
-        val addressWidthPx = if (isMobile) 80f * density else 120f * density
+    fun getAddressAtOffset(x: Float, y: Float, density: Float, isMobile: Boolean, showAddress: Boolean): Pair<Long, ClickedArea>? {
+        val addressWidthPx = if (showAddress) (if (isMobile) 80f * density else 120f * density) else 0f
         val hexCellWidthPx = if (isMobile) 20f * density else 24f * density
         val asciiCellWidthPx = if (isMobile) 9f * density else 12f * density
-        val spacerAddressToHexPx = if (isMobile) 6f * density else 8f * density
+        val spacerAddressToHexPx = if (showAddress) (if (isMobile) 6f * density else 8f * density) else 0f
         val spacerHexToAsciiPx = if (isMobile) 12f * density else 16f * density
 
         val rowHeightPx = 24f * density
@@ -279,7 +279,7 @@ class HexState(
         val midAddressHex = addressWidthPx + spacerAddressToHexPx / 2f
         val midHexAscii = endHexX + spacerHexToAsciiPx / 2f
         
-        return if (x < midAddressHex) {
+        return if (showAddress && x < midAddressHex) {
             Pair(rowAddress, ClickedArea.ADDRESS)
         } else if (x < midHexAscii) {
             val offsetInHex = (x - startHexX).coerceIn(0f, (bytesPerRow * hexCellWidthPx) - 0.1f)
@@ -350,6 +350,9 @@ fun rememberHexState(
         HexState(activeMap, activeMaps, jumpToAddress, selectionStartParam, selectionEndParam, onSelectionChanged, scope)
     }
     
+    state.selectionStart = selectionStartParam
+    state.selectionEnd = selectionEndParam
+
     SideEffect {
         val mapsChanged = state.activeMap != activeMap || state.activeMaps.size != activeMaps.size || !state.activeMaps.containsAll(activeMaps)
         state.activeMap = activeMap

@@ -9,13 +9,19 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ExitToApp
-import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -74,6 +80,7 @@ fun MainScreen(onExit: () -> Unit = {}) {
 @Composable
 private fun MainContent(state: MainState) {
     val coroutineScope = rememberCoroutineScope()
+    var isSettingsOpen by remember { mutableStateOf(false) }
     
     // Track active tool window ids. We use "connections" for left, "debugger" for right.
     var activeLeftTab by remember { mutableStateOf<String?>("connections") }
@@ -81,7 +88,10 @@ private fun MainContent(state: MainState) {
     
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
-            TopBar(state)
+            BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                val isMobile = maxWidth < 800.dp
+                TopBar(state, isMobile = isMobile, onSettingsClick = { isSettingsOpen = true })
+            }
             HorizontalDivider(color = PS5ThemeColors.BorderColor)
 
             Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
@@ -248,6 +258,10 @@ private fun MainContent(state: MainState) {
                 modifier = Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = 16.dp)
             )
         }
+
+        if (isSettingsOpen) {
+            SettingsMenuOverlay(onClose = { isSettingsOpen = false })
+        }
     }
 }
 
@@ -353,7 +367,7 @@ private fun ConsolePanel(state: MainState) {
 }
 
 @Composable
-private fun TopBar(state: MainState) {
+private fun TopBar(state: MainState, isMobile: Boolean, onSettingsClick: () -> Unit) {
     val coroutineScope = rememberCoroutineScope()
     
     Row(
@@ -364,13 +378,60 @@ private fun TopBar(state: MainState) {
             .padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        TopMenuBar(
-            onFileAction = state::handleFileAction,
-            onEditAction = state::handleEditAction,
-            onViewAction = state::handleViewAction
-        )
+        if (!isMobile) {
+            TopMenuBar(
+                onFileAction = state::handleFileAction,
+                onEditAction = { action ->
+                    if (action == "Preferences") {
+                        onSettingsClick()
+                    } else {
+                        state.handleEditAction(action)
+                    }
+                },
+                onViewAction = state::handleViewAction
+            )
+        } else {
+            Text(
+                text = "PS5 Debugger",
+                color = PS5ThemeColors.AccentCyan,
+                fontWeight = FontWeight.Bold,
+                fontSize = 14.sp
+            )
+        }
 
         Spacer(modifier = Modifier.weight(1f))
+
+        if (isMobile) {
+            IconButton(
+                onClick = onSettingsClick,
+                modifier = Modifier
+                    .padding(end = 8.dp)
+                    .size(36.dp)
+                    .background(PS5ThemeColors.SecondaryBg, RoundedCornerShape(4.dp))
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Settings,
+                    contentDescription = "Settings",
+                    tint = Color.White,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+
+            IconButton(
+                onClick = { state.isConsoleVisible = !state.isConsoleVisible },
+                modifier = Modifier
+                    .padding(end = 8.dp)
+                    .size(36.dp)
+                    .background(PS5ThemeColors.SecondaryBg, RoundedCornerShape(4.dp))
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.List,
+                    contentDescription = "Console",
+                    tint = if (state.isConsoleVisible) PS5ThemeColors.AccentCyan else Color.White,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
 
         Tooltip("Disconnect") {
             Button(
@@ -392,5 +453,178 @@ private fun TopBar(state: MainState) {
                 )
             }
         }
+    }
+}
+
+@Composable
+fun SettingsMenuOverlay(
+    onClose: () -> Unit
+) {
+    var currentScreen by remember { mutableStateOf("main") }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFF121212)) // Dark native background
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            // Header
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp)
+                    .background(Color(0xFF1C1C1E))
+                    .padding(horizontal = 16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(
+                    onClick = {
+                        if (currentScreen == "main") {
+                            onClose()
+                        } else {
+                            currentScreen = "main"
+                        }
+                    }
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ArrowBack,
+                        contentDescription = "Back",
+                        tint = Color.White
+                    )
+                }
+                Spacer(Modifier.width(16.dp))
+                Text(
+                    text = when (currentScreen) {
+                        "appearance" -> "Appearance Settings"
+                        "connection" -> "Connection Settings"
+                        "accessibility" -> "Accessibility Settings"
+                        "support" -> "Support"
+                        else -> "Settings"
+                    },
+                    color = Color.White,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            HorizontalDivider(color = Color(0xFF2C2C2E))
+
+            // Body
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .padding(16.dp)
+            ) {
+                when (currentScreen) {
+                    "main" -> {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            SettingsItem(
+                                title = "Appearance",
+                                icon = Icons.Default.Settings,
+                                iconBg = Color(0xFF0A84FF),
+                                onClick = { currentScreen = "appearance" }
+                            )
+                            SettingsItem(
+                                title = "Connection",
+                                icon = Icons.Default.Share,
+                                iconBg = Color(0xFF30D158),
+                                onClick = { currentScreen = "connection" }
+                            )
+                            SettingsItem(
+                                title = "Accessibility",
+                                icon = Icons.Default.Info,
+                                iconBg = Color(0xFFBF5AF2),
+                                onClick = { currentScreen = "accessibility" }
+                            )
+                            SettingsItem(
+                                title = "Support",
+                                icon = Icons.Default.Info,
+                                iconBg = Color(0xFFFF9F0A),
+                                onClick = { currentScreen = "support" }
+                            )
+                        }
+                    }
+                    "appearance" -> {
+                        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                            Text("Theme Preference", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(onClick = {}, colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.AccentCyan)) {
+                                    Text("Dark Mode (Active)")
+                                }
+                                Button(onClick = {}, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2C2C2E))) {
+                                    Text("Ghidra Dark")
+                                }
+                            }
+                        }
+                    }
+                    "connection" -> {
+                        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                            Text("Connection Preferences", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                            Text("Auto-Reconnect: Enabled", color = Color.Gray, fontSize = 12.sp)
+                            Text("Timeout: 5000ms", color = Color.Gray, fontSize = 12.sp)
+                        }
+                    }
+                    "accessibility" -> {
+                        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                            Text("Accessibility Options", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                            Text("Text Size: Medium", color = Color.Gray, fontSize = 12.sp)
+                            Text("High Contrast: Off", color = Color.Gray, fontSize = 12.sp)
+                        }
+                    }
+                    "support" -> {
+                        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                            Text("Support & Version Info", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                            Text("PS5 Debugger Client v2.0.1", color = Color.Gray, fontSize = 12.sp)
+                            Text("Developed by Google DeepMind team.", color = Color.Gray, fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun SettingsItem(
+    title: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    iconBg: Color,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFF1C1C1E), RoundedCornerShape(10.dp))
+            .clickable { onClick() }
+            .padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(32.dp)
+                .background(iconBg, RoundedCornerShape(6.dp)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(18.dp)
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Text(
+            text = title,
+            color = Color.White,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.weight(1f)
+        )
+        Icon(
+            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+            contentDescription = null,
+            tint = Color.Gray,
+            modifier = Modifier.size(20.dp)
+        )
     }
 }

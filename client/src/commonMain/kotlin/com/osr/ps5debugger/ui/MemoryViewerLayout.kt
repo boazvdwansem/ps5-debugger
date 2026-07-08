@@ -63,6 +63,18 @@ fun MemoryViewerLayout(
         }
     }
 
+    LaunchedEffect(state.viewMode, state.selectionStart, functions) {
+        if (state.viewMode == 1) { // 1 = Graph View
+            val selectionAddr = state.selectionStart
+            if (selectionAddr != null) {
+                val targetFunc = functions.filter { it <= selectionAddr }.maxOrNull()
+                if (targetFunc != null) {
+                    selectedGraphFunction = targetFunc
+                }
+            }
+        }
+    }
+
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val isMobile = maxWidth < 800.dp
         Column(modifier = Modifier.fillMaxSize()) {
@@ -100,6 +112,10 @@ fun MemoryViewerLayout(
                         onAddressClicked = { addr ->
                             state.currentJumpAddress = addr
                             state.setViewMode(0)
+                        },
+                        onJumpToHex = { addr ->
+                            state.currentJumpAddress = addr
+                            state.setViewMode(2)
                         },
                         isAttached = isAttached,
                         activeBreakpoints = activeBreakpoints,
@@ -246,63 +262,25 @@ private fun DisassemblyView(
     val isAttached by state.isAttached.collectAsState()
     val functionSet = remember(functions) { functions.toSet() }
 
-    if (isMobile) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            DisassemblyViewer(
-                activeMap = state.activeMap,
-                activeMaps = state.activeMaps,
-                instructions = instructions,
-                jumpToAddress = state.currentJumpAddress,
-                selectionStart = state.selectionStart,
-                selectionEnd = state.selectionEnd,
-                onSelectionChanged = { start, end ->
-                    state.updateSelection(start, end)
-                    if (start != null) state.currentJumpAddress = start
-                },
-                onJumpToAddress = { addr -> state.currentJumpAddress = addr },
-                onJumpToHex = { addr -> state.currentJumpAddress = addr; state.setViewMode(2) },
-                onJumpToGraph = onJumpToGraph,
-                isAttached = isAttached,
-                activeBreakpoints = activeBreakpoints,
-                activeWatchpoints = activeWatchpoints,
-                isLoading = state.isLoading,
-                functionAddresses = functionSet,
-                modifier = Modifier.weight(1f)
-            )
-            HorizontalDivider(color = PS5ThemeColors.BorderColor)
-            HexViewer(
-                activeMap = state.activeMap,
-                activeMaps = state.activeMaps,
-                jumpToAddress = state.currentJumpAddress,
-                modifier = Modifier.weight(1f),
-                showAddress = false,
-                selectionStartParam = state.selectionStart,
-                selectionEndParam = state.selectionEnd,
-                onSelectionChanged = { start, end -> state.updateSelection(start, end) }
-            )
-        }
-    } else {
-        DisassemblyViewer(
-            activeMap = state.activeMap,
-            activeMaps = state.activeMaps,
-            instructions = instructions,
-            jumpToAddress = state.currentJumpAddress,
-            selectionStart = state.selectionStart,
-            selectionEnd = state.selectionEnd,
-            onSelectionChanged = { start, end ->
-                state.updateSelection(start, end)
-                if (start != null) state.currentJumpAddress = start
-            },
-            onJumpToAddress = { addr -> state.currentJumpAddress = addr },
-            onJumpToHex = { addr -> state.currentJumpAddress = addr; state.setViewMode(2) },
-            onJumpToGraph = onJumpToGraph,
-            isAttached = isAttached,
-            activeBreakpoints = activeBreakpoints,
-            activeWatchpoints = activeWatchpoints,
-            isLoading = state.isLoading,
-            functionAddresses = functionSet,
-            modifier = Modifier.fillMaxSize(),
-            showHexDetails = true
-        )
-    }
+    DisassemblyViewer(
+        activeMap = state.activeMap,
+        activeMaps = state.activeMaps,
+        instructions = instructions,
+        jumpToAddress = state.currentJumpAddress,
+        selectionStart = state.selectionStart,
+        selectionEnd = state.selectionEnd,
+        onSelectionChanged = { start, end ->
+            state.updateSelection(start, end)
+        },
+        onJumpToAddress = { addr -> state.currentJumpAddress = addr },
+        onJumpToHex = { addr -> state.currentJumpAddress = addr; state.setViewMode(2) },
+        onJumpToGraph = onJumpToGraph,
+        isAttached = isAttached,
+        activeBreakpoints = activeBreakpoints,
+        activeWatchpoints = activeWatchpoints,
+        isLoading = state.isLoading,
+        functionAddresses = functionSet,
+        modifier = Modifier.fillMaxSize(),
+        showHexDetails = !isMobile
+    )
 }

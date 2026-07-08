@@ -8,6 +8,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -124,6 +126,18 @@ fun DisassemblyViewer(
 
     val listState = rememberLazyListState()
     
+    LaunchedEffect(Unit) {
+        val target = selectionStart
+        if (target != null) {
+            val index = instructions.indexOfFirst { it.instr.addr == target }
+            if (index != -1) {
+                try {
+                    listState.scrollToItem(index)
+                } catch (_: Exception) {}
+            }
+        }
+    }
+    
     var selectionAnchor by remember { mutableStateOf<Long?>(null) }
     LaunchedEffect(selectionStart) {
         if (selectionStart != null && selectionAnchor != null) {
@@ -136,27 +150,16 @@ fun DisassemblyViewer(
         }
     }
     
-    // Auto-update scrolling when jumpToAddress is requested
-    LaunchedEffect(activeMap, jumpToAddress, selectionStart, selectionEnd) {
-        if (activeMap != null) {
-            val target = jumpToAddress
-            if (target != null && target >= activeMap.start && target < activeMap.end) {
-                // Determine if this jump is external or internal selection click
-                val isLocalSelection = target == selectionStart || target == selectionEnd || target == selectionAnchor
-                if (!isLocalSelection) {
-                    goToAddressText = target.toString(16).uppercase()
-                    
-                    // Try to find the item in our loaded list and scroll to it
-                    val index = instructions.indexOfFirst { it.instr.addr == target }
-                    if (index != -1) {
-                        try {
-                            val isVisible = listState.layoutInfo.visibleItemsInfo.any { it.index == index }
-                            if (!isVisible) {
-                                listState.animateScrollToItem(index)
-                            }
-                        } catch (_: Exception) {}
-                    }
-                }
+    var lastJumpAddress by remember { mutableStateOf<Long?>(null) }
+    LaunchedEffect(activeMap, jumpToAddress) {
+        if (activeMap != null && jumpToAddress != null && jumpToAddress != lastJumpAddress) {
+            lastJumpAddress = jumpToAddress
+            goToAddressText = jumpToAddress.toString(16).uppercase()
+            val index = instructions.indexOfFirst { it.instr.addr == jumpToAddress }
+            if (index != -1) {
+                try {
+                    listState.animateScrollToItem(index)
+                } catch (_: Exception) {}
             }
         }
     }
@@ -352,6 +355,10 @@ fun DisassemblyViewer(
                     }
                 }
 
+                val jumpTargets = remember(activeJumps) {
+                    activeJumps.map { it.second }.toSet()
+                }
+
                 val rangesOverlap = { a1: Long, a2: Long, b1: Long, b2: Long ->
                     val minA = minOf(a1, a2)
                     val maxA = maxOf(a1, a2)
@@ -391,14 +398,20 @@ fun DisassemblyViewer(
                     }.toMap()
                 }
 
-                LazyColumn(
-                    state = listState,
+                Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(PS5ThemeColors.Surface, RoundedCornerShape(4.dp))
-                        .border(1.dp, PS5ThemeColors.BorderColor, RoundedCornerShape(4.dp))
-                        .padding(8.dp)
+                        .horizontalScroll(rememberScrollState())
                 ) {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier
+                            .widthIn(min = 900.dp)
+                            .fillMaxHeight()
+                            .background(PS5ThemeColors.Surface, RoundedCornerShape(4.dp))
+                            .border(1.dp, PS5ThemeColors.BorderColor, RoundedCornerShape(4.dp))
+                            .padding(8.dp)
+                    ) {
                     itemsIndexed(instructions) { idx, line ->
                         val isSelected = isInstructionSelected(line.instr, selectionStart, selectionEnd)
                         val hasBreakpoint = activeBreakpoints.values.contains(line.instr.addr) || activeWatchpoints.values.contains(line.instr.addr)
@@ -431,12 +444,33 @@ fun DisassemblyViewer(
                                 Spacer(Modifier.height(8.dp))
                             }
 
+                            val isLocalLabel = jumpTargets.contains(line.instr.addr) && !isFunctionStart
+
                             if (isFunctionStart) {
                                 Spacer(Modifier.height(12.dp))
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(PS5ThemeColors.SecondaryBg, RoundedCornerShape(4.dp))
+                                        .border(1.dp, PS5ThemeColors.BorderColor.copy(alpha = 0.5f), RoundedCornerShape(4.dp))
+                                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "sub_${line.instr.addr.toString(16).uppercase()}:",
+                                        color = Color(0xFF64FFDA),
+                                        fontSize = 12.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                Spacer(Modifier.height(6.dp))
+                            } else if (isLocalLabel) {
+                                Spacer(Modifier.height(8.dp))
                                 Text(
-                                    text = "sub_${line.instr.addr.toString(16).uppercase()}:",
-                                    color = Color(0xFF64FFDA),
-                                    fontSize = 12.sp,
+                                    text = "loc_${line.instr.addr.toString(16).uppercase()}:",
+                                    color = Color(0xFF90A4AE),
+                                    fontSize = 11.sp,
                                     fontFamily = FontFamily.Monospace,
                                     fontWeight = FontWeight.Bold,
                                     modifier = Modifier.padding(start = 28.dp, bottom = 4.dp)
@@ -707,6 +741,7 @@ fun DisassemblyViewer(
                     }
                 }
             }
+        }
         }
 
         // Set Hardware Watchpoint Configuration Modal
@@ -991,7 +1026,9 @@ fun DisasmRow(
                 fontFamily = FontFamily.Monospace,
                 fontSize = 11.sp,
                 color = commentColor,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                softWrap = false
             )
         }
     }
