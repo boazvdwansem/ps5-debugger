@@ -33,7 +33,18 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.DpOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.foundation.focusable
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -127,13 +138,50 @@ fun GraphViewer(
     var contextMenuOffset by remember { mutableStateOf(DpOffset.Zero) }
     
     var containerPosition by remember { mutableStateOf(Offset.Zero) }
+    var containerSize by remember { mutableStateOf(IntSize.Zero) }
 
+    val focusRequester = remember { FocusRequester() }
     Box(
         modifier = modifier
             .fillMaxSize()
             .background(PS5ThemeColors.DarkBg)
             .clipToBounds()
-            .onGloballyPositioned { containerPosition = it.localToWindow(Offset.Zero) }
+            .onGloballyPositioned { 
+                containerPosition = it.localToWindow(Offset.Zero) 
+                containerSize = it.size
+            }
+            .focusRequester(focusRequester)
+            .focusable()
+            .onKeyEvent { event ->
+                if (event.type == KeyEventType.KeyDown) {
+                    val currentAddr = selectionEnd ?: selectionStart
+                    val currentIndex = if (currentAddr != null) instructions.indexOfFirst { it.instr.addr == currentAddr } else -1
+                    
+                    val targetIndex = when (event.key) {
+                        Key.DirectionUp -> if (currentIndex > 0) currentIndex - 1 else -1
+                        Key.DirectionDown -> if (currentIndex < instructions.size - 1) currentIndex + 1 else -1
+                        else -> -1
+                    }
+                    
+                    if (targetIndex != -1) {
+                        val targetInstr = instructions[targetIndex].instr
+                        val targetAddr = targetInstr.addr
+                        if (event.isShiftPressed) {
+                            val start = selectionStart ?: targetAddr
+                            onSelectionChanged?.invoke(start, targetAddr + targetInstr.length - 1)
+                        } else {
+                            onSelectionChanged?.invoke(targetAddr, targetAddr + targetInstr.length - 1)
+                        }
+                        
+                        // Auto center on selected instruction node
+                        val targetNode = nodes.firstOrNull { targetAddr >= it.startAddr && targetAddr <= it.endAddr }
+                        if (targetNode != null) {
+                            offset = Offset(-(targetNode.x * scale * density) + (containerSize.width / 2f), -(targetNode.y * scale * density) + (containerSize.height / 2f))
+                        }
+                        true
+                    } else false
+                } else false
+            }
     ) {
         if (isLoading && nodes.isEmpty()) {
             Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator(color = PS5ThemeColors.AccentCyan) }
@@ -154,9 +202,12 @@ fun GraphViewer(
                         }
                     }
                     .pointerInput(filterFunctionAddr) {
-                        detectTransformGestures { _, pan, zoom, _ ->
-                            scale = (scale * zoom).coerceIn(0.05f, 4.0f)
-                            offset += pan
+                        detectTransformGestures { centroid, pan, zoom, _ ->
+                            val oldScale = scale
+                            val newScale = (scale * zoom).coerceIn(0.05f, 4.0f)
+                            val scaleRatio = newScale / oldScale
+                            scale = newScale
+                            offset = centroid - (centroid - offset) * scaleRatio + pan
                         }
                     }
                     .pointerInput(filterFunctionAddr) {
@@ -164,9 +215,15 @@ fun GraphViewer(
                             while (true) {
                                 val event = awaitPointerEvent()
                                 if (event.type == PointerEventType.Scroll) {
-                                    val delta = event.changes.first().scrollDelta.y
+                                    val change = event.changes.first()
+                                    val centroid = change.position
+                                    val delta = change.scrollDelta.y
                                     val zoom = if (delta > 0) 0.9f else 1.1f
-                                    scale = (scale * zoom).coerceIn(0.05f, 4.0f)
+                                    val oldScale = scale
+                                    val newScale = (scale * zoom).coerceIn(0.05f, 4.0f)
+                                    val scaleRatio = newScale / oldScale
+                                    scale = newScale
+                                    offset = centroid - (centroid - offset) * scaleRatio
                                     event.changes.forEach { it.consume() }
                                 }
                             }
@@ -205,7 +262,8 @@ fun GraphViewer(
                                 activeBreakpoints = activeBreakpoints,
                                 activeWatchpoints = activeWatchpoints,
                                 isEntry = node.startAddr == filterFunctionAddr,
-                                onLineClicked = { addr, len, isShift ->
+                                 onLineClicked = { addr, len, isShift ->
+                                    try { focusRequester.requestFocus() } catch (_: Exception) {}
                                     if (isShift && selectionStart != null) {
                                         val startIdx = instructions.indexOfFirst { it.instr.addr == selectionStart }
                                         val endIdx = instructions.indexOfFirst { it.instr.addr == addr }
@@ -227,6 +285,20 @@ fun GraphViewer(
                                         (screenPos.y - containerPosition.y).dp / density
                                     )
                                     showContextMenu = true
+                                },
+                                onDragSelection = { lineAddr, rowsOffset ->
+                                    val startIdx = instructions.indexOfFirst { it.instr.addr == lineAddr }
+                                    if (startIdx != -1) {
+                                        val targetIdx = (startIdx + rowsOffset).coerceIn(0, instructions.size - 1)
+                                        val targetLine = instructions[targetIdx]
+                                        val anchor = selectionStart ?: lineAddr
+                                        if (targetLine.instr.addr >= anchor) {
+                                            onSelectionChanged?.invoke(anchor, targetLine.instr.addr + targetLine.instr.length - 1)
+                                        } else {
+                                            val lineLen = instructions.firstOrNull { it.instr.addr == lineAddr }?.instr?.length ?: 1
+                                            onSelectionChanged?.invoke(anchor + lineLen - 1, targetLine.instr.addr)
+                                        }
+                                    }
                                 }
                             )
                         }
@@ -331,8 +403,24 @@ fun GraphViewer(
             colors = CardDefaults.cardColors(containerColor = Color(0xFF252525).copy(alpha = 0.9f))
         ) {
             Row(Modifier.padding(4.dp), Arrangement.spacedBy(4.dp)) {
-                IconButton(onClick = { scale *= 1.2f }) { Icon(Icons.Default.Add, null, tint = Color.White) }
-                IconButton(onClick = { scale *= 0.8f }) { Text("-", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color.White) }
+                IconButton(onClick = {
+                    val oldScale = scale
+                    val newScale = (scale * 1.2f).coerceIn(0.05f, 4.0f)
+                    val viewportCenter = Offset(containerSize.width / 2f, containerSize.height / 2f)
+                    val scaleRatio = newScale / oldScale
+                    scale = newScale
+                    offset = viewportCenter - (viewportCenter - offset) * scaleRatio
+                }) { Icon(Icons.Default.Add, null, tint = Color.White) }
+                
+                IconButton(onClick = {
+                    val oldScale = scale
+                    val newScale = (scale * 0.8f).coerceIn(0.05f, 4.0f)
+                    val viewportCenter = Offset(containerSize.width / 2f, containerSize.height / 2f)
+                    val scaleRatio = newScale / oldScale
+                    scale = newScale
+                    offset = viewportCenter - (viewportCenter - offset) * scaleRatio
+                }) { Text("-", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color.White) }
+                
                 IconButton(onClick = { 
                     scale = 0.7f
                     val topNode = nodes.minByOrNull { it.y }
@@ -353,9 +441,11 @@ fun NodeBlock(
     activeWatchpoints: Map<Int, Long>,
     isEntry: Boolean,
     onLineClicked: (Long, Int, Boolean) -> Unit,
-    onLineRightClicked: (Long, Offset) -> Unit
+    onLineRightClicked: (Long, Offset) -> Unit,
+    onDragSelection: ((Long, Int) -> Unit)? = null
 ) {
     val density = LocalDensity.current.density
+    val coroutineScope = rememberCoroutineScope()
     Box(
         Modifier
             .offset(x = node.x.dp, y = node.y.dp)
@@ -373,9 +463,9 @@ fun NodeBlock(
         Column {
             Text(
                 text = when {
-                    node.isExternal -> "ext_${node.startAddr.toString(16).uppercase()}:"
-                    isEntry -> "entry_sub_${node.startAddr.toString(16).uppercase()}:"
-                    else -> "loc_${node.startAddr.toString(16).uppercase()}:"
+                    node.isExternal -> "ext_${node.startAddr.toString(16).uppercase()}"
+                    isEntry -> "entry_sub_${node.startAddr.toString(16).uppercase()}"
+                    else -> "loc_${node.startAddr.toString(16).uppercase()}"
                 },
                 color = when {
                     node.isExternal -> Color(0xFF78909C)
@@ -404,21 +494,64 @@ fun NodeBlock(
                         .onGloballyPositioned { rowLayoutCoords = it }
                         .pointerInput(line.instr.addr, selectionStart, selectionEnd, onLineClicked, onLineRightClicked) {
                             awaitPointerEventScope {
+                                var touchStartPos: Offset? = null
+                                var isLongPressActive = false
+                                var hasTriggeredLongPress = false
+                                var isDragging = false
                                 while (true) {
                                     val event = awaitPointerEvent()
-                                    if (event.type == PointerEventType.Press) {
-                                        val change = event.changes.first()
-                                        val isShift = event.keyboardModifiers.isShiftPressed
-                                        val isSecondary = event.buttons.isSecondaryPressed
-                                        
-                                        if (isSecondary) {
-                                            rowLayoutCoords?.let { coords ->
-                                                onLineRightClicked(line.instr.addr, coords.localToWindow(change.position))
+                                    val change = event.changes.first()
+                                    when (event.type) {
+                                        PointerEventType.Press -> {
+                                            touchStartPos = change.position
+                                            isDragging = false
+                                            hasTriggeredLongPress = false
+                                            val isSecondary = event.buttons.isSecondaryPressed
+                                            
+                                            if (isSecondary) {
+                                                rowLayoutCoords?.let { coords ->
+                                                    onLineRightClicked(line.instr.addr, coords.localToWindow(change.position))
+                                                }
+                                            } else {
+                                                isLongPressActive = true
+                                                coroutineScope.launch {
+                                                    kotlinx.coroutines.delay(500)
+                                                    if (isLongPressActive) {
+                                                        hasTriggeredLongPress = true
+                                                        rowLayoutCoords?.let { coords ->
+                                                            onLineRightClicked(line.instr.addr, coords.localToWindow(change.position))
+                                                        }
+                                                        isLongPressActive = false
+                                                    }
+                                                }
                                             }
-                                        } else {
-                                            onLineClicked(line.instr.addr, line.instr.length, isShift)
+                                            change.consume()
                                         }
-                                        change.consume()
+                                        PointerEventType.Move -> {
+                                            val start = touchStartPos
+                                            if (start != null) {
+                                                val dragY = change.position.y - start.y
+                                                val dragX = change.position.x - start.x
+                                                val dragDistance = kotlin.math.sqrt(dragX * dragX + dragY * dragY)
+                                                val dragThreshold = 16f
+                                                if (dragDistance > dragThreshold) {
+                                                    isLongPressActive = false
+                                                    isDragging = true
+                                                    
+                                                    val rowHeightPx = 16f * density
+                                                    val rowsOffset = (change.position.y / rowHeightPx).toInt()
+                                                    onDragSelection?.invoke(line.instr.addr, rowsOffset)
+                                                }
+                                            }
+                                        }
+                                        PointerEventType.Release -> {
+                                            isLongPressActive = false
+                                            if (!hasTriggeredLongPress && !isDragging) {
+                                                val isShift = event.keyboardModifiers.isShiftPressed
+                                                onLineClicked(line.instr.addr, line.instr.length, isShift)
+                                            }
+                                            touchStartPos = null
+                                        }
                                     }
                                 }
                             }

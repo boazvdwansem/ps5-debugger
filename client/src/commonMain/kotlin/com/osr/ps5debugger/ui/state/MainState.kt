@@ -22,6 +22,7 @@ class MainState(
     var isConsoleVisible by mutableStateOf(false)
     var isSidebarVisible by mutableStateOf(true)
     var isDebugSidebarVisible by mutableStateOf(false)
+    var isSettingsOpen by mutableStateOf(false)
     
     val activeBreakpoints = mutableStateMapOf<Int, Long>()
     val activeWatchpoints = mutableStateMapOf<Int, Long>()
@@ -55,6 +56,9 @@ class MainState(
                 }
             }
             "Exit" -> onExit()
+            "Preferences" -> {
+                isSettingsOpen = true
+            }
         }
     }
 
@@ -100,6 +104,9 @@ class MainState(
             }
             "Go to address" -> {
                 selectedTab = 0
+            }
+            "Preferences" -> {
+                isSettingsOpen = true
             }
         }
     }

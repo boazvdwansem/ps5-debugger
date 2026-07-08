@@ -14,16 +14,32 @@ import androidx.compose.ui.unit.sp
 import com.osr.ps5debugger.network.Ps5Discovery
 import com.osr.ps5debugger.di.AppContainer
 import com.osr.ps5debugger.PS5ThemeColors
+import com.osr.ps5debugger.util.DefaultIpHelper
 import kotlinx.coroutines.launch
 
 @Composable
 fun ConnectionScreen(modifier: Modifier = Modifier) {
     val coroutineScope = rememberCoroutineScope()
-    var ipInput by remember { mutableStateOf("192.168.1.100") }
+    var ipInput by remember { mutableStateOf(DefaultIpHelper.getDefaultIp() ?: "192.168.1.100") }
     var isConnecting by remember { mutableStateOf(false) }
     var isDiscovering by remember { mutableStateOf(false) }
     var statusMessage by remember { mutableStateOf("") }
     var statusColor by remember { mutableStateOf(PS5ThemeColors.TextMuted) }
+
+    LaunchedEffect(Unit) {
+        val defaultIp = DefaultIpHelper.getDefaultIp()
+        if (defaultIp != null) {
+            isConnecting = true
+            statusMessage = "Auto-connecting to default IP: $defaultIp..."
+            statusColor = PS5ThemeColors.AccentCyan
+            val success = AppContainer.debuggerUseCase.connect(defaultIp)
+            isConnecting = false
+            if (!success) {
+                statusMessage = "Auto-connection to $defaultIp failed."
+                statusColor = PS5ThemeColors.StatusRed
+            }
+        }
+    }
 
     Box(
         modifier = modifier

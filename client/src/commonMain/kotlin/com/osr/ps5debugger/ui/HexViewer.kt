@@ -336,9 +336,32 @@ private fun HexGridBody(state: HexState, isMobile: Boolean, showAddress: Boolean
                                 state.isDraggingToScroll = false
                                 state.isDraggingToSelect = false
                                 state.isLongPressSelection = false
+                                state.hasTriggeredLongPress = false
                                 state.isSecondaryClick = event.buttons.isSecondaryPressed
                                 
                                 val clickResult = state.getAddressAtOffset(position.x, position.y, density, isMobile, showAddress)
+                                
+                                if (isMobile) {
+                                    state.isLongPressActive = true
+                                    coroutineScope.launch {
+                                        kotlinx.coroutines.delay(500)
+                                        if (state.isLongPressActive && state.touchStartPos != null && !state.isDraggingToScroll && !state.isDraggingToSelect) {
+                                            if (clickResult != null) {
+                                                state.hasTriggeredLongPress = true
+                                                val (addr, area) = clickResult
+                                                state.clickedArea = area
+                                                state.contextMenuAddr = addr
+                                                if (!state.isAddressSelected(addr)) {
+                                                    state.onSelectionChanged?.invoke(addr, addr)
+                                                }
+                                                state.contextMenuOffset = DpOffset(position.x.dp / density, position.y.dp / density)
+                                                state.showContextMenu = true
+                                            }
+                                            state.isLongPressActive = false
+                                        }
+                                    }
+                                }
+                                
                                 if (state.isSecondaryClick) {
                                     if (clickResult != null) {
                                         val (addr, area) = clickResult
@@ -353,9 +376,9 @@ private fun HexGridBody(state: HexState, isMobile: Boolean, showAddress: Boolean
                                 } else if (clickResult != null) {
                                     val (addr, area) = clickResult
                                      if (!isMobile && (area == ClickedArea.HEX || area == ClickedArea.ASCII)) {
-                                         state.clickedArea = area
-                                         state.onSelectionChanged?.invoke(addr, addr)
-                                         state.hexInputBuffer = ""
+                                          state.clickedArea = area
+                                          state.onSelectionChanged?.invoke(addr, addr)
+                                          state.hexInputBuffer = ""
                                      }
                                 }
                             }
@@ -366,6 +389,10 @@ private fun HexGridBody(state: HexState, isMobile: Boolean, showAddress: Boolean
                                     val dragX = position.x - startPos.x
                                     val dragDistance = kotlin.math.sqrt(dragX * dragX + dragY * dragY)
                                     val dragThreshold = if (isMobile) 24f * density else 8f * density
+                                    
+                                    if (dragDistance > dragThreshold) {
+                                        state.isLongPressActive = false
+                                    }
                                     
                                     if (!state.isDraggingToScroll && !state.isDraggingToSelect && dragDistance > dragThreshold) {
                                         val pressClickResult = state.getAddressAtOffset(startPos.x, startPos.y, density, isMobile, showAddress)
@@ -382,23 +409,25 @@ private fun HexGridBody(state: HexState, isMobile: Boolean, showAddress: Boolean
                                         change.consume()
                                          state.getAddressAtOffset(position.x, position.y, density, isMobile, showAddress)?.let { (addr, area) ->
                                              if (area == ClickedArea.HEX || area == ClickedArea.ASCII) {
-                                                 state.onSelectionChanged?.invoke(state.selectionStart, addr)
+                                                  state.onSelectionChanged?.invoke(state.selectionStart, addr)
                                              }
                                          }
                                     } else if (state.isDraggingToScroll) {
                                         change.consume()
-                                        val rowDelta = (-dragY / (24f * density)).toLong()
-                                        state.updateScrollPosition((state.touchStartScroll + rowDelta).coerceIn(0L, state.getMaxScrollPosition()))
+                                         val rowDelta = (-dragY / (24f * density)).toLong()
+                                         state.updateScrollPosition((state.touchStartScroll + rowDelta).coerceIn(0L, state.getMaxScrollPosition()))
                                     }
                                 }
                             }
                             PointerEventType.Release -> {
-                                if (state.touchStartPos != null && !state.isSecondaryClick && !state.isDraggingToScroll && !state.isDraggingToSelect) {
+                                state.isLongPressActive = false
+                                if (state.touchStartPos != null && !state.isSecondaryClick && !state.isDraggingToScroll && !state.isDraggingToSelect && !state.hasTriggeredLongPress) {
                                     state.getAddressAtOffset(position.x, position.y, density, isMobile, showAddress)?.let { (addr, area) ->
                                          if (area == ClickedArea.HEX || area == ClickedArea.ASCII) {
                                              state.clickedArea = area
                                              state.onSelectionChanged?.invoke(addr, addr)
                                              state.hexInputBuffer = ""
+                                             try { state.focusRequester.requestFocus() } catch (_: Exception) {}
                                             
                                             val currentTime = System.currentTimeMillis()
                                             if (currentTime - state.lastTapTime < 500) {

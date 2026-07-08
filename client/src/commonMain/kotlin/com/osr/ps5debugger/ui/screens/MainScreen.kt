@@ -40,6 +40,7 @@ import com.osr.ps5debugger.ui.components.TopMenuBar
 import com.osr.ps5debugger.ui.state.MainState
 import com.osr.ps5debugger.ui.state.rememberMainState
 import kotlinx.coroutines.launch
+import com.osr.ps5debugger.util.DefaultIpHelper
 
 @Composable
 fun MainScreen(onExit: () -> Unit = {}) {
@@ -80,7 +81,6 @@ fun MainScreen(onExit: () -> Unit = {}) {
 @Composable
 private fun MainContent(state: MainState) {
     val coroutineScope = rememberCoroutineScope()
-    var isSettingsOpen by remember { mutableStateOf(false) }
     
     // Track active tool window ids. We use "connections" for left, "debugger" for right.
     var activeLeftTab by remember { mutableStateOf<String?>("connections") }
@@ -90,7 +90,7 @@ private fun MainContent(state: MainState) {
         Column(modifier = Modifier.fillMaxSize()) {
             BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
                 val isMobile = maxWidth < 800.dp
-                TopBar(state, isMobile = isMobile, onSettingsClick = { isSettingsOpen = true })
+                TopBar(state, isMobile = isMobile, onSettingsClick = { state.isSettingsOpen = true })
             }
             HorizontalDivider(color = PS5ThemeColors.BorderColor)
 
@@ -259,8 +259,8 @@ private fun MainContent(state: MainState) {
             )
         }
 
-        if (isSettingsOpen) {
-            SettingsMenuOverlay(onClose = { isSettingsOpen = false })
+        if (state.isSettingsOpen) {
+            SettingsMenuOverlay(onClose = { state.isSettingsOpen = false })
         }
     }
 }
@@ -380,7 +380,13 @@ private fun TopBar(state: MainState, isMobile: Boolean, onSettingsClick: () -> U
     ) {
         if (!isMobile) {
             TopMenuBar(
-                onFileAction = state::handleFileAction,
+                onFileAction = { action ->
+                    if (action == "Preferences") {
+                        onSettingsClick()
+                    } else {
+                        state.handleFileAction(action)
+                    }
+                },
                 onEditAction = { action ->
                     if (action == "Preferences") {
                         onSettingsClick()
@@ -558,10 +564,68 @@ fun SettingsMenuOverlay(
                         }
                     }
                     "connection" -> {
+                        var defaultIp by remember { mutableStateOf(DefaultIpHelper.getDefaultIp() ?: "") }
+                        var autoReconnect by remember { mutableStateOf(DefaultIpHelper.isAutoReconnectEnabled()) }
+                        var timeoutStr by remember { mutableStateOf(DefaultIpHelper.getConnectionTimeoutMs().toString()) }
+                        
                         Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                             Text("Connection Preferences", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                            Text("Auto-Reconnect: Enabled", color = Color.Gray, fontSize = 12.sp)
-                            Text("Timeout: 5000ms", color = Color.Gray, fontSize = 12.sp)
+                            
+                            OutlinedTextField(
+                                value = defaultIp,
+                                onValueChange = { 
+                                    defaultIp = it 
+                                    DefaultIpHelper.setDefaultIp(it)
+                                },
+                                label = { Text("Default IP Address") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = PS5ThemeColors.AccentCyan,
+                                    unfocusedBorderColor = PS5ThemeColors.BorderColor,
+                                    focusedTextColor = Color.White,
+                                    unfocusedTextColor = Color.White
+                                )
+                            )
+                            
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Auto-Reconnect on Connection Loss", color = Color.White, fontSize = 14.sp)
+                                Switch(
+                                    checked = autoReconnect,
+                                    onCheckedChange = { 
+                                        autoReconnect = it
+                                        DefaultIpHelper.setAutoReconnectEnabled(it)
+                                    },
+                                    colors = SwitchDefaults.colors(
+                                        checkedThumbColor = PS5ThemeColors.AccentCyan,
+                                        checkedTrackColor = PS5ThemeColors.AccentCyan.copy(alpha = 0.5f)
+                                    )
+                                )
+                            }
+                            
+                            OutlinedTextField(
+                                value = timeoutStr,
+                                onValueChange = { 
+                                    timeoutStr = it 
+                                    val newTimeout = it.toIntOrNull()
+                                    if (newTimeout != null) {
+                                        DefaultIpHelper.setConnectionTimeoutMs(newTimeout)
+                                    }
+                                },
+                                label = { Text("Connection Timeout (ms)") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = PS5ThemeColors.AccentCyan,
+                                    unfocusedBorderColor = PS5ThemeColors.BorderColor,
+                                    focusedTextColor = Color.White,
+                                    unfocusedTextColor = Color.White
+                                )
+                            )
                         }
                     }
                     "accessibility" -> {
@@ -574,8 +638,8 @@ fun SettingsMenuOverlay(
                     "support" -> {
                         Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                             Text("Support & Version Info", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                            Text("PS5 Debugger Client v2.0.1", color = Color.Gray, fontSize = 12.sp)
-                            Text("Developed by Google DeepMind team.", color = Color.Gray, fontSize = 12.sp)
+                            Text("PS5 Debugger Client v1.0.3", color = Color.Gray, fontSize = 12.sp)
+                            Text("Developed by Boaz.", color = Color.Gray, fontSize = 12.sp)
                         }
                     }
                 }

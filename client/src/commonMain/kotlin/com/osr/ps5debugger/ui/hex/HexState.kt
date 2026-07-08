@@ -69,6 +69,8 @@ class HexState(
     var isLongPressSelection by mutableStateOf(false)
     var isSecondaryClick by mutableStateOf(false)
     var lastTapTime by mutableStateOf(0L)
+    var isLongPressActive by mutableStateOf(false)
+    var hasTriggeredLongPress by mutableStateOf(false)
 
     fun updateScrollPosition(newPos: Long) {
         scrollPosition = newPos

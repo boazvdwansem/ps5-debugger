@@ -34,8 +34,17 @@ import com.osr.ps5debugger.domain.model.MemoryRange
 import com.osr.ps5debugger.protocol.Ps5DisasmInstr
 import com.osr.ps5debugger.PS5ThemeColors
 import com.osr.ps5debugger.util.copyToClipboard
-import com.osr.ps5debugger.ui.disasm.DisasmFormatter
 import kotlinx.coroutines.launch
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.foundation.focusable
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isShiftPressed
+import com.osr.ps5debugger.ui.disasm.DisasmFormatter
 
 data class DisasmLine(
     val instr: Ps5DisasmInstr,
@@ -398,6 +407,7 @@ fun DisassemblyViewer(
                     }.toMap()
                 }
 
+                val focusRequester = remember { FocusRequester() }
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -410,7 +420,38 @@ fun DisassemblyViewer(
                             .fillMaxHeight()
                             .background(PS5ThemeColors.Surface, RoundedCornerShape(4.dp))
                             .border(1.dp, PS5ThemeColors.BorderColor, RoundedCornerShape(4.dp))
-                            .padding(8.dp)
+                            .padding(vertical = 8.dp)
+                            .focusRequester(focusRequester)
+                            .focusable()
+                            .onKeyEvent { event ->
+                                if (event.type == KeyEventType.KeyDown) {
+                                    val currentAddr = selectionEnd ?: selectionStart
+                                    val currentIndex = if (currentAddr != null) instructions.indexOfFirst { it.instr.addr == currentAddr } else -1
+                                    
+                                    val targetIndex = when (event.key) {
+                                        Key.DirectionUp -> if (currentIndex > 0) currentIndex - 1 else -1
+                                        Key.DirectionDown -> if (currentIndex < instructions.size - 1) currentIndex + 1 else -1
+                                        else -> -1
+                                    }
+                                    
+                                    if (targetIndex != -1) {
+                                        val targetInstr = instructions[targetIndex].instr
+                                        val targetAddr = targetInstr.addr
+                                        if (event.isShiftPressed) {
+                                            val start = selectionStart ?: targetAddr
+                                            onSelectionChanged?.invoke(start, targetAddr + targetInstr.length - 1)
+                                        } else {
+                                            selectionAnchor = targetAddr
+                                            onSelectionChanged?.invoke(targetAddr, targetAddr + targetInstr.length - 1)
+                                        }
+                                        
+                                        coroutineScope.launch {
+                                            listState.animateScrollToItem(targetIndex)
+                                        }
+                                        true
+                                    } else false
+                                } else false
+                            }
                     ) {
                     itemsIndexed(instructions) { idx, line ->
                         val isSelected = isInstructionSelected(line.instr, selectionStart, selectionEnd)
@@ -446,18 +487,18 @@ fun DisassemblyViewer(
 
                             val isLocalLabel = jumpTargets.contains(line.instr.addr) && !isFunctionStart
 
-                            if (isFunctionStart) {
+                             if (isFunctionStart) {
                                 Spacer(Modifier.height(12.dp))
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .background(PS5ThemeColors.SecondaryBg, RoundedCornerShape(4.dp))
-                                        .border(1.dp, PS5ThemeColors.BorderColor.copy(alpha = 0.5f), RoundedCornerShape(4.dp))
-                                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                                        .height(50.dp)
+                                        .background(PS5ThemeColors.SecondaryBg)
+                                        .padding(horizontal = 12.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        text = "sub_${line.instr.addr.toString(16).uppercase()}:",
+                                        text = "sub_${line.instr.addr.toString(16).uppercase()}",
                                         color = Color(0xFF64FFDA),
                                         fontSize = 12.sp,
                                         fontFamily = FontFamily.Monospace,
@@ -467,19 +508,28 @@ fun DisassemblyViewer(
                                 Spacer(Modifier.height(6.dp))
                             } else if (isLocalLabel) {
                                 Spacer(Modifier.height(8.dp))
-                                Text(
-                                    text = "loc_${line.instr.addr.toString(16).uppercase()}:",
-                                    color = Color(0xFF90A4AE),
-                                    fontSize = 11.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(start = 28.dp, bottom = 4.dp)
-                                )
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(50.dp)
+                                        .background(PS5ThemeColors.SecondaryBg)
+                                        .padding(horizontal = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "loc_${line.instr.addr.toString(16).uppercase()}",
+                                        color = Color(0xFF90A4AE),
+                                        fontSize = 11.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                Spacer(Modifier.height(6.dp))
                             }
 
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.fillMaxWidth()
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp)
                             ) {
                                 if (hasBreakpoint) {
                                     Box(
@@ -562,6 +612,7 @@ fun DisassemblyViewer(
                                     isSelected = isSelected,
                                     isFunctionStart = isFunctionStart,
                                     onAddressClicked = { addr: Long, len: Int, isShift: Boolean ->
+                                        try { focusRequester.requestFocus() } catch (_: Exception) {}
                                         val firstAddr = instructions.firstOrNull()?.instr?.addr
                                         val lastAddr = instructions.lastOrNull()?.let { it.instr.addr + it.instr.length }
                                         val isAnchorInLoadedRange = selectionAnchor != null && firstAddr != null && lastAddr != null &&
@@ -588,7 +639,20 @@ fun DisassemblyViewer(
                                         contextMenuOffset = offset
                                         showContextMenu = true
                                     },
-                                    showHexDetails = showHexDetails
+                                    showHexDetails = showHexDetails,
+                                    onDragSelection = { rowsOffset ->
+                                        val startIdx = instructions.indexOfFirst { it.instr.addr == line.instr.addr }
+                                        if (startIdx != -1) {
+                                            val targetIdx = (startIdx + rowsOffset).coerceIn(0, instructions.size - 1)
+                                            val targetLine = instructions[targetIdx]
+                                            val anchor = selectionAnchor ?: line.instr.addr
+                                            if (targetLine.instr.addr >= anchor) {
+                                                onSelectionChanged?.invoke(anchor, targetLine.instr.addr + targetLine.instr.length - 1)
+                                            } else {
+                                                onSelectionChanged?.invoke(anchor + line.instr.length - 1, targetLine.instr.addr)
+                                            }
+                                        }
+                                    }
                                 )
 
                                 val isMenuForThisRow = showContextMenu && contextMenuAddr == line.instr.addr
@@ -848,9 +912,11 @@ fun DisasmRow(
     isFunctionStart: Boolean = false,
     onAddressClicked: (Long, Int, Boolean) -> Unit,
     onAddressRightClicked: (Long, ByteArray, String, DpOffset) -> Unit,
-    showHexDetails: Boolean = false
+    showHexDetails: Boolean = false,
+    onDragSelection: ((Int) -> Unit)? = null
 ) {
     val windowInfo = androidx.compose.ui.platform.LocalWindowInfo.current
+    val coroutineScope = rememberCoroutineScope()
     val instr = line.instr
     val mnemonic = DisasmFormatter.getMnemonic(instr, line.bytes)
     val operands = DisasmFormatter.formatOperands(instr, line.bytes)
@@ -881,19 +947,63 @@ fun DisasmRow(
             )
             .pointerInput(instr.addr) {
                 awaitPointerEventScope {
+                    var touchStartPos: Offset? = null
+                    var isLongPressActive = false
+                    var hasTriggeredLongPress = false
+                    var isDragging = false
                     while (true) {
                         val event = awaitPointerEvent()
-                        if (event.type == PointerEventType.Press) {
-                            val change = event.changes.first()
-                            val isShift = event.keyboardModifiers.isShiftPressed || windowInfo.keyboardModifiers.isShiftPressed
-                            val isSecondary = event.buttons.isSecondaryPressed
-                            
-                            if (isSecondary) {
-                                val density = this.density
-                                val offset = DpOffset(change.position.x.dp / density, change.position.y.dp / density)
-                                onAddressRightClicked(instr.addr, line.bytes, fullDisasmString, offset)
-                            } else {
-                                onAddressClicked(instr.addr, instr.length, isShift)
+                        val change = event.changes.first()
+                        when (event.type) {
+                            PointerEventType.Press -> {
+                                touchStartPos = change.position
+                                isDragging = false
+                                hasTriggeredLongPress = false
+                                val isSecondary = event.buttons.isSecondaryPressed
+                                
+                                if (isSecondary) {
+                                    val offset = DpOffset(change.position.x.toDp(), change.position.y.toDp())
+                                    onAddressRightClicked(instr.addr, line.bytes, fullDisasmString, offset)
+                                } else {
+                                    isLongPressActive = true
+                                    coroutineScope.launch {
+                                        kotlinx.coroutines.delay(500)
+                                        if (isLongPressActive) {
+                                            hasTriggeredLongPress = true
+                                            val offset = DpOffset(change.position.x.toDp(), change.position.y.toDp())
+                                            onAddressRightClicked(instr.addr, line.bytes, fullDisasmString, offset)
+                                            isLongPressActive = false
+                                        }
+                                    }
+                                }
+                            }
+                            PointerEventType.Move -> {
+                                val start = touchStartPos
+                                if (start != null) {
+                                    val dragY = change.position.y - start.y
+                                    val dragX = change.position.x - start.x
+                                    val dragDistance = kotlin.math.sqrt(dragX * dragX + dragY * dragY)
+                                    val dragThreshold = 16f
+                                    
+                                    if (dragDistance > dragThreshold) {
+                                        isLongPressActive = false
+                                        if (kotlin.math.abs(dragX) > kotlin.math.abs(dragY) * 1.5f) {
+                                            isDragging = true
+                                            val density = this.density
+                                            val rowHeightPx = 22f * density
+                                            val rowsOffset = (change.position.y / rowHeightPx).toInt()
+                                            onDragSelection?.invoke(rowsOffset)
+                                        }
+                                    }
+                                }
+                            }
+                            PointerEventType.Release -> {
+                                isLongPressActive = false
+                                if (!hasTriggeredLongPress && !isDragging) {
+                                    val isShift = event.keyboardModifiers.isShiftPressed || windowInfo.keyboardModifiers.isShiftPressed
+                                    onAddressClicked(instr.addr, instr.length, isShift)
+                                }
+                                touchStartPos = null
                             }
                         }
                     }

@@ -32,6 +32,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import kotlinx.coroutines.launch
+import com.osr.ps5debugger.ui.screens.SettingsMenuOverlay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -49,6 +50,7 @@ fun MobileMainView() {
     var showProcessSelector by remember { mutableStateOf(false) }
     var showRegionSelector by remember { mutableStateOf(false) }
     var showConsoleLogs by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
 
     LaunchedEffect(activeProcess) {
         activeMap = null
@@ -88,6 +90,14 @@ fun MobileMainView() {
                 },
                 actions = {
                     if (isConnected) {
+                        // Settings Button
+                        IconButton(onClick = { showSettings = true }) {
+                            Icon(
+                                imageVector = Icons.Default.Settings,
+                                contentDescription = "Settings",
+                                tint = PS5ThemeColors.TextMain
+                            )
+                        }
                         // Quick console toggle
                         IconButton(onClick = { showConsoleLogs = true }) {
                             Icon(
@@ -254,6 +264,10 @@ fun MobileMainView() {
                     }
                 }
             }
+
+            if (showSettings) {
+                SettingsMenuOverlay(onClose = { showSettings = false })
+            }
         }
     }
 }
@@ -306,11 +320,26 @@ fun MobileBottomSheet(
 @Composable
 fun MobileConnectionScreen() {
     val coroutineScope = rememberCoroutineScope()
-    var ipInput by remember { mutableStateOf("192.168.1.100") }
+    var ipInput by remember { mutableStateOf(com.osr.ps5debugger.util.DefaultIpHelper.getDefaultIp() ?: "192.168.1.100") }
     var isConnecting by remember { mutableStateOf(false) }
     var isDiscovering by remember { mutableStateOf(false) }
     var statusMessage by remember { mutableStateOf("") }
     var statusColor by remember { mutableStateOf(PS5ThemeColors.TextMuted) }
+
+    LaunchedEffect(Unit) {
+        val defaultIp = com.osr.ps5debugger.util.DefaultIpHelper.getDefaultIp()
+        if (defaultIp != null) {
+            isConnecting = true
+            statusMessage = "Auto-connecting to default IP: $defaultIp..."
+            statusColor = PS5ThemeColors.AccentCyan
+            val success = AppContainer.debuggerUseCase.connect(defaultIp)
+            isConnecting = false
+            if (!success) {
+                statusMessage = "Auto-connection to $defaultIp failed."
+                statusColor = PS5ThemeColors.StatusRed
+            }
+        }
+    }
 
     Column(
         modifier = Modifier

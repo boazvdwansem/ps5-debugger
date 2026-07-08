@@ -22,7 +22,8 @@ class SocketDebuggerAdapter(
     override val logLines: SharedFlow<String> get() = klogForwarder.logLines
 
     override suspend fun connect(ip: String): Boolean {
-        return connection.connect(ip)
+        val timeout = com.osr.ps5debugger.util.DefaultIpHelper.getConnectionTimeoutMs()
+        return connection.connect(ip, timeoutMs = timeout)
     }
 
     override suspend fun disconnect() {

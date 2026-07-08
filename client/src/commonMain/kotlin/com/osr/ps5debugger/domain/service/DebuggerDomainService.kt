@@ -100,23 +100,28 @@ class DebuggerDomainService(
         scope.launch {
             while (isActive) {
                 if (_isConnected.value && !clientPort.isConnected) {
-                    log("SYSTEM", "Socket connection lost. Reconnecting...", LogEntry.Level.WARN)
-                    val ip = lastConnectedIp
-                    if (ip != null) {
-                        val ok = clientPort.connect(ip)
-                        if (ok) {
-                            try {
-                                clientPort.auth()
-                                log("SYSTEM", "Reconnected successfully.", LogEntry.Level.INFO)
-                            } catch (e: Exception) {
-                                log("SYSTEM", "Reconnect authentication failed: ${e.message}", LogEntry.Level.ERROR)
+                    if (com.osr.ps5debugger.util.DefaultIpHelper.isAutoReconnectEnabled()) {
+                        log("SYSTEM", "Socket connection lost. Reconnecting...", LogEntry.Level.WARN)
+                        val ip = lastConnectedIp
+                        if (ip != null) {
+                            val ok = clientPort.connect(ip)
+                            if (ok) {
+                                try {
+                                    clientPort.auth()
+                                    log("SYSTEM", "Reconnected successfully.", LogEntry.Level.INFO)
+                                } catch (e: Exception) {
+                                    log("SYSTEM", "Reconnect authentication failed: ${e.message}", LogEntry.Level.ERROR)
+                                    _isConnected.value = false
+                                }
+                            } else {
+                                log("SYSTEM", "Reconnect failed. Returning to connection screen.", LogEntry.Level.ERROR)
                                 _isConnected.value = false
                             }
                         } else {
-                            log("SYSTEM", "Reconnect failed. Returning to connection screen.", LogEntry.Level.ERROR)
                             _isConnected.value = false
                         }
                     } else {
+                        log("SYSTEM", "Socket connection lost. Auto-reconnect is disabled.", LogEntry.Level.WARN)
                         _isConnected.value = false
                     }
                 }
