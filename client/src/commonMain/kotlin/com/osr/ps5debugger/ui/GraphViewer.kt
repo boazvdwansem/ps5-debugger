@@ -36,6 +36,8 @@ import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.foundation.focusable
@@ -102,9 +104,24 @@ fun GraphViewer(
 ) {
     val density = LocalDensity.current.density
     
-    val cfg = remember(instructions.size, filterFunctionAddr, instructions.firstOrNull()?.instr?.addr) {
-        buildCfg(instructions, filterFunctionAddr)
+    var cfg by remember { mutableStateOf<Pair<List<CfgNode>, List<CfgEdge>>>(Pair(emptyList(), emptyList())) }
+    var isBuildingCfg by remember { mutableStateOf(false) }
+
+    LaunchedEffect(instructions.size, filterFunctionAddr, instructions.firstOrNull()?.instr?.addr) {
+        if (instructions.isEmpty()) {
+            cfg = Pair(emptyList(), emptyList())
+            return@LaunchedEffect
+        }
+        
+        isBuildingCfg = true
+        val snapshot = instructions.toList()
+        val result = withContext(Dispatchers.Default) {
+            buildCfg(snapshot, filterFunctionAddr)
+        }
+        cfg = result
+        isBuildingCfg = false
     }
+
     val nodes = cfg.first
     val edges = cfg.second
     val nodeHeights = remember(nodes) { androidx.compose.runtime.mutableStateMapOf<Int, Float>() }
@@ -183,7 +200,7 @@ fun GraphViewer(
                 } else false
             }
     ) {
-        if (isLoading && nodes.isEmpty()) {
+        if ((isLoading || isBuildingCfg) && nodes.isEmpty()) {
             Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator(color = PS5ThemeColors.AccentCyan) }
         } else if (nodes.isEmpty()) {
             Box(Modifier.fillMaxSize(), Alignment.Center) { Text("No reachable logic blocks found for this function.", color = PS5ThemeColors.TextMuted) }
@@ -492,12 +509,13 @@ fun NodeBlock(
                         .height(16.dp)
                         .background(if (isSelected) PS5ThemeColors.AccentCyan.copy(alpha = 0.3f) else Color.Transparent)
                         .onGloballyPositioned { rowLayoutCoords = it }
-                        .pointerInput(line.instr.addr, selectionStart, selectionEnd, onLineClicked, onLineRightClicked) {
+                        .pointerInput(line.instr.addr, isSelected, onLineClicked, onLineRightClicked) {
                             awaitPointerEventScope {
                                 var touchStartPos: Offset? = null
                                 var isLongPressActive = false
                                 var hasTriggeredLongPress = false
                                 var isDragging = false
+                                var isSecondaryClick = false
                                 while (true) {
                                     val event = awaitPointerEvent()
                                     val change = event.changes.first()
@@ -507,8 +525,12 @@ fun NodeBlock(
                                             isDragging = false
                                             hasTriggeredLongPress = false
                                             val isSecondary = event.buttons.isSecondaryPressed
+                                            isSecondaryClick = isSecondary
                                             
                                             if (isSecondary) {
+                                                if (!isSelected) {
+                                                    onLineClicked(line.instr.addr, line.instr.length, false)
+                                                }
                                                 rowLayoutCoords?.let { coords ->
                                                     onLineRightClicked(line.instr.addr, coords.localToWindow(change.position))
                                                 }
@@ -518,6 +540,9 @@ fun NodeBlock(
                                                     kotlinx.coroutines.delay(500)
                                                     if (isLongPressActive) {
                                                         hasTriggeredLongPress = true
+                                                        if (!isSelected) {
+                                                            onLineClicked(line.instr.addr, line.instr.length, false)
+                                                        }
                                                         rowLayoutCoords?.let { coords ->
                                                             onLineRightClicked(line.instr.addr, coords.localToWindow(change.position))
                                                         }
@@ -546,7 +571,7 @@ fun NodeBlock(
                                         }
                                         PointerEventType.Release -> {
                                             isLongPressActive = false
-                                            if (!hasTriggeredLongPress && !isDragging) {
+                                            if (!hasTriggeredLongPress && !isDragging && !isSecondaryClick) {
                                                 val isShift = event.keyboardModifiers.isShiftPressed
                                                 onLineClicked(line.instr.addr, line.instr.length, isShift)
                                             }
@@ -718,8 +743,24 @@ fun DrawScope.drawNinjaEdge(
 fun buildCfg(instructions: List<DisasmLine>, filterAddr: Long?): Pair<List<CfgNode>, List<CfgEdge>> {
     if (instructions.isEmpty()) return Pair(emptyList(), emptyList())
     
-    // Pass 1: Strict Deduplication to prevent redundant lines and address overlap
-    val instrs = instructions.distinctBy { it.instr.addr }.sortedBy { it.instr.addr }
+    // Pass 1: Strict Deduplication and Filtering
+    val instrs = if (filterAddr != null) {
+        val startIndex = instructions.indexOfFirst { it.instr.addr >= filterAddr }
+        if (startIndex == -1) return Pair(emptyList(), emptyList())
+        
+        val subList = mutableListOf<DisasmLine>()
+        for (i in startIndex until instructions.size) {
+            val line = instructions[i]
+            subList.add(line)
+            if (line.instr.isRet) break
+        }
+        subList
+    } else {
+        instructions.distinctBy { it.instr.addr }.sortedBy { it.instr.addr }
+    }
+    
+    if (instrs.isEmpty()) return Pair(emptyList(), emptyList())
+    
     val addrToInstr = instrs.associateBy { it.instr.addr }
     
     // Pass 2: Identify Leaders strictly by Basic Block rules (jump targets + instructions after branch)
@@ -732,9 +773,9 @@ fun buildCfg(instructions: List<DisasmLine>, filterAddr: Long?): Pair<List<CfgNo
         val instr = line.instr
         if (instr.isJmp || instr.isCondJmp) {
             val target = DisasmFormatter.getJumpTarget(instr, line.bytes)
-            if (target != 0L) {
+            if (target != 0L && addrToInstr.containsKey(target)) {
                 leaders.add(target)
-            } else if (instr.ripRelTarget != 0L) {
+            } else if (instr.ripRelTarget != 0L && addrToInstr.containsKey(instr.ripRelTarget)) {
                 leaders.add(instr.ripRelTarget)
             }
             if (i + 1 < instrs.size) {
@@ -814,9 +855,10 @@ fun buildCfg(instructions: List<DisasmLine>, filterAddr: Long?): Pair<List<CfgNo
     if (startNode != null) {
         val seen = mutableSetOf(startNode.id)
         val q = java.util.ArrayDeque<Int>().apply { add(startNode.id) }
+        val edgesByFrom = allEdges.groupBy { it.from }
         while (q.isNotEmpty()) {
             val u = q.poll()
-            allEdges.filter { it.from == u }.forEach { if (seen.add(it.to)) q.add(it.to) }
+            edgesByFrom[u]?.forEach { if (seen.add(it.to)) q.add(it.to) }
         }
         finalNodes = totalNodes.filter { it.id in seen }
         finalEdges = allEdges.filter { it.from in seen && it.to in seen }
@@ -858,11 +900,12 @@ fun layoutNinja(nodes: List<CfgNode>, edges: List<CfgEdge>, entryAddr: Long) {
     val visited = mutableSetOf<Int>()
     visited.add(entryNode.id)
     layers[entryNode.id] = 0
+    val edgesByFrom = edges.groupBy { it.from }
     
     while (worklist.isNotEmpty()) {
         val u = worklist.poll()
         val currentRank = layers[u]!!
-        edges.filter { it.from == u }.forEach { edge ->
+        edgesByFrom[u]?.forEach { edge ->
             if (edge.to !in visited) {
                 visited.add(edge.to)
                 layers[edge.to] = currentRank + 1
@@ -874,6 +917,7 @@ fun layoutNinja(nodes: List<CfgNode>, edges: List<CfgEdge>, entryAddr: Long) {
     // Step 2: Barycenter Sort for horizontal distribution
     val nodesByLayer = nodes.groupBy { layers[it.id] ?: 0 }.toSortedMap()
     val nodeX = mutableMapOf<Int, Float>()
+    val edgesByTo = edges.groupBy { it.to }
     
     nodesByLayer.forEach { (layerIdx, layerNodes) ->
         val sortedNodes = if (layerIdx == 0) {
@@ -881,7 +925,7 @@ fun layoutNinja(nodes: List<CfgNode>, edges: List<CfgEdge>, entryAddr: Long) {
         } else {
             // IDA-style: sort by average parent position to separate branches
             layerNodes.sortedBy { node ->
-                val parents = edges.filter { it.to == node.id }
+                val parents = edgesByTo[node.id] ?: emptyList()
                 if (parents.isEmpty()) node.startAddr.toFloat()
                 else parents.map { nodeX[it.from] ?: 0f }.average().toFloat()
             }

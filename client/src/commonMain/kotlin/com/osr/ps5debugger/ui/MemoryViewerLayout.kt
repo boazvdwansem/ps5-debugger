@@ -44,26 +44,15 @@ fun MemoryViewerLayout(
 
     // Logic to extract functions from current instructions
     var selectedGraphFunction by remember(state.activeMap) { mutableStateOf<Long?>(null) }
-    val functions = remember(state.instructions.size) {
-        val list = mutableListOf<Long>()
-        if (state.instructions.isNotEmpty()) {
-            list.add(state.instructions.first().instr.addr)
-            for (i in 0 until state.instructions.size - 1) {
-                if (state.instructions[i].instr.isRet) {
-                    list.add(state.instructions[i+1].instr.addr)
-                }
-            }
-        }
-        list.distinct().sorted()
-    }
+    val functions = state.functions
 
-    LaunchedEffect(functions) {
+    LaunchedEffect(functions.size) {
         if (selectedGraphFunction == null && functions.isNotEmpty()) {
             selectedGraphFunction = functions.first()
         }
     }
 
-    LaunchedEffect(state.viewMode, state.selectionStart, functions) {
+    LaunchedEffect(state.viewMode, state.selectionStart, functions.size) {
         if (state.viewMode == 1) { // 1 = Graph View
             val selectionAddr = state.selectionStart
             if (selectionAddr != null) {
@@ -255,7 +244,7 @@ private fun DisassemblyView(
     instructions: SnapshotStateList<DisasmLine>,
     activeBreakpoints: MutableMap<Int, Long>,
     activeWatchpoints: MutableMap<Int, Long>,
-    functions: List<Long>,
+    functions: SnapshotStateList<Long>,
     isMobile: Boolean,
     onJumpToGraph: (Long) -> Unit
 ) {
@@ -271,7 +260,12 @@ private fun DisassemblyView(
         onSelectionChanged = { start, end -> state.updateSelection(start, end) },
         activeBreakpoints = activeBreakpoints,
         activeWatchpoints = activeWatchpoints,
-        functionAddresses = functionSet
+        functionAddresses = functionSet,
+        activeJumps = state.activeJumps,
+        jumpTracks = state.jumpTracks,
+        jumpColors = state.jumpColors,
+        jumpTargets = state.jumpTargets,
+        onMetadataUpdateRequested = { state.updateMetadata() }
     )
 
     DisassemblyViewer(

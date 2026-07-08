@@ -49,7 +49,8 @@ import com.osr.ps5debugger.ui.disasm.DisassemblyState
 
 data class DisasmLine(
     val instr: Ps5DisasmInstr,
-    val bytes: ByteArray
+    val bytes: ByteArray,
+    val region: MemoryRange? = null
 )
 
 @Composable
@@ -124,7 +125,12 @@ fun DisassemblyViewer(
         isAttached = isAttached,
         activeBreakpoints = state.activeBreakpoints as MutableMap<Int, Long>,
         activeWatchpoints = state.activeWatchpoints as MutableMap<Int, Long>,
-        functionAddresses = state.functionAddresses
+        functionAddresses = state.functionAddresses,
+        activeJumps = state.activeJumps,
+        jumpTracks = state.jumpTracks,
+        jumpColors = state.jumpColors,
+        jumpTargets = state.jumpTargets,
+        onMetadataUpdateRequested = state.onMetadataUpdateRequested
     )
 }
 
@@ -146,7 +152,12 @@ fun DisassemblyViewer(
     isAttached: Boolean,
     activeBreakpoints: MutableMap<Int, Long>,
     activeWatchpoints: MutableMap<Int, Long>,
-    functionAddresses: Set<Long> = emptySet()
+    functionAddresses: Set<Long> = emptySet(),
+    activeJumps: List<Pair<Long, Long>> = emptyList(),
+    jumpTracks: Map<Pair<Long, Long>, Int> = emptyMap(),
+    jumpColors: Map<Pair<Long, Long>, Color> = emptyMap(),
+    jumpTargets: Set<Long> = emptySet(),
+    onMetadataUpdateRequested: (suspend () -> Unit)? = null
 ) {
     val coroutineScope = rememberCoroutineScope()
     val client = AppContainer.clientAdapter.client
@@ -213,12 +224,15 @@ fun DisassemblyViewer(
     // Load next block (scrolling down)
     LaunchedEffect(firstVisibleIndex, instructions.size, isLoading, isConnected) {
         val pid = activeProcess?.pid
-        if (!isLoading && activeMap != null && pid != null && instructions.isNotEmpty() && isConnected) {
+        if (!isLoading && pid != null && instructions.isNotEmpty() && isConnected) {
             if (firstVisibleIndex + 50 >= instructions.size) {
                 val lastLine = instructions.last()
                 val nextStart = lastLine.instr.addr + lastLine.instr.length
-                if (nextStart < activeMap.end) {
-                    val nextLen = minOf(32768L, activeMap.end - nextStart).toInt()
+                val targetMap = if (activeMap != null && nextStart >= activeMap.start && nextStart < activeMap.end) activeMap
+                               else activeMaps.firstOrNull { nextStart >= it.start && nextStart < it.end }
+                
+                if (targetMap != null && nextStart < targetMap.end) {
+                    val nextLen = minOf(32768L, targetMap.end - nextStart).toInt()
                     if (nextLen > 0) {
                         try {
                             val newInstrs = client.disassembleRegion(pid, nextStart, nextLen, 200)
@@ -235,10 +249,11 @@ fun DisassemblyViewer(
                                 } else {
                                     ByteArray(0)
                                 }
-                                DisasmLine(instr, instrBytes)
+                                DisasmLine(instr, instrBytes, targetMap)
                             }
                             
                             instructions.addAll(newLines)
+                            onMetadataUpdateRequested?.invoke()
                         } catch (_: Exception) {}
                     }
                 }
@@ -249,11 +264,14 @@ fun DisassemblyViewer(
     // Prepend previous block (scrolling up)
     LaunchedEffect(firstVisibleIndex, isLoading, isConnected) {
         val pid = activeProcess?.pid
-        if (!isLoading && activeMap != null && pid != null && instructions.isNotEmpty() && isConnected) {
+        if (!isLoading && pid != null && instructions.isNotEmpty() && isConnected) {
             if (firstVisibleIndex <= 5) {
                 val firstLine = instructions.first()
-                if (firstLine.instr.addr > activeMap.start) {
-                    val prevStart = maxOf(activeMap.start, firstLine.instr.addr - 32768L)
+                val targetMap = if (activeMap != null && firstLine.instr.addr > activeMap.start && firstLine.instr.addr <= activeMap.end) activeMap
+                               else activeMaps.firstOrNull { firstLine.instr.addr > it.start && firstLine.instr.addr <= it.end }
+                               
+                if (targetMap != null && firstLine.instr.addr > targetMap.start) {
+                    val prevStart = maxOf(targetMap.start, firstLine.instr.addr - 32768L)
                     val prevLen = (firstLine.instr.addr - prevStart).toInt()
                     if (prevLen > 0) {
                         try {
@@ -271,11 +289,12 @@ fun DisassemblyViewer(
                                 } else {
                                     ByteArray(0)
                                 }
-                                DisasmLine(instr, instrBytes)
+                                DisasmLine(instr, instrBytes, targetMap)
                             }
                             
                             if (newLines.isNotEmpty()) {
                                 instructions.addAll(0, newLines)
+                                onMetadataUpdateRequested?.invoke()
                                 // Offset listState index to prevent scrolling jumps
                                 try {
                                     listState.scrollToItem(
@@ -316,7 +335,11 @@ fun DisassemblyViewer(
             Button(
                 onClick = {
                     val addr = goToAddressText.trim().toLongOrNull(16)
-                    if (activeMap != null && addr != null && addr in activeMap.start..activeMap.end) {
+                    val targetMap = if (activeMap != null && addr != null && addr in activeMap.start..activeMap.end) activeMap
+                                   else if (addr != null) activeMaps.firstOrNull { addr in it.start..it.end }
+                                   else null
+                                   
+                    if (targetMap != null && addr != null) {
                         onJumpToAddress?.invoke(addr)
                     } else {
                         AppContainer.debuggerUseCase.log("DISASM", "Address out of range or invalid", com.osr.ps5debugger.domain.model.LogEntry.Level.WARN)
@@ -337,15 +360,15 @@ fun DisassemblyViewer(
             // Prev/Next function navigation
             Button(
                 onClick = {
-                    if (activeMap != null) {
-                        val currentTop = instructions.firstOrNull()?.instr?.addr ?: jumpToAddress ?: activeMap.start
+                    val currentTop = instructions.firstOrNull()?.instr?.addr ?: jumpToAddress
+                    if (currentTop != null) {
                         val prevFunc = functionAddresses.filter { it < currentTop }.maxOrNull()
-                        val targetAddr = prevFunc ?: maxOf(activeMap.start, currentTop - 8192)
+                        val targetAddr = prevFunc ?: (currentTop - 8192)
                         onJumpToAddress?.invoke(targetAddr)
                         goToAddressText = targetAddr.toString(16).uppercase()
                     }
                 },
-                enabled = activeMap != null,
+                enabled = activeMap != null || activeMaps.isNotEmpty(),
                 colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.SecondaryBg)
             ) {
                 Text("Previous", color = PS5ThemeColors.TextMain)
@@ -353,8 +376,8 @@ fun DisassemblyViewer(
             
             Button(
                 onClick = {
-                    if (activeMap != null) {
-                        val currentTop = instructions.firstOrNull()?.instr?.addr ?: jumpToAddress ?: activeMap.start
+                    val currentTop = instructions.firstOrNull()?.instr?.addr ?: jumpToAddress
+                    if (currentTop != null) {
                         val nextFunc = functionAddresses.filter { it > currentTop }.minOrNull()
                         val targetAddr = if (nextFunc != null) {
                             nextFunc
@@ -365,22 +388,20 @@ fun DisassemblyViewer(
                             currentTop + 8192
                         }
                         
-                        if (targetAddr < activeMap.end) {
-                            onJumpToAddress?.invoke(targetAddr)
-                            goToAddressText = targetAddr.toString(16).uppercase()
-                        }
+                        onJumpToAddress?.invoke(targetAddr)
+                        goToAddressText = targetAddr.toString(16).uppercase()
                     }
                 },
-                enabled = activeMap != null,
+                enabled = activeMap != null || activeMaps.isNotEmpty(),
                 colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.SecondaryBg)
             ) {
                 Text("Next", color = PS5ThemeColors.TextMain)
             }
         }
         
-        if (activeMap == null || activeProcess == null) {
+        if ((activeMap == null && activeMaps.isEmpty()) || activeProcess == null) {
             Box(Modifier.fillMaxSize().weight(1f), contentAlignment = Alignment.Center) {
-                Text("Select a Process and Virtual Memory Map to disassemble", style = MaterialTheme.typography.bodyLarge)
+                Text("Select a Process and Virtual Memory Map to disassemble", style = MaterialTheme.typography.bodyLarge, color = PS5ThemeColors.TextMuted)
             }
         } else if (isLoading && instructions.isEmpty()) {
             Box(Modifier.fillMaxSize().weight(1f), contentAlignment = Alignment.Center) {
@@ -389,58 +410,6 @@ fun DisassemblyViewer(
         } else {
             // Main Disassembly List
             Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
-                val activeJumps = remember(instructions) {
-                    instructions.mapNotNull { line ->
-                        val target = DisasmFormatter.getJumpTarget(line.instr, line.bytes)
-                        if (target != 0L && instructions.any { it.instr.addr == target }) {
-                            line.instr.addr to target
-                        } else null
-                    }
-                }
-
-                val jumpTargets = remember(activeJumps) {
-                    activeJumps.map { it.second }.toSet()
-                }
-
-                val rangesOverlap = { a1: Long, a2: Long, b1: Long, b2: Long ->
-                    val minA = minOf(a1, a2)
-                    val maxA = maxOf(a1, a2)
-                    val minB = minOf(b1, b2)
-                    val maxB = maxOf(b1, b2)
-                    maxA >= minB && maxB >= minA
-                }
-
-                val jumpTracks = remember(activeJumps) {
-                    val tracks = mutableMapOf<Pair<Long, Long>, Int>()
-                    val sorted = activeJumps.sortedBy { kotlin.math.abs(it.second - it.first) }
-                    for (j in sorted) {
-                        var track = 0
-                        while (true) {
-                            val ok = tracks.none { (other, otherTrack) ->
-                                otherTrack == track && rangesOverlap(j.first, j.second, other.first, other.second)
-                            }
-                            if (ok) {
-                                tracks[j] = track
-                                break
-                            }
-                            track++
-                        }
-                    }
-                    tracks
-                }
-
-                val jumpColors = remember(activeJumps) {
-                    val colors = listOf(
-                        Color(0xFFE57373), Color(0xFFF06292), Color(0xFFBA68C8), Color(0xFF9575CD),
-                        Color(0xFF7986CB), Color(0xFF64B5F6), Color(0xFF4FC3F7), Color(0xFF4DD0E1),
-                        Color(0xFF4DB6AC), Color(0xFF81C784), Color(0xFFD4E157), Color(0xFFFFD54F),
-                        Color(0xFFFFB74D), Color(0xFFFF8A65)
-                    )
-                    activeJumps.mapIndexed { idx, jump ->
-                        jump to colors[idx % colors.size]
-                    }.toMap()
-                }
-
                 val focusRequester = remember { FocusRequester() }
                 Box(
                     modifier = Modifier
@@ -493,8 +462,8 @@ fun DisassemblyViewer(
                         val isFunctionStart = functionAddresses.contains(line.instr.addr)
 
                         val prevLine = if (idx > 0) instructions[idx - 1] else null
-                        val currentMap = activeMaps.firstOrNull { line.instr.addr >= it.start && line.instr.addr < it.end } ?: activeMap
-                        val prevMap = prevLine?.let { pl -> activeMaps.firstOrNull { pl.instr.addr >= it.start && pl.instr.addr < it.end } ?: activeMap }
+                        val currentMap = line.region ?: activeMap
+                        val prevMap = prevLine?.region ?: activeMap
                         val isNewRegionStart = idx == 0 || (currentMap != null && prevMap != null && currentMap.start != prevMap.start)
 
                         Column {
@@ -949,25 +918,76 @@ fun DisasmRow(
     showHexDetails: Boolean = false,
     onDragSelection: ((Int) -> Unit)? = null
 ) {
+    val instr = line.instr
+    
+    // Memoize static formatting logic to prevent heavy CPU work during every scroll frame
+    val formattedData = remember(instr.addr, line.bytes) {
+        val mnemonic = DisasmFormatter.getMnemonic(instr, line.bytes)
+        val operands = DisasmFormatter.formatOperands(instr, line.bytes)
+        val infoText = DisasmFormatter.getInfoText(instr, line.bytes)
+        val bytesStr = line.bytes.joinToString(" ") { String.format("%02X", it) }
+        
+        // Pre-build the annotated operands string
+        val annotatedOps = buildAnnotatedString {
+            val regex = Regex("([\\[\\]\\+\\-\\*\\,\\s+])|(0x[0-9A-Fa-f]+|[0-9]+)|([a-zA-Z0-9_]+)")
+            val matches = regex.findAll(operands)
+            for (match in matches) {
+                val token = match.value
+                val isReg = DisasmFormatter.regNames.contains(token.lowercase())
+                val isNumber = token.startsWith("0x") || token.all { it.isDigit() }
+                
+                when {
+                    isReg -> {
+                        withStyle(style = SpanStyle(color = Color(0xFF64FFDA), fontWeight = FontWeight.Bold)) {
+                            append(token)
+                        }
+                    }
+                    isNumber -> {
+                        withStyle(style = SpanStyle(color = Color(0xFFFF8A65))) {
+                            append(token)
+                        }
+                    }
+                    token == "[" || token == "]" -> {
+                        withStyle(style = SpanStyle(color = Color(0xFFFFD54F), fontWeight = FontWeight.Bold)) {
+                            append(token)
+                        }
+                    }
+                    else -> {
+                        withStyle(style = SpanStyle(color = Color(0xFFECEFF1))) {
+                            append(token)
+                        }
+                    }
+                }
+            }
+            if (matches.none()) {
+                append(operands)
+            }
+        }
+        
+        // Mnemonic color logic
+        val mnemonicColor = when {
+            instr.isCall || instr.isRet -> Color(0xFFF50057)
+            instr.isJmp || instr.isCondJmp -> Color(0xFFFF4081)
+            else -> Color(0xFFFFB74D)
+        }
+        
+        object {
+            val mnemonic = mnemonic
+            val operands = annotatedOps
+            val infoText = infoText
+            val bytesStr = bytesStr
+            val mnemonicColor = mnemonicColor
+            val fullDisasm = "$mnemonic $operands"
+        }
+    }
+
     val windowInfo = androidx.compose.ui.platform.LocalWindowInfo.current
     val coroutineScope = rememberCoroutineScope()
-    val instr = line.instr
-    val mnemonic = DisasmFormatter.getMnemonic(instr, line.bytes)
-    val operands = DisasmFormatter.formatOperands(instr, line.bytes)
-    val infoText = DisasmFormatter.getInfoText(instr, line.bytes)
     
     // Ghidra Dark Theme Colors
     val addressColor = Color(0xFF90A4AE)      // Gray-blue lavender
     val byteColor = Color(0xFF808080)         // Dark Gray
-    val mnemonicColor = when {
-        instr.isCall || instr.isRet -> Color(0xFFF50057) // Bright Pink-red for call/ret
-        instr.isJmp || instr.isCondJmp -> Color(0xFFFF4081) // Pink for branches
-        else -> Color(0xFFFFB74D) // Ghidra Orange-Gold for standard instructions
-    }
     val commentColor = Color(0xFF78909C)       // Muted gray-green comment color
-    
-    val bytesStr = line.bytes.joinToString(" ") { String.format("%02X", it) }
-    val fullDisasmString = "$mnemonic $operands"
  
     Row(
         modifier = Modifier
@@ -979,7 +999,7 @@ fun DisasmRow(
                     else -> Color.Transparent
                 }
             )
-            .pointerInput(instr.addr) {
+            .pointerInput(instr.addr, isSelected, onAddressClicked, onAddressRightClicked, onDragSelection) {
                 awaitPointerEventScope {
                     var touchStartPos: Offset? = null
                     var isLongPressActive = false
@@ -1002,7 +1022,7 @@ fun DisasmRow(
                                     if (!isSelected) {
                                         onAddressClicked(instr.addr, instr.length, false)
                                     }
-                                    onAddressRightClicked(instr.addr, line.bytes, fullDisasmString, offset)
+                                    onAddressRightClicked(instr.addr, line.bytes, formattedData.fullDisasm, offset)
                                 } else {
                                     isLongPressActive = true
                                     coroutineScope.launch {
@@ -1013,7 +1033,7 @@ fun DisasmRow(
                                             if (!isSelected) {
                                                 onAddressClicked(instr.addr, instr.length, false)
                                             }
-                                            onAddressRightClicked(instr.addr, line.bytes, fullDisasmString, offset)
+                                            onAddressRightClicked(instr.addr, line.bytes, formattedData.fullDisasm, offset)
                                             isLongPressActive = false
                                         }
                                     }
@@ -1066,7 +1086,7 @@ fun DisasmRow(
         if (!showHexDetails) {
             // Raw hex bytes string (standard mode)
             Text(
-                text = bytesStr,
+                text = formattedData.bytesStr,
                 fontFamily = FontFamily.Monospace,
                 fontSize = 11.sp,
                 color = byteColor,
@@ -1077,11 +1097,11 @@ fun DisasmRow(
         
         // Mnemonic
         Text(
-            text = mnemonic,
+            text = formattedData.mnemonic,
             fontFamily = FontFamily.Monospace,
             fontSize = 12.sp,
             fontWeight = FontWeight.Bold,
-            color = mnemonicColor,
+            color = formattedData.mnemonicColor,
             modifier = Modifier.width(90.dp),
             maxLines = 1,
             softWrap = false
@@ -1091,43 +1111,8 @@ fun DisasmRow(
         
         // Operands with Ghidra syntax highlight
         Box(modifier = Modifier.width(280.dp)) {
-            val annotatedOps = buildAnnotatedString {
-                val regex = Regex("([\\[\\]\\+\\-\\*\\,\\s+])|(0x[0-9A-Fa-f]+|[0-9]+)|([a-zA-Z0-9_]+)")
-                val matches = regex.findAll(operands)
-                for (match in matches) {
-                    val token = match.value
-                    val isReg = DisasmFormatter.regNames.contains(token.lowercase())
-                    val isNumber = token.startsWith("0x") || token.all { it.isDigit() }
-                    
-                    when {
-                        isReg -> {
-                            withStyle(style = SpanStyle(color = Color(0xFF64FFDA), fontWeight = FontWeight.Bold)) { // Teal/cyan for registers
-                                append(token)
-                            }
-                        }
-                        isNumber -> {
-                            withStyle(style = SpanStyle(color = Color(0xFFFF8A65))) { // Orange/Red for numbers
-                                append(token)
-                            }
-                        }
-                        token == "[" || token == "]" -> {
-                            withStyle(style = SpanStyle(color = Color(0xFFFFD54F), fontWeight = FontWeight.Bold)) { // Yellow brackets
-                                append(token)
-                            }
-                        }
-                        else -> {
-                            withStyle(style = SpanStyle(color = Color(0xFFECEFF1))) { // Muted off-white
-                                append(token)
-                            }
-                        }
-                    }
-                }
-                if (matches.none()) {
-                    append(operands)
-                }
-            }
             Text(
-                text = annotatedOps,
+                text = formattedData.operands,
                 fontFamily = FontFamily.Monospace,
                 fontSize = 12.sp,
                 maxLines = 1,
@@ -1172,9 +1157,9 @@ fun DisasmRow(
         Spacer(Modifier.width(16.dp))
         
         // Info / Comments (target, xref etc)
-        if (infoText.isNotEmpty()) {
+        if (formattedData.infoText.isNotEmpty()) {
             Text(
-                text = " ; $infoText",
+                text = " ; ${formattedData.infoText}",
                 fontFamily = FontFamily.Monospace,
                 fontSize = 11.sp,
                 color = commentColor,

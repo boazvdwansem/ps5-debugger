@@ -55,6 +55,7 @@ kotlin {
                 implementation(compose.desktop.currentOs)
                 implementation(libs.findLibrary("compose.ui").get())
                 implementation(libs.findLibrary("compose.runtime").get())
+                implementation(libs.findLibrary("kotlinx.coroutines.swing").get())
             }
         }
 

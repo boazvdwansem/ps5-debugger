@@ -102,52 +102,100 @@ private fun MainContent(state: MainState) {
                         .width(50.dp)
                         .background(PS5ThemeColors.SecondaryBg),
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Spacer(Modifier.height(8.dp))
-                    // Connections Icon Tab
-                    Tooltip("Connection Manager") {
+                    
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        // Connections Icon Tab
+                        Tooltip("Connection Manager") {
+                            IconButton(
+                                onClick = {
+                                    activeLeftTab = if (activeLeftTab == "connections") null else "connections"
+                                },
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .background(
+                                        if (activeLeftTab == "connections") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
+                                        RoundedCornerShape(6.dp)
+                                    )
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.List,
+                                    contentDescription = "Connection Manager",
+                                    tint = if (activeLeftTab == "connections") PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                        // Memory Map Icon Tab
+                        Tooltip("Memory Map") {
+                            IconButton(
+                                onClick = {
+                                    activeLeftTab = if (activeLeftTab == "map") null else "map"
+                                },
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .background(
+                                        if (activeLeftTab == "map") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
+                                        RoundedCornerShape(6.dp)
+                                    )
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Search,
+                                    contentDescription = "Memory Map",
+                                    tint = if (activeLeftTab == "map") PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                        // Place future left sidebar tab icons here...
+                    }
+
+                    Spacer(Modifier.weight(1f))
+
+                    // Console Toggle Button at the bottom
+                    Tooltip(if (state.isConsoleVisible) "Close Console" else "Open Console") {
                         IconButton(
-                            onClick = {
-                                activeLeftTab = if (activeLeftTab == "connections") null else "connections"
-                            },
+                            onClick = { state.isConsoleVisible = !state.isConsoleVisible },
                             modifier = Modifier
+                                .padding(bottom = 12.dp)
                                 .size(38.dp)
                                 .background(
-                                    if (activeLeftTab == "connections") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
+                                    if (state.isConsoleVisible) PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
                                     RoundedCornerShape(6.dp)
                                 )
                         ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.List,
-                                contentDescription = "Connection Manager",
-                                tint = if (activeLeftTab == "connections") PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                    }
-                    // Memory Map Icon Tab
-                    Tooltip("Memory Map") {
-                        IconButton(
-                            onClick = {
-                                activeLeftTab = if (activeLeftTab == "map") null else "map"
-                            },
-                            modifier = Modifier
-                                .size(38.dp)
-                                .background(
-                                    if (activeLeftTab == "map") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
-                                    RoundedCornerShape(6.dp)
+                            val tint = if (state.isConsoleVisible) PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted
+                            Canvas(modifier = Modifier.size(width = 16.dp, height = 12.dp)) {
+                                drawRoundRect(
+                                    color = tint,
+                                    style = Stroke(width = 2f),
+                                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(3f, 3f)
                                 )
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Search,
-                                contentDescription = "Memory Map",
-                                tint = if (activeLeftTab == "map") PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
-                                modifier = Modifier.size(20.dp)
-                            )
+                                drawLine(
+                                    color = tint,
+                                    start = androidx.compose.ui.geometry.Offset(4f, 4.5f),
+                                    end = androidx.compose.ui.geometry.Offset(7f, 6.5f),
+                                    strokeWidth = 2f
+                                )
+                                drawLine(
+                                    color = tint,
+                                    start = androidx.compose.ui.geometry.Offset(7f, 6.5f),
+                                    end = androidx.compose.ui.geometry.Offset(4f, 8.5f),
+                                    strokeWidth = 2f
+                                )
+                                drawLine(
+                                    color = tint,
+                                    start = androidx.compose.ui.geometry.Offset(9.5f, 8.5f),
+                                    end = androidx.compose.ui.geometry.Offset(13f, 8.5f),
+                                    strokeWidth = 2f
+                                )
+                            }
                         }
                     }
-                    // Place future left sidebar tab icons here...
                 }
                 VerticalDivider(modifier = Modifier.fillMaxHeight().width(1.dp), color = PS5ThemeColors.BorderColor)
 
@@ -250,13 +298,6 @@ private fun MainContent(state: MainState) {
             }
 
             ConsolePanel(state)
-        }
-
-        if (!state.isConsoleVisible) {
-            ConsoleToggleButton(
-                onClick = { state.isConsoleVisible = true },
-                modifier = Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = 16.dp)
-            )
         }
 
         if (state.isSettingsOpen) {
