@@ -108,8 +108,9 @@ class MemoryViewerState(
             jumpTracks = tracks
             jumpColors = colors
             jumpTargets = targets
+            val mergedTargets = (AppContainer.discoveredJumpTargets + targets).distinct()
             AppContainer.discoveredJumpTargets.clear()
-            AppContainer.discoveredJumpTargets.addAll(targets)
+            AppContainer.discoveredJumpTargets.addAll(mergedTargets)
         }
     }
 
@@ -145,6 +146,8 @@ class MemoryViewerState(
         if (currentTargets.isEmpty()) {
             instructions.clear()
             functions.clear()
+            AppContainer.discoveredFunctions.clear()
+            AppContainer.discoveredJumpTargets.clear()
             return
         }
 
@@ -170,7 +173,10 @@ class MemoryViewerState(
 
                 for (map in limitedTargets) {
                     val startAddr = if (currentJumpAddress != null && currentJumpAddress!! >= map.start && currentJumpAddress!! < map.end) {
-                        currentJumpAddress!!
+                        val parentFunc = AppContainer.discoveredFunctions
+                            .filter { it <= currentJumpAddress!! && it >= map.start }
+                            .maxOrNull()
+                        parentFunc ?: currentJumpAddress!!
                     } else {
                         map.start
                     }
@@ -234,7 +240,15 @@ class MemoryViewerState(
                 
                 val extractedFunctions = mutableListOf<Long>()
                 if (lines.isNotEmpty()) {
-                    extractedFunctions.add(lines.first().instr.addr)
+                    val firstAddr = lines.first().instr.addr
+                    val isMapStart = limitedTargets.any { firstAddr == it.start }
+                    val isKnownFunc = AppContainer.discoveredFunctions.contains(firstAddr)
+                    val isKnownLoc = AppContainer.discoveredJumpTargets.contains(firstAddr)
+                    
+                    if (isMapStart || isKnownFunc || !isKnownLoc) {
+                        extractedFunctions.add(firstAddr)
+                    }
+                    
                     for (i in 0 until lines.size - 1) {
                         if (lines[i].instr.isRet) {
                             extractedFunctions.add(lines[i+1].instr.addr)
@@ -249,8 +263,9 @@ class MemoryViewerState(
             instructions.addAll(finalLines)
             functions.clear()
             functions.addAll(finalFunctions)
+            val mergedFuncs = (AppContainer.discoveredFunctions + finalFunctions).distinct().sortedBy { it.toULong() }
             AppContainer.discoveredFunctions.clear()
-            AppContainer.discoveredFunctions.addAll(finalFunctions)
+            AppContainer.discoveredFunctions.addAll(mergedFuncs)
             updateMetadata()
         } catch (e: Exception) {
             AppContainer.debuggerUseCase.log("DISASM", "Initial load failed: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)

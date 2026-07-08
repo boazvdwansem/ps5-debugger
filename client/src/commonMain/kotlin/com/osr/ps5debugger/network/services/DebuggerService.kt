@@ -92,12 +92,12 @@ class DebuggerService(private val connection: Ps5Connection) {
         connection.sendPacket(outStr, ProtocolConstants.CMD_DEBUG_GETREGS, payload)
         val status = connection.receiveStatus(inStr)
         if (status != ProtocolConstants.CMD_SUCCESS) throw java.io.IOException("Get regs failed: status 0x${status.toString(16)}")
-        val bytes = connection.readExactly(inStr, 144)
+        val bytes = connection.readExactly(inStr, 176)
         GpRegs.parse(BinaryBuffer(bytes))
     }
 
     suspend fun setRegs(lwpid: Int, regs: GpRegs): Boolean = connection.execute { inStr, outStr ->
-        val regBytes = BinaryBuffer(144).apply {
+        val regBytes = BinaryBuffer(176).apply {
             writeLong(regs.r15)
             writeLong(regs.r14)
             writeLong(regs.r13)
@@ -128,7 +128,7 @@ class DebuggerService(private val connection: Ps5Connection) {
         
         val payload = BinaryBuffer(8).apply {
             writeInt(lwpid)
-            writeInt(144)
+            writeInt(176)
         }.bytes
         connection.sendPacket(outStr, ProtocolConstants.CMD_DEBUG_SETREGS, payload)
         if (connection.receiveStatus(inStr) != ProtocolConstants.CMD_SUCCESS) return@execute false

@@ -52,14 +52,12 @@ fun MemoryViewerLayout(
         }
     }
 
-    LaunchedEffect(state.viewMode, state.selectionStart, functions.size) {
-        if (state.viewMode == 1) { // 1 = Graph View
-            val selectionAddr = state.selectionStart
-            if (selectionAddr != null) {
-                val targetFunc = functions.filter { it <= selectionAddr }.maxOrNull()
-                if (targetFunc != null) {
-                    selectedGraphFunction = targetFunc
-                }
+    LaunchedEffect(state.viewMode, state.selectionStart, state.currentJumpAddress, functions.size) {
+        val targetAddr = state.selectionStart ?: state.currentJumpAddress
+        if (targetAddr != null) {
+            val targetFunc = functions.filter { it <= targetAddr }.maxOrNull()
+            if (targetFunc != null) {
+                selectedGraphFunction = targetFunc
             }
         }
     }

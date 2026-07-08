@@ -926,8 +926,14 @@ fun DisasmRow(
 ) {
     val instr = line.instr
     
+    val jumpTarget = if (line.bytes.isNotEmpty()) com.osr.ps5debugger.ui.disasm.DisasmFormatter.getJumpTarget(instr, line.bytes) else 0L
+    val targetAddr = if (jumpTarget != 0L) jumpTarget else if (instr.ripRelTarget != 0L) instr.ripRelTarget else 0L
+
+    val ownSymbolName = AppContainer.symbolNames[instr.addr]
+    val targetSymbolName = if (targetAddr != 0L) AppContainer.symbolNames[targetAddr] else null
+
     // Memoize static formatting logic to prevent heavy CPU work during every scroll frame
-    val formattedData = remember(instr.addr, line.bytes) {
+    val formattedData = remember(instr.addr, line.bytes, ownSymbolName, targetSymbolName) {
         val mnemonic = DisasmFormatter.getMnemonic(instr, line.bytes)
         val operands = DisasmFormatter.formatOperands(instr, line.bytes)
         val infoText = DisasmFormatter.getInfoText(instr, line.bytes)

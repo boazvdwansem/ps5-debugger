@@ -6,6 +6,8 @@ import com.osr.ps5debugger.domain.model.MemoryRange
 import com.osr.ps5debugger.util.copyToClipboard
 import com.osr.ps5debugger.ui.watchlist.watchListFromJson
 import com.osr.ps5debugger.ui.watchlist.watchListToJson
+import com.osr.ps5debugger.ui.watchlist.sessionToJson
+import com.osr.ps5debugger.ui.watchlist.sessionFromJson
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
@@ -36,21 +38,65 @@ class MainState(
     fun handleFileAction(action: String) {
         when (action) {
             "Save" -> {
-                val json = watchListToJson(watchlist.value)
-                AppContainer.filePicker?.saveJson("watchlist.json", json) { success ->
-                    if (success) AppContainer.debuggerUseCase.log("FILE", "Watchlist saved successfully", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                val activeProcessInfo = AppContainer.debuggerUseCase.activeProcessInfo.value
+                val vmMaps = AppContainer.debuggerUseCase.vmMaps.value
+                val json = sessionToJson(
+                    watchlist = watchlist.value,
+                    customSymbols = AppContainer.symbolNames.toMap(),
+                    discoveredFunctions = AppContainer.discoveredFunctions.toList(),
+                    vmMaps = vmMaps,
+                    processInfo = activeProcessInfo
+                )
+                AppContainer.filePicker?.saveJson("session.json", json) { success ->
+                    if (success) AppContainer.debuggerUseCase.log("FILE", "Session saved successfully", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
                 }
             }
             "Load" -> {
                 AppContainer.filePicker?.loadJson { json ->
                     if (json != null) {
                         try {
-                            val items = watchListFromJson(json)
+                            val session = sessionFromJson(json)
+                            
+                            val activeProcessInfo = AppContainer.debuggerUseCase.activeProcessInfo.value
+                            if (activeProcessInfo != null && session.processName != null) {
+                                val nameMatch = activeProcessInfo.name == session.processName
+                                val titleMatch = session.titleId == null || activeProcessInfo.titleId == session.titleId
+                                val contentMatch = session.contentId == null || activeProcessInfo.contentId == session.contentId
+                                if (!nameMatch || !titleMatch || !contentMatch) {
+                                    AppContainer.debuggerUseCase.log(
+                                        "FILE", 
+                                        "Warning: Loaded session is for ${session.processName} (${session.titleId}), but active process is ${activeProcessInfo.name} (${activeProcessInfo.titleId})", 
+                                        com.osr.ps5debugger.domain.model.LogEntry.Level.WARN
+                                    )
+                                }
+                            }
+                            
                             AppContainer.debuggerUseCase.clearWatchlist()
-                            items.forEach { AppContainer.debuggerUseCase.addWatchItem(it) }
-                            AppContainer.debuggerUseCase.log("FILE", "Watchlist loaded successfully", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                            session.watchlist.forEach { AppContainer.debuggerUseCase.addWatchItem(it) }
+                            
+                            val vmMaps = AppContainer.debuggerUseCase.vmMaps.value
+                            session.symbols.forEach { sym ->
+                                val map = vmMaps.firstOrNull { it.name == sym.mapName }
+                                if (map != null) {
+                                    val absAddr = map.start + sym.offset
+                                    AppContainer.renameSymbol(absAddr, sym.name)
+                                    if (sym.isFunction) {
+                                        if (!AppContainer.discoveredFunctions.contains(absAddr)) {
+                                            AppContainer.discoveredFunctions.add(absAddr)
+                                            AppContainer.discoveredFunctions.sortBy { it.toULong() }
+                                        }
+                                    } else {
+                                        if (!AppContainer.discoveredJumpTargets.contains(absAddr)) {
+                                            AppContainer.discoveredJumpTargets.add(absAddr)
+                                            AppContainer.discoveredJumpTargets.sortBy { it.toULong() }
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            AppContainer.debuggerUseCase.log("FILE", "Session loaded successfully", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
                         } catch (e: Exception) {
-                            AppContainer.debuggerUseCase.log("FILE", "Failed to load watchlist: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                            AppContainer.debuggerUseCase.log("FILE", "Failed to load session: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
                         }
                     }
                 }

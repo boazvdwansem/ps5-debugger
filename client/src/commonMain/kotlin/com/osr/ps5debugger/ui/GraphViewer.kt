@@ -278,7 +278,7 @@ fun GraphViewer(
                                 selectionEnd = selectionEnd,
                                 activeBreakpoints = activeBreakpoints,
                                 activeWatchpoints = activeWatchpoints,
-                                isEntry = node.startAddr == filterFunctionAddr,
+                                isEntry = node.id == 0,
                                  onLineClicked = { addr, len, isShift ->
                                     try { focusRequester.requestFocus() } catch (_: Exception) {}
                                     if (isShift && selectionStart != null) {
@@ -403,10 +403,14 @@ fun GraphViewer(
 
                 if (isAttached) {
                     HorizontalDivider(color = PS5ThemeColors.BorderColor)
-                    DropdownMenuItem(text = { Text("Set Software Breakpoint") }, onClick = {
-                        onSetBreakpoint(addr)
-                        showContextMenu = false
-                    })
+                    val hasBp = activeBreakpoints.values.contains(addr)
+                    DropdownMenuItem(
+                        text = { Text(if (hasBp) "Remove Breakpoint" else "Set Software Breakpoint", color = if (hasBp) Color.Red else Color.Unspecified) },
+                        onClick = {
+                            onSetBreakpoint(addr)
+                            showContextMenu = false
+                        }
+                    )
                     DropdownMenuItem(text = { Text("Set Hardware Watchpoint...") }, onClick = {
                         onSetWatchpoint(addr)
                         showContextMenu = false
@@ -463,6 +467,10 @@ fun NodeBlock(
 ) {
     val density = LocalDensity.current.density
     val coroutineScope = rememberCoroutineScope()
+    val isHighlighted = selectionStart != null && selectionStart >= node.startAddr && selectionStart <= node.endAddr
+    val borderClr = if (isHighlighted) PS5ThemeColors.AccentCyan else node.borderColor
+    val borderWidth = if (isHighlighted) 2.dp else 1.5.dp
+
     Box(
         Modifier
             .offset(x = node.x.dp, y = node.y.dp)
@@ -474,7 +482,7 @@ fun NodeBlock(
                 }
             }
             .background(Color(0xFF1E1E1E), RoundedCornerShape(4.dp))
-            .border(1.5.dp, node.borderColor, RoundedCornerShape(4.dp))
+            .border(borderWidth, borderClr, RoundedCornerShape(4.dp))
             .padding(8.dp)
     ) {
         Column {
@@ -767,6 +775,14 @@ fun buildCfg(instructions: List<DisasmLine>, filterAddr: Long?): Pair<List<CfgNo
     val leaders = mutableSetOf<Long>()
     val entryPoint = filterAddr ?: instrs.first().instr.addr
     leaders.add(entryPoint)
+    
+    // Split block at any known global jump target address
+    val globalJumpTargets = com.osr.ps5debugger.di.AppContainer.discoveredJumpTargets
+    for (line in instrs) {
+        if (globalJumpTargets.contains(line.instr.addr)) {
+            leaders.add(line.instr.addr)
+        }
+    }
     
     for (i in instrs.indices) {
         val line = instrs[i]

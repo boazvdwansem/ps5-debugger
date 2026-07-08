@@ -151,3 +151,124 @@ private fun readJsonRawField(json: String, field: String): String? {
     while (end < json.length && json[end] != ',' && json[end] != '}') end++
     return json.substring(start, end).trim()
 }
+
+data class SymbolSaveItem(
+    val mapName: String,
+    val offset: Long,
+    val name: String,
+    val isFunction: Boolean
+)
+
+data class SessionData(
+    val processName: String?,
+    val titleId: String?,
+    val contentId: String?,
+    val watchlist: List<WatchItem>,
+    val symbols: List<SymbolSaveItem>
+)
+
+fun sessionToJson(
+    watchlist: List<WatchItem>,
+    customSymbols: Map<Long, String>,
+    discoveredFunctions: List<Long>,
+    vmMaps: List<com.osr.ps5debugger.domain.model.MemoryRange>,
+    processInfo: com.osr.ps5debugger.protocol.Ps5ProcessInfo?
+): String = buildString {
+    appendLine("{")
+    append("  \"processName\": ").append(processInfo?.name?.let { "\"${jsonEscape(it)}\"" } ?: "null").append(",\n")
+    append("  \"titleId\": ").append(processInfo?.titleId?.let { "\"${jsonEscape(it)}\"" } ?: "null").append(",\n")
+    append("  \"contentId\": ").append(processInfo?.contentId?.let { "\"${jsonEscape(it)}\"" } ?: "null").append(",\n")
+    
+    // Watchlist
+    append("  \"watchlist\": ")
+    val watchlistJson = watchListToJson(watchlist)
+    appendLine(watchlistJson.replace("\n", "\n  "))
+    append(",\n")
+    
+    // Symbols
+    append("  \"symbols\": [\n")
+    val symbolList = customSymbols.entries.mapNotNull { (addr, name) ->
+        val map = vmMaps.firstOrNull { addr >= it.start && addr < it.end } ?: return@mapNotNull null
+        val offset = addr - map.start
+        val isFunc = discoveredFunctions.contains(addr)
+        Triple(map.name, offset, isFunc to name)
+    }
+    symbolList.forEachIndexed { index, (mapName, offset, data) ->
+        val (isFunc, name) = data
+        append("    {")
+        append("\"mapName\":\"").append(jsonEscape(mapName)).append("\",")
+        append("\"offset\":").append(offset).append(",")
+        append("\"offsetHex\":\"0x").append(offset.toString(16).uppercase()).append("\",")
+        append("\"name\":\"").append(jsonEscape(name)).append("\",")
+        append("\"isFunction\":").append(isFunc)
+        append("}")
+        if (index != symbolList.lastIndex) append(",")
+        appendLine()
+    }
+    append("  ]\n")
+    append("}")
+}
+
+fun sessionFromJson(json: String): SessionData {
+    val trimmed = json.trim()
+    if (trimmed.startsWith("[")) {
+        // Old format
+        val items = watchListFromJson(json)
+        return SessionData(null, null, null, items, emptyList())
+    }
+    
+    val processName = readJsonStringField(trimmed, "processName")
+    val titleId = readJsonStringField(trimmed, "titleId")
+    val contentId = readJsonStringField(trimmed, "contentId")
+    
+    // Extract watchlist array content
+    val watchlist = mutableListOf<WatchItem>()
+    val watchlistKeyIdx = trimmed.indexOf("\"watchlist\"")
+    if (watchlistKeyIdx != -1) {
+        val startBrack = trimmed.indexOf('[', watchlistKeyIdx)
+        if (startBrack != -1) {
+            var depth = 1
+            var i = startBrack + 1
+            while (i < trimmed.length && depth > 0) {
+                if (trimmed[i] == '[') depth++
+                else if (trimmed[i] == ']') depth--
+                i++
+            }
+            if (i <= trimmed.length) {
+                val watchlistSubJson = trimmed.substring(startBrack, i)
+                watchlist.addAll(watchListFromJson(watchlistSubJson))
+            }
+        }
+    }
+    
+    // Extract symbols array content
+    val symbols = mutableListOf<SymbolSaveItem>()
+    val symbolsKeyIdx = trimmed.indexOf("\"symbols\"")
+    if (symbolsKeyIdx != -1) {
+        val startBrack = trimmed.indexOf('[', symbolsKeyIdx)
+        if (startBrack != -1) {
+            var depth = 1
+            var i = startBrack + 1
+            while (i < trimmed.length && depth > 0) {
+                if (trimmed[i] == '[') depth++
+                else if (trimmed[i] == ']') depth--
+                i++
+            }
+            if (i <= trimmed.length) {
+                val symbolsSubJson = trimmed.substring(startBrack, i)
+                val objects = extractJsonObjects(symbolsSubJson)
+                objects.forEach { obj ->
+                    val mapName = readJsonStringField(obj, "mapName") ?: return@forEach
+                    val offset = readJsonRawField(obj, "offset")?.toLongOrNull()
+                        ?: readJsonStringField(obj, "offsetHex")?.removePrefix("0x")?.removePrefix("0X")?.toLongOrNull(16)
+                        ?: return@forEach
+                    val name = readJsonStringField(obj, "name") ?: return@forEach
+                    val isFunction = readJsonRawField(obj, "isFunction")?.equals("true", ignoreCase = true) == true
+                    symbols.add(SymbolSaveItem(mapName, offset, name, isFunction))
+                }
+            }
+        }
+    }
+    
+    return SessionData(processName, titleId, contentId, watchlist, symbols)
+}

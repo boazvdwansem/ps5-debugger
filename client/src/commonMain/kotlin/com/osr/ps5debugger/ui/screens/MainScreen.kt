@@ -54,6 +54,9 @@ fun MainScreen(onExit: () -> Unit = {}) {
         state.activeMaps.clear()
         state.selectionStart = null
         state.selectionEnd = null
+        AppContainer.discoveredFunctions.clear()
+        AppContainer.discoveredJumpTargets.clear()
+        AppContainer.symbolNames.clear()
     }
 
     LaunchedEffect(isConnected) {
@@ -252,19 +255,30 @@ private fun MainContent(state: MainState) {
                                     if (map != null) {
                                         state.activeMap = map
                                         state.jumpToAddress = addr
+                                        state.selectionStart = addr
+                                        state.selectionEnd = addr
                                         state.selectedTab = 0
                                     }
                                 },
                                 onCollapse = { activeLeftTab = null }
                             )
-                            "symbols" -> SymbolsView(
+                             "symbols" -> SymbolsView(
                                 onJumpToAddress = { addr ->
-                                    val map = AppContainer.debuggerUseCase.vmMaps.value.firstOrNull { addr >= it.start && addr < it.end }
-                                    if (map != null) {
-                                        state.activeMap = map
-                                        state.jumpToAddress = addr
-                                        state.selectedTab = 0
+                                    val currentMap = state.activeMap
+                                    val currentMaps = state.activeMaps
+                                    val isLoaded = (currentMap != null && addr >= currentMap.start && addr < currentMap.end) ||
+                                            currentMaps.any { addr >= it.start && addr < it.end }
+                                    
+                                    if (!isLoaded) {
+                                        val map = AppContainer.debuggerUseCase.vmMaps.value.firstOrNull { addr >= it.start && addr < it.end }
+                                        if (map != null) {
+                                            state.activeMap = map
+                                        }
                                     }
+                                    state.jumpToAddress = addr
+                                    state.selectionStart = addr
+                                    state.selectionEnd = addr
+                                    state.selectedTab = 0
                                 },
                                 onCollapse = { activeLeftTab = null }
                             )
