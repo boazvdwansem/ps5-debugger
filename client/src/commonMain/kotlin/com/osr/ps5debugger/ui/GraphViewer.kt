@@ -142,6 +142,16 @@ fun GraphViewer(
             // Pan gesture layer
             Box(
                 Modifier.fillMaxSize()
+                    .pointerInput(edges, nodes, nodeHeights, scale, offset) {
+                        detectTapGestures { screenClickOffset ->
+                            val canvasClickX = (screenClickOffset.x - offset.x) / scale
+                            val canvasClickY = (screenClickOffset.y - offset.y) / scale
+                            val clickOffsetInCanvas = Offset(canvasClickX, canvasClickY)
+                            val minX = nodes.minOfOrNull { it.x } ?: 0f
+                            val maxX = nodes.maxOfOrNull { it.x + it.width } ?: 1000f
+                            selectedEdge = findClickedEdge(clickOffsetInCanvas, edges, nodes, nodeHeights, density, minX, maxX)
+                        }
+                    }
                     .pointerInput(filterFunctionAddr) {
                         detectTransformGestures { _, pan, zoom, _ ->
                             scale = (scale * zoom).coerceIn(0.05f, 4.0f)
@@ -172,20 +182,14 @@ fun GraphViewer(
                             transformOrigin = TransformOrigin(0f, 0f)
                         )
                 ) {
-                    Canvas(
-                        Modifier
-                            .fillMaxSize()
-                            .pointerInput(edges, nodes, nodeHeights) {
-                                detectTapGestures { clickOffset ->
-                                    selectedEdge = findClickedEdge(clickOffset, edges, nodes, nodeHeights, density)
-                                }
-                            }
-                    ) {
+                    val minX = remember(nodes) { nodes.minOfOrNull { it.x } ?: 0f }
+                    val maxX = remember(nodes) { nodes.maxOfOrNull { it.x + it.width } ?: 1000f }
+                    Canvas(Modifier.fillMaxSize()) {
                         for (edge: CfgEdge in edges) {
                             val fromNode = nodes.firstOrNull { it.id == edge.from }
                             val nodeTo = nodes.firstOrNull { it.id == edge.to }
                             if (fromNode != null && nodeTo != null) {
-                                drawNinjaEdge(fromNode, nodeTo, edge.type, nodeHeights, selectedEdge == edge)
+                                drawNinjaEdge(fromNode, nodeTo, edge.type, nodeHeights, selectedEdge == edge, minX, maxX)
                             }
                         }
                     }
@@ -428,7 +432,15 @@ private fun isInstructionSelected(instr: Ps5DisasmInstr, start: Long?, end: Long
     return (instr.addr in lo..hi) || (instrEnd in lo..hi) || (lo in instr.addr..instrEnd)
 }
 
-fun DrawScope.drawNinjaEdge(from: CfgNode, to: CfgNode, type: EdgeType, nodeHeights: Map<Int, Float>, isSelected: Boolean) {
+fun DrawScope.drawNinjaEdge(
+    from: CfgNode,
+    to: CfgNode,
+    type: EdgeType,
+    nodeHeights: Map<Int, Float>,
+    isSelected: Boolean,
+    minX: Float,
+    maxX: Float
+) {
     val d = density
     val color = if (isSelected) {
         Color(0xFFFFD54F) // Gold/Yellow highlight
@@ -441,33 +453,43 @@ fun DrawScope.drawNinjaEdge(from: CfgNode, to: CfgNode, type: EdgeType, nodeHeig
     }
     val strokeWidth = if (isSelected) 4f * d else 2f * d
     
-    val startX = when (type) {
-        EdgeType.TRUE -> (from.x + from.width * 0.25f) * d
-        EdgeType.FALSE -> (from.x + from.width * 0.75f) * d
-        else -> (from.x + from.width / 2f) * d
-    }
+    // Distribute exit and entry points across the width to prevent overlaps and clashing arrowheads
+    val exitOffset = (0.2f + (to.id % 7) * 0.1f) * from.width
+    val startX = (from.x + exitOffset) * d
+    
     val fromHeight = nodeHeights[from.id] ?: from.height
     val startY = (from.y + fromHeight) * d
     
-    val endX = when {
-        from.x < to.x -> (to.x + to.width * 0.25f) * d
-        from.x > to.x -> (to.x + to.width * 0.75f) * d
-        else -> (to.x + to.width / 2f) * d
-    }
+    val entryOffset = (0.2f + (from.id % 7) * 0.1f) * to.width
+    val endX = (to.x + entryOffset) * d
     val endY = to.y * d - 4f * d
     
     val path = Path().apply {
         moveTo(startX, startY)
-        if (from.id == to.id) { // Self loop: Draw orthogonal loop on the right side
-            lineTo(startX + 50f * d, startY)
-            lineTo(startX + 50f * d, endY)
+        val edgeHash = from.id * 31 + to.id
+        if (from.id == to.id) { // Self loop
+            val loopOffset = (60f + (edgeHash % 3) * 15f) * d
+            val vOffset = 20f * d
+            lineTo(startX, startY + vOffset)
+            lineTo(startX + loopOffset, startY + vOffset)
+            lineTo(startX + loopOffset, endY - vOffset)
+            lineTo(endX, endY - vOffset)
             lineTo(endX, endY)
-        } else if (endY < startY) { // Back edge: Route orthogonally to avoid slicing intermediate nodes
-            val routeX = if (startX <= endX) minOf(startX, endX) - 100f * d else maxOf(startX, endX) + 100f * d
-            lineTo(routeX, startY)
-            lineTo(routeX, endY)
+        } else if (endY <= startY || endY > startY + 250f * d) { // Back edge, same-level, or long cross-layer forward edge
+            val routeOffset = (40f + (edgeHash % 6) * 15f) * d
+            val graphCenter = (minX + maxX) / 2f * d
+            val edgeCenter = (startX + endX) / 2f
+            val routeX = if (edgeCenter < graphCenter) minX * d - routeOffset else maxX * d + routeOffset
+            val vOffset = (15f + (edgeHash % 5) * 6f) * d
+            lineTo(startX, startY + vOffset)
+            lineTo(routeX, startY + vOffset)
+            lineTo(routeX, endY - vOffset)
+            lineTo(endX, endY - vOffset)
             lineTo(endX, endY)
-        } else { // Forward or same-level branch: Direct straight line
+        } else { // Short forward branch (consecutive layer): route horizontally strictly in the gap below the source node
+            val midY = startY + (15f + (edgeHash % 5) * 10f) * d
+            lineTo(startX, midY)
+            lineTo(endX, midY)
             lineTo(endX, endY)
         }
     }
@@ -705,7 +727,9 @@ private fun findClickedEdge(
     edges: List<CfgEdge>,
     nodes: List<CfgNode>,
     nodeHeights: Map<Int, Float>,
-    d: Float
+    d: Float,
+    minX: Float,
+    maxX: Float
 ): CfgEdge? {
     var bestEdge: CfgEdge? = null
     var bestDist = Float.MAX_VALUE
@@ -714,37 +738,47 @@ private fun findClickedEdge(
         val from = nodes.firstOrNull { it.id == edge.from } ?: continue
         val to = nodes.firstOrNull { it.id == edge.to } ?: continue
         
-        val startX = when (edge.type) {
-            EdgeType.TRUE -> (from.x + from.width * 0.25f) * d
-            EdgeType.FALSE -> (from.x + from.width * 0.75f) * d
-            else -> (from.x + from.width / 2f) * d
-        }
+        val exitOffset = (0.2f + (to.id % 7) * 0.1f) * from.width
+        val startX = (from.x + exitOffset) * d
+        
         val fromHeight = nodeHeights[from.id] ?: from.height
         val startY = (from.y + fromHeight) * d
         
-        val endX = when {
-            from.x < to.x -> (to.x + to.width * 0.25f) * d
-            from.x > to.x -> (to.x + to.width * 0.75f) * d
-            else -> (to.x + to.width / 2f) * d
-        }
+        val entryOffset = (0.2f + (from.id % 7) * 0.1f) * to.width
+        val endX = (to.x + entryOffset) * d
         val endY = to.y * d - 4f * d
         
+        val edgeHash = from.id * 31 + to.id
         val dist = when {
             from.id == to.id -> {
-                val d1 = distanceToSegment(clickPos.x, clickPos.y, startX, startY, startX + 50f * d, startY)
-                val d2 = distanceToSegment(clickPos.x, clickPos.y, startX + 50f * d, startY, startX + 50f * d, endY)
-                val d3 = distanceToSegment(clickPos.x, clickPos.y, startX + 50f * d, endY, endX, endY)
-                minOf(d1, d2, d3)
+                val loopOffset = (60f + (edgeHash % 3) * 15f) * d
+                val vOffset = 20f * d
+                val d1 = distanceToSegment(clickPos.x, clickPos.y, startX, startY, startX, startY + vOffset)
+                val d2 = distanceToSegment(clickPos.x, clickPos.y, startX, startY + vOffset, startX + loopOffset, startY + vOffset)
+                val d3 = distanceToSegment(clickPos.x, clickPos.y, startX + loopOffset, startY + vOffset, startX + loopOffset, endY - vOffset)
+                val d4 = distanceToSegment(clickPos.x, clickPos.y, startX + loopOffset, endY - vOffset, endX, endY - vOffset)
+                val d5 = distanceToSegment(clickPos.x, clickPos.y, endX, endY - vOffset, endX, endY)
+                minOf(d1, d2, d3, d4, d5)
             }
-            endY < startY -> {
-                val routeX = if (startX <= endX) minOf(startX, endX) - 100f * d else maxOf(startX, endX) + 100f * d
-                val d1 = distanceToSegment(clickPos.x, clickPos.y, startX, startY, routeX, startY)
-                val d2 = distanceToSegment(clickPos.x, clickPos.y, routeX, startY, routeX, endY)
-                val d3 = distanceToSegment(clickPos.x, clickPos.y, routeX, endY, endX, endY)
-                minOf(d1, d2, d3)
+            endY <= startY || endY > startY + 250f * d -> {
+                val routeOffset = (40f + (edgeHash % 6) * 15f) * d
+                val graphCenter = (minX + maxX) / 2f * d
+                val edgeCenter = (startX + endX) / 2f
+                val routeX = if (edgeCenter < graphCenter) minX * d - routeOffset else maxX * d + routeOffset
+                val vOffset = (15f + (edgeHash % 5) * 6f) * d
+                val d1 = distanceToSegment(clickPos.x, clickPos.y, startX, startY, startX, startY + vOffset)
+                val d2 = distanceToSegment(clickPos.x, clickPos.y, startX, startY + vOffset, routeX, startY + vOffset)
+                val d3 = distanceToSegment(clickPos.x, clickPos.y, routeX, startY + vOffset, routeX, endY - vOffset)
+                val d4 = distanceToSegment(clickPos.x, clickPos.y, routeX, endY - vOffset, endX, endY - vOffset)
+                val d5 = distanceToSegment(clickPos.x, clickPos.y, endX, endY - vOffset, endX, endY)
+                minOf(d1, d2, d3, d4, d5)
             }
             else -> {
-                distanceToSegment(clickPos.x, clickPos.y, startX, startY, endX, endY)
+                val midY = startY + (15f + (edgeHash % 5) * 10f) * d
+                val d1 = distanceToSegment(clickPos.x, clickPos.y, startX, startY, startX, midY)
+                val d2 = distanceToSegment(clickPos.x, clickPos.y, startX, midY, endX, midY)
+                val d3 = distanceToSegment(clickPos.x, clickPos.y, endX, midY, endX, endY)
+                minOf(d1, d2, d3)
             }
         }
         

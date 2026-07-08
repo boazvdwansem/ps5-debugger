@@ -12,6 +12,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -340,6 +343,54 @@ fun DisassemblyViewer(
         } else {
             // Main Disassembly List
             Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                val activeJumps = remember(instructions) {
+                    instructions.mapNotNull { line ->
+                        val target = DisasmFormatter.getJumpTarget(line.instr, line.bytes)
+                        if (target != 0L && instructions.any { it.instr.addr == target }) {
+                            line.instr.addr to target
+                        } else null
+                    }
+                }
+
+                val rangesOverlap = { a1: Long, a2: Long, b1: Long, b2: Long ->
+                    val minA = minOf(a1, a2)
+                    val maxA = maxOf(a1, a2)
+                    val minB = minOf(b1, b2)
+                    val maxB = maxOf(b1, b2)
+                    maxA >= minB && maxB >= minA
+                }
+
+                val jumpTracks = remember(activeJumps) {
+                    val tracks = mutableMapOf<Pair<Long, Long>, Int>()
+                    val sorted = activeJumps.sortedBy { kotlin.math.abs(it.second - it.first) }
+                    for (j in sorted) {
+                        var track = 0
+                        while (true) {
+                            val ok = tracks.none { (other, otherTrack) ->
+                                otherTrack == track && rangesOverlap(j.first, j.second, other.first, other.second)
+                            }
+                            if (ok) {
+                                tracks[j] = track
+                                break
+                            }
+                            track++
+                        }
+                    }
+                    tracks
+                }
+
+                val jumpColors = remember(activeJumps) {
+                    val colors = listOf(
+                        Color(0xFFE57373), Color(0xFFF06292), Color(0xFFBA68C8), Color(0xFF9575CD),
+                        Color(0xFF7986CB), Color(0xFF64B5F6), Color(0xFF4FC3F7), Color(0xFF4DD0E1),
+                        Color(0xFF4DB6AC), Color(0xFF81C784), Color(0xFFD4E157), Color(0xFFFFD54F),
+                        Color(0xFFFFB74D), Color(0xFFFF8A65)
+                    )
+                    activeJumps.mapIndexed { idx, jump ->
+                        jump to colors[idx % colors.size]
+                    }.toMap()
+                }
+
                 LazyColumn(
                     state = listState,
                     modifier = Modifier
@@ -405,6 +456,71 @@ fun DisassemblyViewer(
                                     )
                                 } else {
                                     Spacer(Modifier.width(12.dp))
+                                }
+
+                                val maxTrack = jumpTracks.values.maxOrNull() ?: -1
+                                val canvasWidth = if (maxTrack >= 0) (20 + (maxTrack + 1) * 8).dp.coerceAtMost(40.dp) else 0.dp
+                                
+                                if (canvasWidth > 0.dp) {
+                                    Canvas(
+                                        modifier = Modifier
+                                            .width(canvasWidth)
+                                            .height(20.dp)
+                                            .padding(end = 8.dp) // Generous padding to prevent clashing with DisasmRow
+                                    ) {
+                                        val density = this.density
+                                        val addr = line.instr.addr
+                                        for ((jump, track) in jumpTracks) {
+                                            val color = jumpColors[jump] ?: Color.Gray
+                                            val src = jump.first
+                                            val target = jump.second
+                                            val minAddr = minOf(src, target)
+                                            val maxAddr = maxOf(src, target)
+                                            
+                                            // Hybrid centered spacing: 8dp fixed spacing if there is room, otherwise scale down
+                                            val startPad = 6f * density
+                                            val endPad = 8f * density
+                                            val availableSpace = size.width - startPad - endPad
+                                            val desiredSpacing = 8f * density
+                                            val totalDesiredSpace = maxTrack * desiredSpacing
+                                            
+                                            val lineX = if (totalDesiredSpace <= availableSpace) {
+                                                val leftOffset = startPad + (availableSpace - totalDesiredSpace) / 2f
+                                                leftOffset + track * desiredSpacing
+                                            } else {
+                                                val step = if (maxTrack > 0) availableSpace / maxTrack else 0f
+                                                startPad + track * step
+                                            }
+                                            
+                                            val lineWidth = 1.2f * density
+                                            when {
+                                                addr > minAddr && addr < maxAddr -> {
+                                                    drawLine(color, start = Offset(lineX, 0f), end = Offset(lineX, size.height), strokeWidth = lineWidth)
+                                                }
+                                                addr == src -> {
+                                                    val startY = size.height / 2f
+                                                    val endY = if (target > src) size.height else 0f
+                                                    drawLine(color, start = Offset(lineX, startY), end = Offset(lineX, endY), strokeWidth = lineWidth)
+                                                    drawLine(color, start = Offset(lineX, startY), end = Offset(size.width, startY), strokeWidth = lineWidth)
+                                                }
+                                                addr == target -> {
+                                                    val startY = if (src < target) 0f else size.height
+                                                    val endY = size.height / 2f
+                                                    drawLine(color, start = Offset(lineX, startY), end = Offset(lineX, endY), strokeWidth = lineWidth)
+                                                    drawLine(color, start = Offset(lineX, endY), end = Offset(size.width, endY), strokeWidth = lineWidth)
+                                                    
+                                                    val rightX = size.width
+                                                    val arrowPath = Path().apply {
+                                                        moveTo(rightX, endY)
+                                                        lineTo(rightX - 5f * density, endY - 3f * density)
+                                                        lineTo(rightX - 5f * density, endY + 3f * density)
+                                                        close()
+                                                    }
+                                                    drawPath(arrowPath, color)
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
 
                                 DisasmRow(
