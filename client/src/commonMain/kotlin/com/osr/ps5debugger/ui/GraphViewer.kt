@@ -481,8 +481,8 @@ fun NodeBlock(
             Text(
                 text = when {
                     node.isExternal -> "ext_${node.startAddr.toString(16).uppercase()}"
-                    isEntry -> "entry_sub_${node.startAddr.toString(16).uppercase()}"
-                    else -> "loc_${node.startAddr.toString(16).uppercase()}"
+                    isEntry -> "entry_${com.osr.ps5debugger.di.AppContainer.getSymbolName(node.startAddr, true)}"
+                    else -> com.osr.ps5debugger.di.AppContainer.getSymbolName(node.startAddr, false)
                 },
                 color = when {
                     node.isExternal -> Color(0xFF78909C)

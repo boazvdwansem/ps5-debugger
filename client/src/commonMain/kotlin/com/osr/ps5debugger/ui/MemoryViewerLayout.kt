@@ -207,7 +207,7 @@ private fun ViewModeToolbar(
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         val label = if (selectedFunction != null) {
-                            "sub_${selectedFunction.toString(16).uppercase()}"
+                            AppContainer.getSymbolName(selectedFunction, true)
                         } else "Select"
                         
                         Text(label, fontSize = 11.sp, color = PS5ThemeColors.TextMain, fontFamily = FontFamily.Monospace)
@@ -221,7 +221,7 @@ private fun ViewModeToolbar(
                     modifier = Modifier.background(PS5ThemeColors.SecondaryBg).border(1.dp, PS5ThemeColors.BorderColor).width(240.dp)
                 ) {
                     functions.forEach { addr ->
-                        val label = "sub_${addr.toString(16).uppercase()}"
+                        val label = AppContainer.getSymbolName(addr, true)
                                    
                         DropdownMenuItem(
                             text = { Text(label, fontSize = 11.sp, color = PS5ThemeColors.TextMain, fontFamily = FontFamily.Monospace) },

@@ -108,6 +108,8 @@ class MemoryViewerState(
             jumpTracks = tracks
             jumpColors = colors
             jumpTargets = targets
+            AppContainer.discoveredJumpTargets.clear()
+            AppContainer.discoveredJumpTargets.addAll(targets)
         }
     }
 
@@ -247,6 +249,8 @@ class MemoryViewerState(
             instructions.addAll(finalLines)
             functions.clear()
             functions.addAll(finalFunctions)
+            AppContainer.discoveredFunctions.clear()
+            AppContainer.discoveredFunctions.addAll(finalFunctions)
             updateMetadata()
         } catch (e: Exception) {
             AppContainer.debuggerUseCase.log("DISASM", "Initial load failed: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)

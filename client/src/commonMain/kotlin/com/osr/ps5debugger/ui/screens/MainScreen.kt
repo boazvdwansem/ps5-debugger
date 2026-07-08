@@ -151,6 +151,27 @@ private fun MainContent(state: MainState) {
                                 )
                             }
                         }
+                        // Symbols (Subroutines & Labels) Tab
+                        Tooltip("Symbols") {
+                            IconButton(
+                                onClick = {
+                                    activeLeftTab = if (activeLeftTab == "symbols") null else "symbols"
+                                },
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .background(
+                                        if (activeLeftTab == "symbols") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
+                                        RoundedCornerShape(6.dp)
+                                    )
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Info,
+                                    contentDescription = "Symbols",
+                                    tint = if (activeLeftTab == "symbols") PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
                         // Place future left sidebar tab icons here...
                     }
 
@@ -226,6 +247,17 @@ private fun MainContent(state: MainState) {
                                 onCollapse = { activeLeftTab = null }
                             )
                             "map" -> MemoryMapView(
+                                onJumpToAddress = { addr ->
+                                    val map = AppContainer.debuggerUseCase.vmMaps.value.firstOrNull { addr >= it.start && addr < it.end }
+                                    if (map != null) {
+                                        state.activeMap = map
+                                        state.jumpToAddress = addr
+                                        state.selectedTab = 0
+                                    }
+                                },
+                                onCollapse = { activeLeftTab = null }
+                            )
+                            "symbols" -> SymbolsView(
                                 onJumpToAddress = { addr ->
                                     val map = AppContainer.debuggerUseCase.vmMaps.value.firstOrNull { addr >= it.start && addr < it.end }
                                     if (map != null) {

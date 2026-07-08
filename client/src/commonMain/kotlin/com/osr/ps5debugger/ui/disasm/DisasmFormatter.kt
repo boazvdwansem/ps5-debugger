@@ -237,9 +237,9 @@ object DisasmFormatter {
             if (ops.isEmpty()) {
                 val jumpTarget = getJumpTarget(instr, bytes)
                 if (jumpTarget != 0L) {
-                    ops.add("0x" + jumpTarget.toString(16).uppercase())
+                    ops.add(com.osr.ps5debugger.di.AppContainer.getSymbolNameForTarget(jumpTarget, instr.isCall))
                 } else if (instr.ripRelTarget != 0L) {
-                    ops.add("0x" + instr.ripRelTarget.toString(16).uppercase())
+                    ops.add(com.osr.ps5debugger.di.AppContainer.getSymbolNameForTarget(instr.ripRelTarget, instr.isCall))
                 }
             }
         }
@@ -290,9 +290,9 @@ object DisasmFormatter {
     fun getInfoText(instr: Ps5DisasmInstr, bytes: ByteArray = byteArrayOf()): String {
         val jumpTarget = if (bytes.isNotEmpty()) getJumpTarget(instr, bytes) else 0L
         return when {
-            jumpTarget != 0L -> String.format("target: 0x%X", jumpTarget)
-            instr.isRipRel && instr.ripRelTarget != 0L -> String.format("target: 0x%X", instr.ripRelTarget)
-            instr.ripRelTarget > 0x10000 -> String.format("target: 0x%X", instr.ripRelTarget)
+            jumpTarget != 0L -> "target: " + com.osr.ps5debugger.di.AppContainer.getSymbolNameForTarget(jumpTarget, instr.isCall)
+            instr.isRipRel && instr.ripRelTarget != 0L -> "target: " + com.osr.ps5debugger.di.AppContainer.getSymbolNameForTarget(instr.ripRelTarget, instr.isCall)
+            instr.ripRelTarget > 0x10000 -> "target: " + com.osr.ps5debugger.di.AppContainer.getSymbolNameForTarget(instr.ripRelTarget, instr.isCall)
             instr.isCall -> "subroutine call"
             instr.isRet -> "return from subroutine"
             else -> ""

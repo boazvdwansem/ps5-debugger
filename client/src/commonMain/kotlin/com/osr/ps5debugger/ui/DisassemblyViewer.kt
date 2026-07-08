@@ -409,17 +409,21 @@ fun DisassemblyViewer(
             }
         } else {
             // Main Disassembly List
-            Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+            BoxWithConstraints(modifier = Modifier.fillMaxWidth().weight(1f)) {
                 val focusRequester = remember { FocusRequester() }
+                val viewportWidth = maxWidth
+                val isCompact = viewportWidth < 600.dp
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .horizontalScroll(rememberScrollState())
+                        .then(
+                            if (isCompact) Modifier else Modifier.horizontalScroll(rememberScrollState())
+                        )
                 ) {
                     LazyColumn(
                         state = listState,
                         modifier = Modifier
-                            .widthIn(min = 900.dp)
+                            .width(if (isCompact) viewportWidth else maxOf(900.dp, viewportWidth))
                             .fillMaxHeight()
                             .background(PS5ThemeColors.Surface, RoundedCornerShape(4.dp))
                             .border(1.dp, PS5ThemeColors.BorderColor, RoundedCornerShape(4.dp))
@@ -454,7 +458,7 @@ fun DisassemblyViewer(
                                         true
                                     } else false
                                 } else false
-                            }
+                             }
                     ) {
                     itemsIndexed(instructions) { idx, line ->
                         val isSelected = isInstructionSelected(line.instr, selectionStart, selectionEnd)
@@ -466,7 +470,7 @@ fun DisassemblyViewer(
                         val prevMap = prevLine?.region ?: activeMap
                         val isNewRegionStart = idx == 0 || (currentMap != null && prevMap != null && currentMap.start != prevMap.start)
 
-                        Column {
+                        Column(modifier = Modifier.fillMaxWidth()) {
                             if (isNewRegionStart && currentMap != null) {
                                 Spacer(Modifier.height(16.dp))
                                 Row(
@@ -501,7 +505,7 @@ fun DisassemblyViewer(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        text = "sub_${line.instr.addr.toString(16).uppercase()}",
+                                        text = com.osr.ps5debugger.di.AppContainer.getSymbolName(line.instr.addr, true),
                                         color = Color(0xFF64FFDA),
                                         fontSize = 12.sp,
                                         fontFamily = FontFamily.Monospace,
@@ -520,7 +524,7 @@ fun DisassemblyViewer(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        text = "loc_${line.instr.addr.toString(16).uppercase()}",
+                                        text = com.osr.ps5debugger.di.AppContainer.getSymbolName(line.instr.addr, false),
                                         color = Color(0xFF90A4AE),
                                         fontSize = 11.sp,
                                         fontFamily = FontFamily.Monospace,
@@ -614,6 +618,7 @@ fun DisassemblyViewer(
                                     line = line,
                                     isSelected = isSelected,
                                     isFunctionStart = isFunctionStart,
+                                    isCompact = isCompact,
                                     onAddressClicked = { addr: Long, len: Int, isShift: Boolean ->
                                         try { focusRequester.requestFocus() } catch (_: Exception) {}
                                         val firstAddr = instructions.firstOrNull()?.instr?.addr
@@ -913,6 +918,7 @@ fun DisasmRow(
     line: DisasmLine,
     isSelected: Boolean,
     isFunctionStart: Boolean = false,
+    isCompact: Boolean = false,
     onAddressClicked: (Long, Int, Boolean) -> Unit,
     onAddressRightClicked: (Long, ByteArray, String, DpOffset) -> Unit,
     showHexDetails: Boolean = false,
@@ -995,7 +1001,6 @@ fun DisasmRow(
             .background(
                 when {
                     isSelected -> PS5ThemeColors.AccentCyan.copy(alpha = 0.35f)
-                    isFunctionStart -> Color(0xFF2D2D2D)
                     else -> Color.Transparent
                 }
             )
@@ -1009,6 +1014,14 @@ fun DisasmRow(
                     while (true) {
                         val event = awaitPointerEvent()
                         val change = event.changes.first()
+                        
+                        // If the move was consumed by the parent (e.g. scrolling the list), 
+                        // we must prevent this from being counted as a tap selection.
+                        if (change.isConsumed) {
+                            isDragging = true
+                            isLongPressActive = false
+                        }
+                        
                         when (event.type) {
                             PointerEventType.Press -> {
                                 touchStartPos = change.position
@@ -1045,12 +1058,15 @@ fun DisasmRow(
                                     val dragY = change.position.y - start.y
                                     val dragX = change.position.x - start.x
                                     val dragDistance = kotlin.math.sqrt(dragX * dragX + dragY * dragY)
-                                    val dragThreshold = 16f
+                                    val dragThreshold = 10f // Threshold for distinguishing tap from scroll/drag
                                     
                                     if (dragDistance > dragThreshold) {
                                         isLongPressActive = false
-                                        if (kotlin.math.abs(dragX) > kotlin.math.abs(dragY) * 1.5f) {
-                                            isDragging = true
+                                        isDragging = true // Mark as dragging for ANY significant movement (scroll or swipe)
+                                        
+                                        // Only trigger the specific "Drag Selection" logic (side-swipe) 
+                                        // if it's primarily horizontal and not consumed by scrolling.
+                                        if (kotlin.math.abs(dragX) > kotlin.math.abs(dragY) * 1.5f && !change.isConsumed) {
                                             val density = this.density
                                             val rowHeightPx = 22f * density
                                             val rowsOffset = (change.position.y / rowHeightPx).toInt()
@@ -1080,10 +1096,10 @@ fun DisasmRow(
             fontFamily = FontFamily.Monospace,
             fontSize = 12.sp,
             color = addressColor,
-            modifier = Modifier.width(110.dp)
+            modifier = Modifier.width(if (isCompact) 80.dp else 110.dp)
         )
         
-        if (!showHexDetails) {
+        if (!showHexDetails && !isCompact) {
             // Raw hex bytes string (standard mode)
             Text(
                 text = formattedData.bytesStr,
@@ -1102,7 +1118,7 @@ fun DisasmRow(
             fontSize = 12.sp,
             fontWeight = FontWeight.Bold,
             color = formattedData.mnemonicColor,
-            modifier = Modifier.width(90.dp),
+            modifier = Modifier.width(if (isCompact) 60.dp else 90.dp),
             maxLines = 1,
             softWrap = false
         )
@@ -1110,7 +1126,7 @@ fun DisasmRow(
         Spacer(Modifier.width(8.dp))
         
         // Operands with Ghidra syntax highlight
-        Box(modifier = Modifier.width(280.dp)) {
+        Box(modifier = if (isCompact) Modifier.weight(1f) else Modifier.width(280.dp)) {
             Text(
                 text = formattedData.operands,
                 fontFamily = FontFamily.Monospace,
@@ -1120,7 +1136,7 @@ fun DisasmRow(
             )
         }
         
-        if (showHexDetails) {
+        if (showHexDetails && !isCompact) {
             Spacer(Modifier.width(16.dp))
             
             // Unified Hex cells (interactive block styling)
@@ -1157,7 +1173,7 @@ fun DisasmRow(
         Spacer(Modifier.width(16.dp))
         
         // Info / Comments (target, xref etc)
-        if (formattedData.infoText.isNotEmpty()) {
+        if (formattedData.infoText.isNotEmpty() && !isCompact) {
             Text(
                 text = " ; ${formattedData.infoText}",
                 fontFamily = FontFamily.Monospace,
