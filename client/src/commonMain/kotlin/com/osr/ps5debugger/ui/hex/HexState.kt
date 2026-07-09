@@ -79,6 +79,12 @@ class HexState(
         sorted.firstOrNull()?.let { hexViewerScrollPositions[it.start] = newPos }
     }
 
+    fun changeSelection(start: Long?, end: Long?) {
+        selectionStart = start
+        selectionEnd = end
+        onSelectionChanged?.invoke(start, end)
+    }
+
     fun getAddressForRow(row: Long): Long {
         var remainingRows = row
         val sorted = if (activeMaps.isNotEmpty()) activeMaps.sortedBy { it.start } else listOfNotNull(activeMap)
@@ -143,10 +149,8 @@ class HexState(
                 getAddressForRow(nextRow) + (cursor % bytesPerRow) // Try to maintain column
             }
 
-            selectionEnd = nextCursor
-            if (!shiftPressed) {
-                selectionStart = nextCursor
-            }
+            val nextStart = if (!shiftPressed) nextCursor else selectionStart
+            changeSelection(nextStart, nextCursor)
             hexInputBuffer = ""
             
             // Auto scroll
@@ -197,10 +201,8 @@ class HexState(
         val nextCursor = cursor + 1
         val targets = if (activeMaps.isNotEmpty()) activeMaps.toList() else listOfNotNull(activeMap)
         if (targets.any { nextCursor >= it.start && nextCursor < it.end }) {
-            selectionEnd = nextCursor
-            if (selectionStart == cursor) {
-                selectionStart = nextCursor
-            }
+            val nextStart = if (selectionStart == cursor) nextCursor else selectionStart
+            changeSelection(nextStart, nextCursor)
         }
     }
 
