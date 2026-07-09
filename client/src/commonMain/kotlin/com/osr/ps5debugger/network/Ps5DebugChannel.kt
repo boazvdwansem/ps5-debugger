@@ -18,6 +18,10 @@ class Ps5DebugChannel(private val scope: CoroutineScope) {
     private val _events = MutableSharedFlow<Ps5DebugEvent>(extraBufferCapacity = 64)
     val events: SharedFlow<Ps5DebugEvent> = _events.asSharedFlow()
 
+    fun triggerMockEvent(event: Ps5DebugEvent) {
+        _events.tryEmit(event)
+    }
+
     @Volatile
     var isListening: Boolean = false
         private set

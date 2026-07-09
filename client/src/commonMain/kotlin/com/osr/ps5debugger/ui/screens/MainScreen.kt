@@ -5,6 +5,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -68,14 +69,19 @@ fun MainScreen(onExit: () -> Unit = {}) {
     }
 
     Ps5DebuggerTheme {
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = MaterialTheme.colorScheme.background
-        ) {
-            if (!isConnected) {
-                ConnectionScreen()
-            } else {
-                MainContent(state)
+        Box(modifier = Modifier.fillMaxSize()) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = MaterialTheme.colorScheme.background
+            ) {
+                if (!isConnected) {
+                    ConnectionScreen(onSettingsClick = { state.isSettingsOpen = true })
+                } else {
+                    MainContent(state)
+                }
+            }
+            if (state.isSettingsOpen) {
+                SettingsMenuOverlay(onClose = { state.isSettingsOpen = false })
             }
         }
     }
@@ -303,6 +309,10 @@ private fun MainContent(state: MainState) {
                                 state = state,
                                 onCollapse = { activeRightTab = null }
                             )
+                            "breakpoints" -> BreakpointsSidebar(
+                                state = state,
+                                onCollapse = { activeRightTab = null }
+                            )
                         }
                     }
                 }
@@ -339,15 +349,32 @@ private fun MainContent(state: MainState) {
                             )
                         }
                     }
+                    // Breakpoints Icon Tab
+                    Tooltip("Breakpoints") {
+                        IconButton(
+                            onClick = {
+                                activeRightTab = if (activeRightTab == "breakpoints") null else "breakpoints"
+                            },
+                            modifier = Modifier
+                                .size(38.dp)
+                                .background(
+                                    if (activeRightTab == "breakpoints") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
+                                    RoundedCornerShape(6.dp)
+                                )
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.List,
+                                contentDescription = "Breakpoints",
+                                tint = if (activeRightTab == "breakpoints") PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
                     // Place future right sidebar tab icons here...
                 }
             }
 
             ConsolePanel(state)
-        }
-
-        if (state.isSettingsOpen) {
-            SettingsMenuOverlay(onClose = { state.isSettingsOpen = false })
         }
     }
 }
@@ -558,7 +585,7 @@ fun SettingsMenuOverlay(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF121212)) // Dark native background
+            .background(PS5ThemeColors.DarkBg)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             // Header
@@ -566,7 +593,7 @@ fun SettingsMenuOverlay(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(56.dp)
-                    .background(Color(0xFF1C1C1E))
+                    .background(PS5ThemeColors.SecondaryBg)
                     .padding(horizontal = 16.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -582,7 +609,7 @@ fun SettingsMenuOverlay(
                     Icon(
                         imageVector = Icons.Default.ArrowBack,
                         contentDescription = "Back",
-                        tint = Color.White
+                        tint = PS5ThemeColors.TextMain
                     )
                 }
                 Spacer(Modifier.width(16.dp))
@@ -591,15 +618,16 @@ fun SettingsMenuOverlay(
                         "appearance" -> "Appearance Settings"
                         "connection" -> "Connection Settings"
                         "accessibility" -> "Accessibility Settings"
+                        "debug" -> "Debug Settings"
                         "support" -> "Support"
                         else -> "Settings"
                     },
-                    color = Color.White,
+                    color = PS5ThemeColors.TextMain,
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Bold
                 )
             }
-            HorizontalDivider(color = Color(0xFF2C2C2E))
+            HorizontalDivider(color = PS5ThemeColors.BorderColor)
 
             // Body
             Box(
@@ -630,6 +658,12 @@ fun SettingsMenuOverlay(
                                 onClick = { currentScreen = "accessibility" }
                             )
                             SettingsItem(
+                                title = "Debug",
+                                icon = Icons.Default.Build,
+                                iconBg = Color(0xFFFF453A),
+                                onClick = { currentScreen = "debug" }
+                            )
+                            SettingsItem(
                                 title = "Support",
                                 icon = Icons.Default.Info,
                                 iconBg = Color(0xFFFF9F0A),
@@ -638,14 +672,37 @@ fun SettingsMenuOverlay(
                         }
                     }
                     "appearance" -> {
+                        var expanded by remember { mutableStateOf(false) }
+                        val themes = listOf("Dark", "Light", "Solarized")
                         Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                            Text("Theme Preference", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Button(onClick = {}, colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.AccentCyan)) {
-                                    Text("Dark Mode (Active)")
+                            Text("Theme Preference", color = PS5ThemeColors.TextMain, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                            
+                            Box {
+                                OutlinedButton(
+                                    onClick = { expanded = true },
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = PS5ThemeColors.TextMain),
+                                    border = BorderStroke(1.dp, PS5ThemeColors.BorderColor)
+                                ) {
+                                    Text(PS5ThemeColors.activeTheme)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("▼", fontSize = 10.sp)
                                 }
-                                Button(onClick = {}, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2C2C2E))) {
-                                    Text("Ghidra Dark")
+                                
+                                DropdownMenu(
+                                    expanded = expanded,
+                                    onDismissRequest = { expanded = false },
+                                    modifier = Modifier.background(PS5ThemeColors.Surface)
+                                ) {
+                                    themes.forEach { theme ->
+                                        DropdownMenuItem(
+                                            text = { Text(theme, color = PS5ThemeColors.TextMain) },
+                                            onClick = {
+                                                PS5ThemeColors.activeTheme = theme
+                                                DefaultIpHelper.setTheme(theme)
+                                                expanded = false
+                                            }
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -656,7 +713,7 @@ fun SettingsMenuOverlay(
                         var timeoutStr by remember { mutableStateOf(DefaultIpHelper.getConnectionTimeoutMs().toString()) }
                         
                         Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                            Text("Connection Preferences", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                            Text("Connection Preferences", color = PS5ThemeColors.TextMain, fontSize = 14.sp, fontWeight = FontWeight.Bold)
                             
                             OutlinedTextField(
                                 value = defaultIp,
@@ -670,8 +727,8 @@ fun SettingsMenuOverlay(
                                 colors = OutlinedTextFieldDefaults.colors(
                                     focusedBorderColor = PS5ThemeColors.AccentCyan,
                                     unfocusedBorderColor = PS5ThemeColors.BorderColor,
-                                    focusedTextColor = Color.White,
-                                    unfocusedTextColor = Color.White
+                                    focusedTextColor = PS5ThemeColors.TextMain,
+                                    unfocusedTextColor = PS5ThemeColors.TextMain
                                 )
                             )
                             
@@ -680,7 +737,7 @@ fun SettingsMenuOverlay(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("Auto-Reconnect on Connection Loss", color = Color.White, fontSize = 14.sp)
+                                Text("Auto-Reconnect on Connection Loss", color = PS5ThemeColors.TextMain, fontSize = 14.sp)
                                 Switch(
                                     checked = autoReconnect,
                                     onCheckedChange = { 
@@ -709,17 +766,48 @@ fun SettingsMenuOverlay(
                                 colors = OutlinedTextFieldDefaults.colors(
                                     focusedBorderColor = PS5ThemeColors.AccentCyan,
                                     unfocusedBorderColor = PS5ThemeColors.BorderColor,
-                                    focusedTextColor = Color.White,
-                                    unfocusedTextColor = Color.White
+                                    focusedTextColor = PS5ThemeColors.TextMain,
+                                    unfocusedTextColor = PS5ThemeColors.TextMain
                                 )
                             )
                         }
                     }
                     "accessibility" -> {
                         Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                            Text("Accessibility Options", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                            Text("Accessibility Options", color = PS5ThemeColors.TextMain, fontSize = 14.sp, fontWeight = FontWeight.Bold)
                             Text("Text Size: Medium", color = Color.Gray, fontSize = 12.sp)
                             Text("High Contrast: Off", color = Color.Gray, fontSize = 12.sp)
+                        }
+                    }
+                    "debug" -> {
+                        var mockEnabled by remember { mutableStateOf(AppContainer.debugMockEnabled) }
+                        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                            Text("Debug Options", color = PS5ThemeColors.TextMain, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                            
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Enable Debug Settings (Fake Connection)", color = PS5ThemeColors.TextMain, fontSize = 14.sp)
+                                Switch(
+                                    checked = mockEnabled,
+                                    onCheckedChange = { 
+                                        mockEnabled = it
+                                        AppContainer.debugMockEnabled = it
+                                        DefaultIpHelper.setMockEnabled(it)
+                                    },
+                                    colors = SwitchDefaults.colors(
+                                        checkedThumbColor = PS5ThemeColors.AccentCyan,
+                                        checkedTrackColor = PS5ThemeColors.AccentCyan.copy(alpha = 0.5f)
+                                    )
+                                )
+                            }
+                            Text(
+                                text = "When enabled, the client will simulate a console connection, bypassing network sockets and generating mock disassembly/subroutine CFG graphs.",
+                                fontSize = 12.sp,
+                                color = Color.Gray
+                            )
                         }
                     }
                     "support" -> {
@@ -745,7 +833,7 @@ fun SettingsItem(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color(0xFF1C1C1E), RoundedCornerShape(10.dp))
+            .background(PS5ThemeColors.SecondaryBg, RoundedCornerShape(10.dp))
             .clickable { onClick() }
             .padding(12.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -766,15 +854,15 @@ fun SettingsItem(
         Spacer(Modifier.width(12.dp))
         Text(
             text = title,
-            color = Color.White,
-            fontSize = 16.sp,
+            color = PS5ThemeColors.TextMain,
+            fontSize = 15.sp,
             fontWeight = FontWeight.Medium,
             modifier = Modifier.weight(1f)
         )
         Icon(
             imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
             contentDescription = null,
-            tint = Color.Gray,
+            tint = PS5ThemeColors.TextMuted,
             modifier = Modifier.size(20.dp)
         )
     }

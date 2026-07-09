@@ -277,23 +277,6 @@ fun ProcessManager(
                             ) {
                                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
-                                        if (onMapsSelected != null) {
-                                            Checkbox(
-                                                checked = activeMaps.any { it.start == map.start },
-                                                onCheckedChange = { checked ->
-                                                    val newList = activeMaps.toMutableList()
-                                                    if (checked) {
-                                                        if (!newList.any { it.start == map.start }) newList.add(map)
-                                                    } else {
-                                                        newList.removeAll { it.start == map.start }
-                                                    }
-                                                    newList.sortBy { it.start }
-                                                    onMapsSelected(newList)
-                                                },
-                                                colors = CheckboxDefaults.colors(checkedColor = PS5ThemeColors.AccentCyan),
-                                                modifier = Modifier.padding(end = 4.dp).size(20.dp)
-                                            )
-                                        }
                                         Text(
                                             text = if (map.name.isEmpty()) "unnamed" else map.name,
                                             fontSize = 12.sp,
@@ -313,8 +296,7 @@ fun ProcessManager(
                                           text = String.format("0x%X - 0x%X", map.start, map.end),
                                           fontSize = 10.sp,
                                           color = Color.Gray,
-                                          fontFamily = FontFamily.Monospace,
-                                          modifier = Modifier.padding(start = if (onMapsSelected != null) 24.dp else 0.dp)
+                                          fontFamily = FontFamily.Monospace
                                       )
                                       Text(
                                           text = String.format("%.2f MB", map.size.toDouble() / (1024 * 1024)),

@@ -83,7 +83,7 @@ fun ByteAsciiCellCompact(byte: Byte) {
             text = charStr,
             fontFamily = FontFamily.Monospace,
             fontSize = 11.sp,
-            color = Color.Green
+            color = PS5ThemeColors.StatusGreen
         )
     }
 }
@@ -728,7 +728,7 @@ fun DisassemblyViewer(
                                             val activeWpSlot = activeWatchpoints.entries.firstOrNull { it.value == addr }?.key
                                             if (activeWpSlot != null) {
                                                 DropdownMenuItem(
-                                                    text = { Text("Remove Watchpoint", color = Color.Red, fontSize = 12.sp) },
+                                                    text = { Text("Remove Hardware Watchpoint", color = Color.Red, fontSize = 12.sp) },
                                                     onClick = {
                                                         coroutineScope.launch {
                                                             try {
@@ -933,11 +933,35 @@ fun DisasmRow(
     val targetSymbolName = if (targetAddr != 0L) AppContainer.symbolNames[targetAddr] else null
 
     // Memoize static formatting logic to prevent heavy CPU work during every scroll frame
-    val formattedData = remember(instr.addr, line.bytes, ownSymbolName, targetSymbolName) {
+    val formattedData = remember(instr.addr, line.bytes, ownSymbolName, targetSymbolName, PS5ThemeColors.activeTheme) {
         val mnemonic = DisasmFormatter.getMnemonic(instr, line.bytes)
         val operands = DisasmFormatter.formatOperands(instr, line.bytes)
         val infoText = DisasmFormatter.getInfoText(instr, line.bytes)
         val bytesStr = line.bytes.joinToString(" ") { String.format("%02X", it) }
+        
+        val isLight = PS5ThemeColors.activeTheme == "Light"
+        val isSolarized = PS5ThemeColors.activeTheme == "Solarized"
+        
+        val regColor = when {
+            isLight -> Color(0xFF005A9C)
+            isSolarized -> Color(0xFF268BD2)
+            else -> Color(0xFF64FFDA)
+        }
+        val numberColor = when {
+            isLight -> Color(0xFFD03A00)
+            isSolarized -> Color(0xFFCB4B16)
+            else -> Color(0xFFFF8A65)
+        }
+        val bracketColor = when {
+            isLight -> Color(0xFF795548)
+            isSolarized -> Color(0xFF859900)
+            else -> Color(0xFFFFD54F)
+        }
+        val defaultOpColor = when {
+            isLight -> Color(0xFF1F2328)
+            isSolarized -> Color(0xFF586E75)
+            else -> Color(0xFFECEFF1)
+        }
         
         // Pre-build the annotated operands string
         val annotatedOps = buildAnnotatedString {
@@ -950,22 +974,22 @@ fun DisasmRow(
                 
                 when {
                     isReg -> {
-                        withStyle(style = SpanStyle(color = Color(0xFF64FFDA), fontWeight = FontWeight.Bold)) {
+                        withStyle(style = SpanStyle(color = regColor, fontWeight = FontWeight.Bold)) {
                             append(token)
                         }
                     }
                     isNumber -> {
-                        withStyle(style = SpanStyle(color = Color(0xFFFF8A65))) {
+                        withStyle(style = SpanStyle(color = numberColor)) {
                             append(token)
                         }
                     }
                     token == "[" || token == "]" -> {
-                        withStyle(style = SpanStyle(color = Color(0xFFFFD54F), fontWeight = FontWeight.Bold)) {
+                        withStyle(style = SpanStyle(color = bracketColor, fontWeight = FontWeight.Bold)) {
                             append(token)
                         }
                     }
                     else -> {
-                        withStyle(style = SpanStyle(color = Color(0xFFECEFF1))) {
+                        withStyle(style = SpanStyle(color = defaultOpColor)) {
                             append(token)
                         }
                     }
@@ -978,9 +1002,21 @@ fun DisasmRow(
         
         // Mnemonic color logic
         val mnemonicColor = when {
-            instr.isCall || instr.isRet -> Color(0xFFF50057)
-            instr.isJmp || instr.isCondJmp -> Color(0xFFFF4081)
-            else -> Color(0xFFFFB74D)
+            instr.isCall || instr.isRet -> when {
+                isLight -> Color(0xFF9C27B0)
+                isSolarized -> Color(0xFF6C71C4)
+                else -> Color(0xFFF50057)
+            }
+            instr.isJmp || instr.isCondJmp -> when {
+                isLight -> Color(0xFFD11149)
+                isSolarized -> Color(0xFFD33682)
+                else -> Color(0xFFFF4081)
+            }
+            else -> when {
+                isLight -> Color(0xFF006666)
+                isSolarized -> Color(0xFFB58900)
+                else -> Color(0xFFFFB74D)
+            }
         }
         
         object {
@@ -996,10 +1032,24 @@ fun DisasmRow(
     val windowInfo = androidx.compose.ui.platform.LocalWindowInfo.current
     val coroutineScope = rememberCoroutineScope()
     
-    // Ghidra Dark Theme Colors
-    val addressColor = Color(0xFF90A4AE)      // Gray-blue lavender
-    val byteColor = Color(0xFF808080)         // Dark Gray
-    val commentColor = Color(0xFF78909C)       // Muted gray-green comment color
+    val isLight = PS5ThemeColors.activeTheme == "Light"
+    val isSolarized = PS5ThemeColors.activeTheme == "Solarized"
+    
+    val addressColor = when {
+        isLight -> Color(0xFF57606A)
+        isSolarized -> Color(0xFF93A1A1)
+        else -> Color(0xFF90A4AE)
+    }
+    val byteColor = when {
+        isLight -> Color(0xFF6E7781)
+        isSolarized -> Color(0xFF93A1A1)
+        else -> Color(0xFF808080)
+    }
+    val commentColor = when {
+        isLight -> Color(0xFF0969DA)
+        isSolarized -> Color(0xFF2AA198)
+        else -> Color(0xFF78909C)
+    }
  
     Row(
         modifier = Modifier

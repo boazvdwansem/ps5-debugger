@@ -204,12 +204,15 @@ class HexState(
         }
     }
 
+    private var loadJob: kotlinx.coroutines.Job? = null
+
     fun loadMemory() {
         val pid = AppContainer.debuggerUseCase.activeProcess.value?.pid ?: return
         val targets = if (activeMaps.isNotEmpty()) activeMaps.toList() else listOfNotNull(activeMap)
         if (targets.isEmpty()) return
         
-        scope.launch {
+        loadJob?.cancel()
+        loadJob = scope.launch {
             delay(100)
             val visibleStart = getAddressForRow(scrollPosition)
             val visibleEnd = getAddressForRow(scrollPosition + visibleRowsCount)

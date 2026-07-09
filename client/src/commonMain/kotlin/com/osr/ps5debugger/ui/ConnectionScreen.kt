@@ -16,9 +16,11 @@ import com.osr.ps5debugger.di.AppContainer
 import com.osr.ps5debugger.PS5ThemeColors
 import com.osr.ps5debugger.util.DefaultIpHelper
 import kotlinx.coroutines.launch
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Settings
 
 @Composable
-fun ConnectionScreen(modifier: Modifier = Modifier) {
+fun ConnectionScreen(onSettingsClick: () -> Unit, modifier: Modifier = Modifier) {
     val coroutineScope = rememberCoroutineScope()
     var ipInput by remember { mutableStateOf(DefaultIpHelper.getDefaultIp() ?: "192.168.1.100") }
     var isConnecting by remember { mutableStateOf(false) }
@@ -153,6 +155,19 @@ fun ConnectionScreen(modifier: Modifier = Modifier) {
                     )
                 }
             }
+        }
+        
+        IconButton(
+            onClick = onSettingsClick,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(16.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.Settings,
+                contentDescription = "Settings",
+                tint = PS5ThemeColors.TextMuted
+            )
         }
     }
 }

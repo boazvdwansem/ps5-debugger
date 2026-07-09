@@ -411,10 +411,24 @@ fun GraphViewer(
                             showContextMenu = false
                         }
                     )
-                    DropdownMenuItem(text = { Text("Set Hardware Watchpoint...") }, onClick = {
-                        onSetWatchpoint(addr)
-                        showContextMenu = false
-                    })
+                    val activeWpSlot = activeWatchpoints.entries.firstOrNull { it.value == addr }?.key
+                    if (activeWpSlot != null) {
+                        DropdownMenuItem(
+                            text = { Text("Remove Hardware Watchpoint", color = Color.Red) },
+                            onClick = {
+                                onSetWatchpoint(addr)
+                                showContextMenu = false
+                            }
+                        )
+                    } else {
+                        DropdownMenuItem(
+                            text = { Text("Set Hardware Watchpoint...") },
+                            onClick = {
+                                onSetWatchpoint(addr)
+                                showContextMenu = false
+                            }
+                        )
+                    }
                 }
             }
         }

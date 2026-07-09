@@ -31,7 +31,9 @@ object DefaultIpHelper {
     private data class Config(
         val ip: String,
         val autoReconnect: Boolean,
-        val timeoutMs: Int
+        val timeoutMs: Int,
+        val theme: String = "Dark",
+        val mockEnabled: Boolean = false
     )
 
     private fun readConfig(): Config {
@@ -42,19 +44,21 @@ object DefaultIpHelper {
                 val ip = lines.getOrNull(0)?.trim() ?: ""
                 val autoReconnect = lines.getOrNull(1)?.trim()?.toBooleanStrictOrNull() ?: true
                 val timeoutMs = lines.getOrNull(2)?.trim()?.toIntOrNull() ?: 5000
-                Config(ip, autoReconnect, timeoutMs)
+                val theme = lines.getOrNull(3)?.trim() ?: "Dark"
+                val mockEnabled = lines.getOrNull(4)?.trim()?.toBooleanStrictOrNull() ?: false
+                Config(ip, autoReconnect, timeoutMs, theme, mockEnabled)
             } else {
-                Config("", true, 5000)
+                Config("", true, 5000, "Dark", false)
             }
         } catch (_: Exception) {
-            Config("", true, 5000)
+            Config("", true, 5000, "Dark", false)
         }
     }
 
     private fun writeConfig(config: Config) {
         try {
             val file = getConfigFile()
-            file.writeText("${config.ip}\n${config.autoReconnect}\n${config.timeoutMs}")
+            file.writeText("${config.ip}\n${config.autoReconnect}\n${config.timeoutMs}\n${config.theme}\n${config.mockEnabled}")
         } catch (_: Exception) {}
     }
 
@@ -84,5 +88,23 @@ object DefaultIpHelper {
     fun setConnectionTimeoutMs(timeoutMs: Int) {
         val current = readConfig()
         writeConfig(current.copy(timeoutMs = timeoutMs))
+    }
+
+    fun getTheme(): String {
+        return readConfig().theme
+    }
+
+    fun setTheme(theme: String) {
+        val current = readConfig()
+        writeConfig(current.copy(theme = theme))
+    }
+
+    fun isMockEnabled(): Boolean {
+        return readConfig().mockEnabled
+    }
+
+    fun setMockEnabled(enabled: Boolean) {
+        val current = readConfig()
+        writeConfig(current.copy(mockEnabled = enabled))
     }
 }

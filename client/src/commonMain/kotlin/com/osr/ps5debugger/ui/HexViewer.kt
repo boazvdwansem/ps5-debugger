@@ -474,7 +474,7 @@ private fun HexGridBody(state: HexState, isMobile: Boolean, showAddress: Boolean
                 // Render separator if this row starts a new map or transition
                 val isNewRegion = currentMap != null && (rowIndex == 0 || prevMap == null || currentMap.start != prevMap.start)
                 
-                if (isNewRegion && currentMap != null) {
+                if (isNewRegion) {
                     Spacer(Modifier.height(10.dp))
                     Row(
                         modifier = Modifier

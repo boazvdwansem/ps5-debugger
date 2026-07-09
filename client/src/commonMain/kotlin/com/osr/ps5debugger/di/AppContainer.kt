@@ -10,8 +10,13 @@ import kotlinx.coroutines.SupervisorJob
 
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 
 object AppContainer {
+    var debugMockEnabled by androidx.compose.runtime.mutableStateOf(
+        try { com.osr.ps5debugger.util.DefaultIpHelper.isMockEnabled() } catch (_: Exception) { false }
+    )
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     val clientAdapter = SocketDebuggerAdapter(appScope)

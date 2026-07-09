@@ -81,7 +81,7 @@ fun ByteAsciiCell(
             text = charStr,
             fontFamily = FontFamily.Monospace,
             fontSize = if (isMobile) 11.sp else 13.sp,
-            color = if (isSelected) PS5ThemeColors.AccentCyan else Color.Green
+            color = if (isSelected) PS5ThemeColors.AccentCyan else PS5ThemeColors.StatusGreen
         )
     }
 }

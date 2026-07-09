@@ -203,6 +203,7 @@ object DisasmFormatter {
                     off++
                 }
                 
+                if (off >= bytes.size) return ""
                 val opc = bytes[off].toInt() and 0xFF
                 if (opc in 0x50..0x57) {
                     val regId = (opc and 0x07) or (if ((rex and 0x01) != 0) 8 else 0)

@@ -321,61 +321,43 @@ fun MemoryMapView(
                     )
                 }
 
-                // Segments Table Header
-                item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().background(PS5ThemeColors.Surface.copy(alpha = 0.5f)).padding(4.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("Start / End", modifier = Modifier.weight(1.5f), fontSize = 10.sp, fontWeight = FontWeight.Bold, color = PS5ThemeColors.TextMuted)
-                        Text("Length", modifier = Modifier.weight(1f), fontSize = 10.sp, fontWeight = FontWeight.Bold, color = PS5ThemeColors.TextMuted)
-                        Text("Type", modifier = Modifier.weight(0.8f), fontSize = 10.sp, fontWeight = FontWeight.Bold, color = PS5ThemeColors.TextMuted)
-                    }
-                }
-
                 items(segments) { seg ->
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .pointerInput(Unit) {
-                                detectTapGestures(
-                                    onDoubleTap = {
-                                        onJumpToAddress(seg.start)
-                                    }
-                                )
+                            .clickable {
+                                onJumpToAddress(seg.start)
                             }
-                            .padding(vertical = 4.dp)
+                            .padding(vertical = 6.dp)
                     ) {
-                        Row(horizontalArrangement = Arrangement.SpaceBetween) {
-                            Column(modifier = Modifier.weight(1.5f)) {
-                                Text(
-                                    text = "0x${seg.start.toString(16).uppercase()}",
-                                    color = PS5ThemeColors.TextMain,
-                                    fontSize = 11.sp,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                                Text(
-                                    text = "0x${seg.end.toString(16).uppercase()}",
-                                    color = PS5ThemeColors.TextMuted,
-                                    fontSize = 10.sp,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                            }
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             Text(
-                                text = "0x${seg.length.toString(16).uppercase()}",
-                                modifier = Modifier.weight(1f),
-                                color = PS5ThemeColors.TextMain,
+                                text = seg.type,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = PS5ThemeColors.TextMain
+                            )
+                            Text(
+                                text = seg.flags,
                                 fontSize = 11.sp,
+                                color = if (seg.flags.contains("X")) PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text(
+                                text = String.format("0x%X - 0x%X", seg.start, seg.end),
+                                fontSize = 10.sp,
+                                color = Color.Gray,
                                 fontFamily = FontFamily.Monospace
                             )
                             Text(
-                                text = seg.type,
-                                modifier = Modifier.weight(0.8f),
-                                color = if (seg.flags.contains("X")) PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
+                                text = String.format("%.2f MB", seg.length.toDouble() / (1024 * 1024)),
                                 fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold
+                                color = Color.Gray
                             )
                         }
+                        Spacer(Modifier.height(4.dp))
                         Divider(color = PS5ThemeColors.BorderColor.copy(alpha = 0.2f), thickness = 0.5.dp)
                     }
                 }

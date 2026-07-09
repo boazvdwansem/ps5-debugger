@@ -152,34 +152,10 @@ fun main() {
             }
         }
         val animateBounds: (Rectangle, () -> Unit) -> Unit = { target, onDone ->
-            val start = Rectangle(window.bounds)
-            val frames = 18
-            var frame = 0
             isAnimatingWindow = true
-            val timerRef = arrayOfNulls<Timer>(1)
-            timerRef[0] = Timer(10) {
-                frame++
-                val t = frame.toFloat() / frames.toFloat()
-                val eased = if (t < 0.5f) {
-                    4f * t * t * t
-                } else {
-                    1f - (-2f * t + 2f).let { it * it * it } / 2f
-                }
-                window.bounds = Rectangle(
-                    kotlin.math.round(start.x + (target.x - start.x) * eased).toInt(),
-                    kotlin.math.round(start.y + (target.y - start.y) * eased).toInt(),
-                    kotlin.math.round(start.width + (target.width - start.width) * eased).toInt(),
-                    kotlin.math.round(start.height + (target.height - start.height) * eased).toInt()
-                )
-                if (frame >= frames) {
-                    timerRef[0]?.stop()
-                    window.bounds = target
-                    isAnimatingWindow = false
-                    onDone()
-                }
-            }
-            timerRef[0]?.isRepeats = true
-            timerRef[0]?.start()
+            window.bounds = target
+            isAnimatingWindow = false
+            onDone()
         }
         val isMaximized = { isCustomMaximized }
         val maximizeWindow = {

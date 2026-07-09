@@ -123,12 +123,17 @@ fun MemoryViewerLayout(
                             }
                         },
                         onSetWatchpoint = { addr ->
-                            // Hardware watchpoint dialog or default setup
                             coroutineScope.launch {
-                                val freeSlot = (0..3).firstOrNull { !activeWatchpoints.containsKey(it) }
-                                if (freeSlot != null) {
-                                    activeWatchpoints[freeSlot] = addr
-                                    client.setWatchpoint(freeSlot, true, 1, 1, addr) // Default 1B Write
+                                val activeWpSlot = activeWatchpoints.entries.firstOrNull { it.value == addr }?.key
+                                if (activeWpSlot != null) {
+                                    activeWatchpoints.remove(activeWpSlot)
+                                    client.setWatchpoint(activeWpSlot, false, 1, 1, addr)
+                                } else {
+                                    val freeSlot = (0..3).firstOrNull { !activeWatchpoints.containsKey(it) }
+                                    if (freeSlot != null) {
+                                        activeWatchpoints[freeSlot] = addr
+                                        client.setWatchpoint(freeSlot, true, 1, 1, addr) // Default 1B Write
+                                    }
                                 }
                             }
                         }
@@ -141,6 +146,20 @@ fun MemoryViewerLayout(
                         selectionStartParam = state.selectionStart,
                         selectionEndParam = state.selectionEnd,
                         onSelectionChanged = { start, end -> state.updateSelection(start, end) }
+                    )
+                    3 -> StringsView(
+                        activeMap = state.activeMap,
+                        activeMaps = state.activeMaps,
+                        instructions = state.instructions,
+                        onJumpToAddress = { addr ->
+                            state.currentJumpAddress = addr
+                            state.setViewMode(0)
+                        },
+                        onJumpToHex = { addr ->
+                            state.currentJumpAddress = addr
+                            state.setViewMode(2)
+                        },
+                        modifier = Modifier.fillMaxSize()
                     )
                 }
             }
@@ -163,7 +182,7 @@ private fun ViewModeToolbar(
         Text("View Layout:", color = PS5ThemeColors.TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
         
         var expanded by remember { mutableStateOf(false) }
-        val options = listOf("Disassembly", "Graph", "Hex Viewer")
+        val options = listOf("Disassembly", "Graph", "Hex Viewer", "Strings")
         
         Box {
             Button(

@@ -21,8 +21,9 @@ class Ps5Connection {
         private set
     
     @Volatile
-    var isConnected: Boolean = false
-        private set
+    private var _isConnected: Boolean = false
+    val isConnected: Boolean
+        get() = com.osr.ps5debugger.di.AppContainer.debugMockEnabled || _isConnected
 
     suspend fun connect(ip: String, port: Int = 744, timeoutMs: Int = 5000): Boolean = withContext(Dispatchers.IO) {
         mutex.withLock {
@@ -38,7 +39,7 @@ class Ps5Connection {
                 inputStream = newSocket.getInputStream()
                 outputStream = newSocket.getOutputStream()
                 ipAddress = ip
-                isConnected = true
+                _isConnected = true
                 true
             } catch (e: Exception) {
                 cleanup()
@@ -58,7 +59,7 @@ class Ps5Connection {
         socket = null
         inputStream = null
         outputStream = null
-        isConnected = false
+        _isConnected = false
     }
 
     /**
