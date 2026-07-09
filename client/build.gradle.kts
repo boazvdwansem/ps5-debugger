@@ -12,7 +12,7 @@ plugins {
 }
 
 group = "com.osr.ps5debugger"
-version = "1.0.1"
+version = "1.0.2"
 
 kotlin {
     jvmToolchain(21)
@@ -84,7 +84,7 @@ android {
         minSdk = 26
         targetSdk = 34
         versionCode = 1
-        versionName = "1.0.1"
+        versionName = "1.0.2"
     }
 
     compileOptions {
@@ -104,7 +104,7 @@ compose.desktop {
                 org.jetbrains.compose.desktop.application.dsl.TargetFormat.Deb
             )
             packageName = "PS5Debugger"
-            packageVersion = "1.0.1"
+            packageVersion = "1.0.2"
         }
     }
 }
