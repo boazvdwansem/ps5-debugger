@@ -1,33 +1,37 @@
 package com.osr.ps5debugger.ui
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Search
+import com.osr.ps5debugger.ui.icons.PS5Icons
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.osr.ps5debugger.domain.model.Process
 import com.osr.ps5debugger.domain.model.MemoryRange
+import com.osr.ps5debugger.domain.model.DumpRegionEntry
+import com.osr.ps5debugger.service.MemoryDumper
 import com.osr.ps5debugger.di.AppContainer
 import com.osr.ps5debugger.PS5ThemeColors
 import kotlinx.coroutines.launch
+
+private data class MemoryRangeUiKey(
+    val start: Long,
+    val end: Long
+)
+
+private fun MemoryRange.uiKey() = MemoryRangeUiKey(start, end)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -76,24 +80,16 @@ fun ProcessManager(
                         }
                     }
                 }) {
-                    Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                    Icon(PS5Icons.Refresh, contentDescription = "Refresh")
                 }
                 if (onCollapse != null) {
-                    val density = LocalDensity.current.density
-                    IconButton(onClick = onCollapse) {
-                        Canvas(modifier = Modifier.size(24.dp)) {
-                            val tintColor = PS5ThemeColors.AccentCyan
-                            val path = androidx.compose.ui.graphics.Path().apply {
-                                moveTo(15f * density, 6f * density)
-                                lineTo(9f * density, 12f * density)
-                                lineTo(15f * density, 18f * density)
-                            }
-                            drawPath(
-                                path = path,
-                                color = tintColor,
-                                style = Stroke(width = 2f * density, cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round)
-                            )
-                        }
+                    IconButton(onClick = onCollapse, modifier = Modifier.size(24.dp)) {
+                        Icon(
+                            imageVector = PS5Icons.Close,
+                            contentDescription = "Collapse",
+                            tint = PS5ThemeColors.TextMuted,
+                            modifier = Modifier.size(16.dp)
+                        )
                     }
                 }
             }
@@ -149,7 +145,7 @@ fun ProcessManager(
                 value = processSearchText,
                 onValueChange = { processSearchText = it },
                 placeholder = { Text("Filter processes...") },
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                leadingIcon = { Icon(PS5Icons.Search, contentDescription = null, modifier = Modifier.size(16.dp)) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
             )
@@ -199,18 +195,26 @@ fun ProcessManager(
                     value = mapSearchText,
                     onValueChange = { mapSearchText = it },
                     placeholder = { Text("Search regions (name or address)...") },
-                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                    leadingIcon = { Icon(PS5Icons.Search, contentDescription = null, modifier = Modifier.size(16.dp)) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
                 )
 
-                // Select All / Select None Button
-                if (onMapsSelected != null) {
-                    val filteredMaps = maps.filter { 
-                        it.name.contains(mapSearchText, ignoreCase = true) || 
+                // Merge multiple segments into unified library and unnamed entries, matching MemoryDumperView
+                val displayEntries = remember(maps) { MemoryDumper.mergeLibraryMaps(maps) }
+
+                // Memoize filtered entries — recomputed only when the source list or search text changes
+                val filteredEntries = remember(displayEntries, mapSearchText) {
+                    if (mapSearchText.isEmpty()) displayEntries
+                    else displayEntries.filter {
+                        it.name.contains(mapSearchText, ignoreCase = true) ||
                         it.start.toString(16).contains(mapSearchText, ignoreCase = true) ||
                         it.end.toString(16).contains(mapSearchText, ignoreCase = true)
                     }
+                }
+
+                // Select All / Select None Button
+                if (onMapsSelected != null) {
                     val isAnySelected = activeMaps.isNotEmpty()
                     val buttonText = if (isAnySelected) "Select None" else "Select All"
                     
@@ -219,7 +223,8 @@ fun ProcessManager(
                             if (isAnySelected) {
                                 onMapsSelected(emptyList())
                             } else {
-                                onMapsSelected(filteredMaps)
+                                // Add unified modules instead of individual segments
+                                onMapsSelected(filteredEntries.map { it.toMemoryRange() }.distinctBy { it.uiKey() }.sortedBy { it.start })
                             }
                         },
                         modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
@@ -233,16 +238,19 @@ fun ProcessManager(
                     }
                 }
 
+                // Derive selected map keys from SnapshotStateList content to stay in sync on in-place mutations.
+                val activeMapKeys by remember {
+                    derivedStateOf { activeMaps.asSequence().map { it.uiKey() }.toHashSet() }
+                }
+                val activeMapKey = activeMap?.uiKey()
+                val processInfo by AppContainer.debuggerUseCase.activeProcessInfo.collectAsState()
+                val currentTitleId = processInfo?.titleId
+
                 if (isLoadingMaps) {
                     Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator(modifier = Modifier.size(24.dp), color = PS5ThemeColors.AccentCyan)
                     }
                 } else {
-                    val filteredMaps = maps.filter { 
-                        it.name.contains(mapSearchText, ignoreCase = true) || 
-                        it.start.toString(16).contains(mapSearchText, ignoreCase = true) ||
-                        it.end.toString(16).contains(mapSearchText, ignoreCase = true)
-                    }
                     LazyColumn(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -251,58 +259,82 @@ fun ProcessManager(
                             .background(PS5ThemeColors.Surface)
                             .border(1.dp, PS5ThemeColors.BorderColor, RoundedCornerShape(4.dp))
                     ) {
-                        items(filteredMaps) { map ->
-                            val isSelectedMap = activeMap?.start == map.start || activeMaps.any { it.start == map.start }
+                        items(
+                            filteredEntries,
+                            key = { it.id }
+                        ) { entry ->
+                            val entryMergedRange = entry.toMemoryRange(currentTitleId)
+                            val entryKey = entryMergedRange.uiKey()
+                            
+                            // Check if this module is selected (either as a unified module or via its segments)
+                            val isSelectedEntry = (activeMapKey != null && (entryKey == activeMapKey || entry.subRanges.any { it.uiKey() == activeMapKey })) ||
+                                                  entryKey in activeMapKeys ||
+                                                  entry.subRanges.any { it.uiKey() in activeMapKeys }
+                                                  
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .background(if (isSelectedMap) PS5ThemeColors.AccentCyan.copy(alpha = 0.15f) else Color.Transparent)
+                                    .background(if (isSelectedEntry) PS5ThemeColors.AccentCyan.copy(alpha = 0.15f) else Color.Transparent)
                                     .clickable { 
-                                        // Clicking the row toggles the checkbox instead of resetting map list
                                         if (onMapsSelected != null) {
-                                            val newList = activeMaps.toMutableList()
-                                            val isAlreadyIn = newList.any { it.start == map.start }
-                                            if (isAlreadyIn) {
-                                                newList.removeAll { it.start == map.start }
+                                            val newList = if (isSelectedEntry) {
+                                                // Remove this module or any of its sub-ranges from the workspace
+                                                activeMaps.filterNot { 
+                                                    it.uiKey() == entryKey || entry.subRanges.any { sub -> sub.uiKey() == it.uiKey() }
+                                                }
                                             } else {
-                                                newList.add(map)
+                                                // Add as a unified module
+                                                (activeMaps + entryMergedRange).distinctBy { it.uiKey() }.sortedBy { it.start }
                                             }
-                                            newList.sortBy { it.start }
                                             onMapsSelected(newList)
                                         } else {
-                                            onMapSelected(map)
+                                            onMapSelected(entryMergedRange)
                                         }
                                     }
                                     .padding(8.dp)
                             ) {
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
                                         Text(
-                                            text = if (map.name.isEmpty()) "unnamed" else map.name,
+                                            text = if (entry.name.isEmpty()) "unnamed" else entry.name,
                                             fontSize = 12.sp,
                                             fontWeight = FontWeight.SemiBold,
                                             color = PS5ThemeColors.TextMain
                                         )
+                                        if (entry.isMergedLibrary) {
+                                            Text(
+                                                text = "(${entry.subRanges.size} segs)",
+                                                fontSize = 10.sp,
+                                                color = PS5ThemeColors.TextMuted
+                                            )
+                                        }
                                     }
                                     Text(
-                                        text = map.getProtString(),
+                                        text = entry.getProtString(),
                                         fontSize = 11.sp,
                                         color = PS5ThemeColors.AccentCyan,
                                         fontFamily = FontFamily.Monospace
                                     )
                                 }
                                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                      Text(
-                                          text = String.format("0x%X - 0x%X", map.start, map.end),
-                                          fontSize = 10.sp,
-                                          color = Color.Gray,
-                                          fontFamily = FontFamily.Monospace
-                                      )
-                                      Text(
-                                          text = String.format("%.2f MB", map.size.toDouble() / (1024 * 1024)),
-                                          fontSize = 10.sp,
-                                          color = Color.Gray
-                                      )
+                                    Text(
+                                        text = String.format("0x%X - 0x%X", entry.start, entry.end),
+                                        fontSize = 10.sp,
+                                        color = Color.Gray,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                    Text(
+                                        text = String.format("%.2f MB", entry.totalSize.toDouble() / (1024 * 1024)),
+                                        fontSize = 10.sp,
+                                        color = Color.Gray
+                                    )
                                 }
                             }
                         }

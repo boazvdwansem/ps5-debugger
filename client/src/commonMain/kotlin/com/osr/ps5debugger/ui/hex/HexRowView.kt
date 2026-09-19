@@ -30,6 +30,7 @@ fun HexRowView(
     selectionMax: Long?,
     cursorAddress: Long?,
     pendingEdits: Map<Long, Byte>,
+    changedBytes: Map<Long, Long>, // address -> timestamp
     hexInputBuffer: String,
     isMobile: Boolean,
     showAddress: Boolean = true
@@ -68,11 +69,15 @@ fun HexRowView(
                     val b = pendingEdits[byteAddr] ?: stableBytes.bytes[i]
                     val isCursor = cursorAddress == byteAddr
                     val isSelected = selectionMin != null && selectionMax != null && byteAddr >= selectionMin && byteAddr <= selectionMax
+                    
+                    val isChanged = changedBytes.containsKey(byteAddr)
+
                     ByteHexCell(
                         byte = b,
                         isSelected = isSelected,
                         isCursor = isCursor,
                         isPendingEdit = pendingEdits.containsKey(byteAddr),
+                        isChanged = isChanged,
                         hexInputBuffer = if (isCursor) hexInputBuffer else "",
                         width = hexCellWidthDp,
                         isMobile = isMobile
@@ -95,9 +100,13 @@ fun HexRowView(
                     val byteAddr = address + i
                     val b = pendingEdits[byteAddr] ?: stableBytes.bytes[i]
                     val isSelected = selectionMin != null && selectionMax != null && byteAddr >= selectionMin && byteAddr <= selectionMax
+                    
+                    val isChanged = changedBytes.containsKey(byteAddr)
+
                     ByteAsciiCell(
                         byte = b,
                         isSelected = isSelected,
+                        isChanged = isChanged,
                         width = asciiCellWidthDp,
                         isMobile = isMobile
                     )

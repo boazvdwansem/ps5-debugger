@@ -1,5 +1,7 @@
 package com.osr.ps5debugger.ui
 
+import com.osr.ps5debugger.di.AppContainer
+
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -8,9 +10,7 @@ import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Refresh
+import com.osr.ps5debugger.ui.icons.PS5Icons
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -100,8 +100,11 @@ fun GraphViewer(
     activeBreakpoints: Map<Int, Long> = emptyMap(),
     activeWatchpoints: Map<Int, Long> = emptyMap(),
     onSetBreakpoint: (Long) -> Unit = {},
-    onSetWatchpoint: (Long) -> Unit = {}
+    onSetWatchpoint: (Long) -> Unit = {},
+    onJumpToGraph: ((Long) -> Unit)? = null,
+    onShowXrefs: ((Long) -> Unit)? = null
 ) {
+    val coroutineScope = rememberCoroutineScope()
     val density = LocalDensity.current.density
     
     var cfg by remember { mutableStateOf<Pair<List<CfgNode>, List<CfgEdge>>>(Pair(emptyList(), emptyList())) }
@@ -153,6 +156,8 @@ fun GraphViewer(
     var showContextMenu by remember { mutableStateOf(false) }
     var contextMenuAddr by remember { mutableStateOf<Long?>(null) }
     var contextMenuOffset by remember { mutableStateOf(DpOffset.Zero) }
+
+
     
     var containerPosition by remember { mutableStateOf(Offset.Zero) }
     var containerSize by remember { mutableStateOf(IntSize.Zero) }
@@ -354,10 +359,10 @@ fun GraphViewer(
                     onClick = {
                         val textToCopy = if (selectedLines.isNotEmpty()) {
                             selectedLines.joinToString("\n") { 
-                                DisasmFormatter.getMnemonic(it.instr, it.bytes) + " " + DisasmFormatter.formatOperands(it.instr, it.bytes)
+                                String.format("0x%012X: %-10s %s", it.instr.addr, DisasmFormatter.getMnemonic(it.instr, it.bytes), DisasmFormatter.formatOperands(it.instr, it.bytes))
                             }
                         } else if (contextLine != null) {
-                            DisasmFormatter.getMnemonic(contextLine.instr, contextLine.bytes) + " " + DisasmFormatter.formatOperands(contextLine.instr, contextLine.bytes)
+                            String.format("0x%012X: %-10s %s", contextLine.instr.addr, DisasmFormatter.getMnemonic(contextLine.instr, contextLine.bytes), DisasmFormatter.formatOperands(contextLine.instr, contextLine.bytes))
                         } else ""
                         if (textToCopy.isNotEmpty()) {
                             copyToClipboard(textToCopy)
@@ -370,11 +375,15 @@ fun GraphViewer(
                     text = { Text("Copy All") },
                     onClick = {
                         val textToCopy = if (selectedLines.isNotEmpty()) {
-                            selectedLines.joinToString("\n") { 
-                                String.format("0x%012X: %-10s %s", it.instr.addr, DisasmFormatter.getMnemonic(it.instr, it.bytes), DisasmFormatter.formatOperands(it.instr, it.bytes))
+                            selectedLines.joinToString("\n") { l ->
+                                val hex = l.bytes.joinToString("") { "%02X".format(it) }.padEnd(20)
+                                val ascii = l.bytes.joinToString("") { b -> if (b.toInt() in 32..126) b.toInt().toChar().toString() else "." }
+                                String.format("0x%012X  %s  %-10s %-30s ; %s", l.instr.addr, hex, DisasmFormatter.getMnemonic(l.instr, l.bytes), DisasmFormatter.formatOperands(l.instr, l.bytes), ascii)
                             }
                         } else if (contextLine != null) {
-                            String.format("0x%012X: %-10s %s", contextLine.instr.addr, DisasmFormatter.getMnemonic(contextLine.instr, contextLine.bytes), DisasmFormatter.formatOperands(contextLine.instr, contextLine.bytes))
+                            val hex = contextLine.bytes.joinToString("") { "%02X".format(it) }.padEnd(20)
+                            val ascii = contextLine.bytes.joinToString("") { b -> if (b.toInt() in 32..126) b.toInt().toChar().toString() else "." }
+                            String.format("0x%012X  %s  %-10s %-30s ; %s", contextLine.instr.addr, hex, DisasmFormatter.getMnemonic(contextLine.instr, contextLine.bytes), DisasmFormatter.formatOperands(contextLine.instr, contextLine.bytes), ascii)
                         } else ""
                         if (textToCopy.isNotEmpty()) {
                             copyToClipboard(textToCopy)
@@ -382,6 +391,29 @@ fun GraphViewer(
                         showContextMenu = false
                     }
                 )
+
+                val currentFuncAddr = filterFunctionAddr
+                if (currentFuncAddr != null) {
+                    DropdownMenuItem(
+                        text = { Text("Show XRefs", color = PS5ThemeColors.AccentCyan) },
+                        onClick = {
+                            onSelectionChanged?.invoke(currentFuncAddr, currentFuncAddr)
+                            onShowXrefs?.invoke(currentFuncAddr)
+                            showContextMenu = false
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Copy function") },
+                        onClick = {
+                            val funcLines = instructions
+                            val textToCopy = funcLines.joinToString("\n") { line ->
+                                String.format("0x%012X: %-10s %s", line.instr.addr, DisasmFormatter.getMnemonic(line.instr, line.bytes), DisasmFormatter.formatOperands(line.instr, line.bytes))
+                            }
+                            copyToClipboard(textToCopy)
+                            showContextMenu = false
+                        }
+                    )
+                }
 
                 HorizontalDivider(color = PS5ThemeColors.BorderColor)
 
@@ -429,6 +461,26 @@ fun GraphViewer(
                             }
                         )
                     }
+                    DropdownMenuItem(
+                        text = { Text("Add to Cheats", color = PS5ThemeColors.AccentCyan) },
+                        onClick = {
+                            val procInfo = AppContainer.debuggerUseCase.activeProcessInfo.value
+                            val tId = procInfo?.titleId ?: "Unknown"
+
+                            AppContainer.onCreateCheatRequested?.invoke(
+                                com.osr.ps5debugger.domain.model.Cheat(
+                                    id = "",
+                                    name = "Graph Node",
+                                    type = com.osr.ps5debugger.domain.model.CheatType.Toggle,
+                                    address = addr,
+                                    hexOnValue = "",
+                                    hexOffValue = "",
+                                    titleId = tId
+                                )
+                            )
+                            showContextMenu = false
+                        }
+                    )
                 }
             }
         }
@@ -445,7 +497,7 @@ fun GraphViewer(
                     val scaleRatio = newScale / oldScale
                     scale = newScale
                     offset = viewportCenter - (viewportCenter - offset) * scaleRatio
-                }) { Icon(Icons.Default.Add, null, tint = Color.White) }
+                }) { Icon(PS5Icons.ZoomIn, contentDescription = "Zoom In", tint = Color.White, modifier = Modifier.size(18.dp)) }
                 
                 IconButton(onClick = {
                     val oldScale = scale
@@ -454,16 +506,18 @@ fun GraphViewer(
                     val scaleRatio = newScale / oldScale
                     scale = newScale
                     offset = viewportCenter - (viewportCenter - offset) * scaleRatio
-                }) { Text("-", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color.White) }
+                }) { Icon(PS5Icons.ZoomOut, contentDescription = "Zoom Out", tint = Color.White, modifier = Modifier.size(18.dp)) }
                 
                 IconButton(onClick = { 
                     scale = 0.7f
                     val topNode = nodes.minByOrNull { it.y }
                     if (topNode != null) offset = Offset(-(topNode.x * scale * density) + (400f * density), -(topNode.y * scale * density) + 100f)
-                }) { Icon(Icons.Default.Refresh, null, tint = Color.White) }
+                }) { Icon(PS5Icons.ResetView, contentDescription = "Reset View", tint = Color.White, modifier = Modifier.size(18.dp)) }
             }
         }
     }
+
+
 }
 
 @Composable
@@ -767,8 +821,9 @@ fun buildCfg(instructions: List<DisasmLine>, filterAddr: Long?): Pair<List<CfgNo
     
     // Pass 1: Strict Deduplication and Filtering
     val instrs = if (filterAddr != null) {
-        val startIndex = instructions.indexOfFirst { it.instr.addr >= filterAddr }
-        if (startIndex == -1) return Pair(emptyList(), emptyList())
+        val startIndex = instructions.indexOfFirst { it.instr.addr >= filterAddr }.let {
+            if (it == -1) 0 else it
+        }
         
         val subList = mutableListOf<DisasmLine>()
         for (i in startIndex until instructions.size) {
@@ -787,7 +842,11 @@ fun buildCfg(instructions: List<DisasmLine>, filterAddr: Long?): Pair<List<CfgNo
     
     // Pass 2: Identify Leaders strictly by Basic Block rules (jump targets + instructions after branch)
     val leaders = mutableSetOf<Long>()
-    val entryPoint = filterAddr ?: instrs.first().instr.addr
+    val entryPoint = if (filterAddr != null && addrToInstr.containsKey(filterAddr)) {
+        filterAddr
+    } else {
+        instrs.first().instr.addr
+    }
     leaders.add(entryPoint)
     
     // Split block at any known global jump target address

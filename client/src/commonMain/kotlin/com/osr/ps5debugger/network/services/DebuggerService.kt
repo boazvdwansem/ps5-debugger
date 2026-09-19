@@ -2,12 +2,37 @@ package com.osr.ps5debugger.network.services
 
 import com.osr.ps5debugger.network.Ps5Connection
 import com.osr.ps5debugger.protocol.*
-import java.io.InputStream
-import java.io.OutputStream
 
 class DebuggerService(private val connection: Ps5Connection) {
+    private val suspendedLwpids = linkedSetOf<Int>()
+
+    private suspend fun setAllThreadsSuspended(suspended: Boolean): Boolean {
+        val targets = if (suspended) {
+            getThreadList().distinct()
+        } else {
+            val remembered = synchronized(suspendedLwpids) { suspendedLwpids.toList() }
+            if (remembered.isEmpty()) getThreadList().distinct() else remembered
+        }
+        if (targets.isEmpty()) return false
+
+        val changed = mutableListOf<Int>()
+        targets.forEach { lwpid ->
+            val success = if (suspended) suspendThread(lwpid) else resumeThread(lwpid)
+            if (!success) {
+                if (suspended) changed.forEach { resumeThread(it) }
+                return false
+            }
+            changed += lwpid
+        }
+
+        synchronized(suspendedLwpids) {
+            if (suspended) suspendedLwpids.addAll(changed) else suspendedLwpids.removeAll(changed.toSet())
+        }
+        return true
+    }
 
     suspend fun attach(pid: Int): Boolean = connection.execute { inStr, outStr ->
+        synchronized(suspendedLwpids) { suspendedLwpids.clear() }
         val payload = BinaryBuffer(4).apply { writeInt(pid) }.bytes
         connection.sendPacket(outStr, ProtocolConstants.CMD_DEBUG_ATTACH, payload)
         val status = connection.receiveStatus(inStr)
@@ -16,7 +41,9 @@ class DebuggerService(private val connection: Ps5Connection) {
 
     suspend fun detach(): Boolean = connection.execute { inStr, outStr ->
         connection.sendPacket(outStr, ProtocolConstants.CMD_DEBUG_DETACH)
-        connection.receiveStatus(inStr) == ProtocolConstants.CMD_SUCCESS
+        val success = connection.receiveStatus(inStr) == ProtocolConstants.CMD_SUCCESS
+        if (success) synchronized(suspendedLwpids) { suspendedLwpids.clear() }
+        success
     }
 
     suspend fun setBreakpoint(index: Int, enabled: Boolean, address: Long): Boolean = connection.execute { inStr, outStr ->
@@ -41,17 +68,11 @@ class DebuggerService(private val connection: Ps5Connection) {
         connection.receiveStatus(inStr) == ProtocolConstants.CMD_SUCCESS
     }
 
-    suspend fun stopProcess(): Boolean = connection.execute { inStr, outStr ->
-        val payload = BinaryBuffer(4).apply { writeInt(1) }.bytes // 1 = stop
-        connection.sendPacket(outStr, ProtocolConstants.CMD_DEBUG_CONTINUE, payload)
-        connection.receiveStatus(inStr) == ProtocolConstants.CMD_SUCCESS
-    }
+    suspend fun stopProcess(pidFallback: Int? = null): Boolean =
+        setAllThreadsSuspended(true)
 
-    suspend fun resumeProcess(): Boolean = connection.execute { inStr, outStr ->
-        val payload = BinaryBuffer(4).apply { writeInt(0) }.bytes // 0 = resume
-        connection.sendPacket(outStr, ProtocolConstants.CMD_DEBUG_CONTINUE, payload)
-        connection.receiveStatus(inStr) == ProtocolConstants.CMD_SUCCESS
-    }
+    suspend fun resumeProcess(pidFallback: Int? = null): Boolean =
+        setAllThreadsSuspended(false)
 
     suspend fun stepProcess(): Boolean = connection.execute { inStr, outStr ->
         connection.sendPacket(outStr, ProtocolConstants.CMD_DEBUG_STEP)

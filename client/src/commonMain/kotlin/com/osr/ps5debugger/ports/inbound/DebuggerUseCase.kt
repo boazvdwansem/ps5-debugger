@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.SharedFlow
 interface DebuggerUseCase {
     val isConnected: StateFlow<Boolean>
     val isAttached: StateFlow<Boolean>
+    val isProcessStopped: StateFlow<Boolean>
     val threadList: StateFlow<List<Int>>
     val selectedLwpid: StateFlow<Int?>
     val selectedRegs: StateFlow<GpRegs?>
@@ -26,8 +27,10 @@ interface DebuggerUseCase {
     val logs: StateFlow<List<LogEntry>>
     val watchlist: StateFlow<List<WatchItem>>
     val vmMaps: StateFlow<List<MemoryRange>>
+    val gameCheatProfiles: StateFlow<List<com.osr.ps5debugger.domain.model.GameCheatProfile>>
 
     fun setAttached(attached: Boolean)
+    fun setProcessStopped(stopped: Boolean)
     fun setThreadList(threads: List<Int>)
     fun setSelectedLwpid(lwpid: Int?)
     fun setSelectedRegs(regs: GpRegs?)
@@ -38,6 +41,7 @@ interface DebuggerUseCase {
     suspend fun refreshProcesses()
     suspend fun selectProcess(proc: Process?)
     suspend fun loadMemoryMaps(proc: Process)
+    suspend fun pullFile(path: String): Result<ByteArray>
     suspend fun readMemory(address: Long, length: Int): Result<ByteArray>
     suspend fun writeMemory(address: Long, data: ByteArray): Result<Boolean>
     
@@ -50,4 +54,14 @@ interface DebuggerUseCase {
     fun removeWatchItem(item: WatchItem)
     fun toggleFreezeWatchItem(item: WatchItem)
     fun clearWatchlist()
+    
+    fun addCheat(titleId: String, version: String, cheat: com.osr.ps5debugger.domain.model.Cheat, gameName: String = "Unknown")
+    fun toggleCheat(titleId: String, version: String, cheatId: String)
+    fun deleteCheat(titleId: String, version: String, cheatId: String)
+    fun updateGameName(titleId: String, name: String)
+    fun updateGameVersion(titleId: String, version: String)
+    fun updateGamePlatform(titleId: String, platform: String)
+    suspend fun applyCheat(pid: Int, cheat: com.osr.ps5debugger.domain.model.Cheat, newValue: String? = null)
+    fun saveCheats(onResult: (String) -> Unit)
+    fun loadCheats(json: String)
 }

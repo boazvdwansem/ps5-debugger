@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+  <!-- Parent folder at top -->
+  <path d="M3 5h5l2 2h6a2 2 0 0 1 2 2v2H3V5z" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <!-- File tree hierarchy branch -->
+  <path d="M6 11v9m0-5h4m-4 5h4" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Child file nodes -->
+  <rect x="12" y="13" width="8" height="3" rx="1" stroke="white" stroke-width="1.8" fill="none"/>
+  <rect x="12" y="18" width="8" height="3" rx="1" stroke="white" stroke-width="1.8" fill="none"/>
+</svg>

@@ -70,6 +70,15 @@ class Ps5Connection {
             val activeSocket = socket ?: throw IllegalStateException("Not connected")
             val inStr = inputStream ?: throw IllegalStateException("Not connected")
             val outStr = outputStream ?: throw IllegalStateException("Not connected")
+            
+            // CLEAR PENDING DATA (Desync Guard)
+            try {
+                val available = inStr.available()
+                if (available > 0) {
+                    inStr.skip(available.toLong())
+                }
+            } catch (_: Exception) {}
+
             val previousTimeoutMs = activeSocket.soTimeout
             try {
                 if (readTimeoutMs != null) {
@@ -77,7 +86,10 @@ class Ps5Connection {
                 }
                 block(inStr, outStr)
             } catch (e: Exception) {
-                cleanup()
+                // Only cleanup on actual socket failures, not logic errors
+                if (e is java.net.SocketException || e is java.io.EOFException || e.message?.contains("Socket closed") == true || e is java.net.SocketTimeoutException) {
+                    cleanup()
+                }
                 throw e
             } finally {
                 if (isConnected && readTimeoutMs != null) {

@@ -8,12 +8,14 @@ import androidx.compose.ui.graphics.Color
 import com.osr.ps5debugger.domain.model.MemoryRange
 import com.osr.ps5debugger.ui.DisasmLine
 
+enum class DisasmField { ADDRESS, BYTES, MNEMONIC, OPERANDS, COMMENT }
+
 class DisassemblyState(
     val activeMap: MemoryRange?,
     val activeMaps: List<MemoryRange>,
     val instructions: List<DisasmLine>,
-    val selectionStart: Long?,
-    val selectionEnd: Long?,
+    selectionStartInitial: Long?,
+    selectionEndInitial: Long?,
     val onSelectionChanged: ((Long?, Long?) -> Unit)?,
     val activeBreakpoints: Map<Int, Long>,
     val activeWatchpoints: Map<Int, Long>,
@@ -24,6 +26,9 @@ class DisassemblyState(
     val jumpTargets: Set<Long> = emptySet(),
     val onMetadataUpdateRequested: (suspend () -> Unit)? = null
 ) {
+    var selectionStart by mutableStateOf(selectionStartInitial)
+    var selectionEnd by mutableStateOf(selectionEndInitial)
+    var selectionField by mutableStateOf<DisasmField?>(null)
     var goToAddressText by mutableStateOf("")
     var showContextMenu by mutableStateOf(false)
     var contextMenuAddr by mutableStateOf<Long?>(null)
@@ -64,8 +69,8 @@ fun rememberDisassemblyState(
             activeMap = activeMap,
             activeMaps = activeMaps,
             instructions = instructions,
-            selectionStart = selectionStart,
-            selectionEnd = selectionEnd,
+            selectionStartInitial = selectionStart,
+            selectionEndInitial = selectionEnd,
             onSelectionChanged = onSelectionChanged,
             activeBreakpoints = activeBreakpoints,
             activeWatchpoints = activeWatchpoints,

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+  <!-- Monitor gauge frame -->
+  <rect x="2" y="4" width="20" height="16" rx="3" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <!-- Active monitor waveform pulse (ECG line) -->
+  <path d="M2 12h5l2-5 3 10 2.5-6 1.5 2 1-1h5" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <!-- Monitored pin indicator at top right -->
+  <circle cx="18" cy="7" r="1.5" fill="white"/>
+</svg>

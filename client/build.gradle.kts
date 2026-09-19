@@ -6,6 +6,7 @@ val libs: VersionCatalog = extensions.getByType(VersionCatalogsExtension::class.
 
 plugins {
     kotlin("multiplatform") version "2.4.0"
+    kotlin("plugin.serialization") version "2.4.0"
     id("org.jetbrains.compose") version "1.6.11"
     id("org.jetbrains.kotlin.plugin.compose") version "2.4.0"
     id("com.android.application") version "8.5.2"
@@ -47,6 +48,7 @@ kotlin {
                 implementation(libs.findLibrary("compose.ui").get())
                 implementation(libs.findLibrary("compose.resources").get())
                 implementation(libs.findLibrary("compose.icons").get())
+                implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.5.1")
             }
         }
 
@@ -56,6 +58,7 @@ kotlin {
                 implementation(libs.findLibrary("compose.ui").get())
                 implementation(libs.findLibrary("compose.runtime").get())
                 implementation(libs.findLibrary("kotlinx.coroutines.swing").get())
+                implementation("org.xerial:sqlite-jdbc:3.45.1.0")
             }
         }
 

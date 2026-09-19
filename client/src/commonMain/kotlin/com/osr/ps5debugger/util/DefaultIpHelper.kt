@@ -33,7 +33,8 @@ object DefaultIpHelper {
         val autoReconnect: Boolean,
         val timeoutMs: Int,
         val theme: String = "Dark",
-        val mockEnabled: Boolean = false
+        val mockEnabled: Boolean = false,
+        val payloadPort: Int = 9021
     )
 
     private fun readConfig(): Config {
@@ -46,19 +47,20 @@ object DefaultIpHelper {
                 val timeoutMs = lines.getOrNull(2)?.trim()?.toIntOrNull() ?: 5000
                 val theme = lines.getOrNull(3)?.trim() ?: "Dark"
                 val mockEnabled = lines.getOrNull(4)?.trim()?.toBooleanStrictOrNull() ?: false
-                Config(ip, autoReconnect, timeoutMs, theme, mockEnabled)
+                val payloadPort = lines.getOrNull(5)?.trim()?.toIntOrNull() ?: 9021
+                Config(ip, autoReconnect, timeoutMs, theme, mockEnabled, payloadPort)
             } else {
-                Config("", true, 5000, "Dark", false)
+                Config("", true, 5000, "Dark", false, 9021)
             }
         } catch (_: Exception) {
-            Config("", true, 5000, "Dark", false)
+            Config("", true, 5000, "Dark", false, 9021)
         }
     }
 
     private fun writeConfig(config: Config) {
         try {
             val file = getConfigFile()
-            file.writeText("${config.ip}\n${config.autoReconnect}\n${config.timeoutMs}\n${config.theme}\n${config.mockEnabled}")
+            file.writeText("${config.ip}\n${config.autoReconnect}\n${config.timeoutMs}\n${config.theme}\n${config.mockEnabled}\n${config.payloadPort}")
         } catch (_: Exception) {}
     }
 
@@ -106,5 +108,14 @@ object DefaultIpHelper {
     fun setMockEnabled(enabled: Boolean) {
         val current = readConfig()
         writeConfig(current.copy(mockEnabled = enabled))
+    }
+
+    fun getPayloadPort(): Int {
+        return readConfig().payloadPort
+    }
+
+    fun setPayloadPort(port: Int) {
+        val current = readConfig()
+        writeConfig(current.copy(payloadPort = port))
     }
 }

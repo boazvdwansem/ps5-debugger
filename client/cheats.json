@@ -1,0 +1,19 @@
+[
+    {
+        "titleId": "CUSA57548",
+        "name": "Call of Duty®: Black Ops II",
+        "version": "01.10",
+        "platform": "PS4",
+        "iconUrl": "/user/appmeta/CUSA57548/icon0.png",
+        "cheats": [
+            {
+                "id": "cheat_1789833568125_213",
+                "name": "New Cheat",
+                "type": "Toggle",
+                "address": 4194304,
+                "hexOffValue": "2F6C6962657865632F6C642D656C662E736F2E31",
+                "titleId": "CUSA57548"
+            }
+        ]
+    }
+]

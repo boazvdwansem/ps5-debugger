@@ -4,7 +4,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import com.osr.ps5debugger.ui.icons.PS5Icons
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -16,8 +18,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.osr.ps5debugger.PS5ThemeColors
 import com.osr.ps5debugger.di.AppContainer
-import com.osr.ps5debugger.protocol.GpRegs
-import com.osr.ps5debugger.protocol.DbRegs
 import com.osr.ps5debugger.ui.state.MainState
 import kotlinx.coroutines.launch
 
@@ -38,6 +38,8 @@ fun DebugSidebar(
     val selectedDbRegs by AppContainer.debuggerUseCase.selectedDbRegs.collectAsState()
     val selectedFsGs by AppContainer.debuggerUseCase.selectedFsGs.collectAsState()
 
+    val isProcessHalted by AppContainer.debuggerUseCase.isProcessStopped.collectAsState()
+
     val refreshThreadData: suspend () -> Unit = {
         if (pid != null && isAttached && isConnected) {
             try {
@@ -47,7 +49,7 @@ fun DebugSidebar(
                     AppContainer.debuggerUseCase.setSelectedLwpid(threads.firstOrNull())
                 }
                 val currentLwpid = selectedLwpid ?: threads.firstOrNull()
-                if (currentLwpid != null) {
+                if (currentLwpid != null && isProcessHalted) {
                     AppContainer.debuggerUseCase.setSelectedRegs(client.getRegs(currentLwpid))
                     AppContainer.debuggerUseCase.setSelectedDbRegs(client.getDbRegs(currentLwpid))
                     AppContainer.debuggerUseCase.setSelectedFsGs(client.getFsGsBase(currentLwpid))
@@ -60,12 +62,33 @@ fun DebugSidebar(
                 AppContainer.debuggerUseCase.log("DEBUGGER", "Failed to retrieve thread/register values: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.WARN)
             }
         }
+
+    }
+
+    LaunchedEffect(isProcessHalted, selectedLwpid) {
+        if (isProcessHalted) refreshThreadData()
+    }
+
+    val safeRunDebuggerAction: (suspend () -> Unit) -> Unit = { action ->
+        coroutineScope.launch {
+            try {
+                action()
+            } catch (e: Exception) {
+                AppContainer.debuggerUseCase.log("DEBUGGER", "Operation failed: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                val msg = e.message ?: ""
+                if (msg.contains("Not connected", ignoreCase = true) || msg.contains("Socket closed", ignoreCase = true) || msg.contains("connection", ignoreCase = true)) {
+                    try {
+                        AppContainer.debuggerUseCase.disconnect()
+                    } catch (_: Exception) {}
+                }
+            }
+        }
     }
 
     Column(
         modifier = Modifier
             .fillMaxHeight()
-            .width(320.dp)
+            .width(340.dp)
             .background(PS5ThemeColors.DarkBg)
             .padding(12.dp)
     ) {
@@ -75,13 +98,26 @@ fun DebugSidebar(
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text(
-                text = "DEBUGGER",
-                color = PS5ThemeColors.AccentCyan,
-                fontSize = 11.sp,
+                text = "Debugger",
+                style = MaterialTheme.typography.titleMedium,
+                color = PS5ThemeColors.TextMain,
                 fontWeight = FontWeight.Bold
             )
+            if (pid != null) {
+                Text(
+                    text = "PID $pid",
+                    color = PS5ThemeColors.TextMuted,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 10.sp
+                )
+            }
             IconButton(onClick = onCollapse, modifier = Modifier.size(24.dp)) {
-                Text("»", color = PS5ThemeColors.AccentCyan, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Icon(
+                    imageVector = PS5Icons.Close,
+                    contentDescription = "Collapse",
+                    tint = PS5ThemeColors.TextMuted,
+                    modifier = Modifier.size(16.dp)
+                )
             }
         }
 
@@ -108,6 +144,7 @@ fun DebugSidebar(
                                 AppContainer.debuggerUseCase.log("DEBUGGER", "Detached from target process", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
                             } else if (pid != null) {
                                 if (client.attach(pid)) {
+                                    AppContainer.debuggerUseCase.setProcessStopped(false)
                                     AppContainer.debuggerUseCase.setAttached(true)
                                     AppContainer.debuggerUseCase.log("DEBUGGER", "Attached to process pid $pid.", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
                                     refreshThreadData()
@@ -120,7 +157,7 @@ fun DebugSidebar(
                 },
                 colors = ButtonDefaults.buttonColors(
                     containerColor = if (isAttached) PS5ThemeColors.StatusRed else PS5ThemeColors.AccentCyan,
-                    contentColor = Color.Black
+                    contentColor = Color.White
                 ),
                 modifier = Modifier.weight(1f),
                 shape = RoundedCornerShape(4.dp),
@@ -131,7 +168,7 @@ fun DebugSidebar(
             
             if (isAttached) {
                 Button(
-                    onClick = { coroutineScope.launch { try { refreshThreadData() } catch (_: Exception) {} } },
+                    onClick = { safeRunDebuggerAction { refreshThreadData() } },
                     colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.Surface),
                     shape = RoundedCornerShape(4.dp),
                     contentPadding = PaddingValues(0.dp)
@@ -143,37 +180,78 @@ fun DebugSidebar(
 
         if (isAttached) {
             Spacer(Modifier.height(12.dp))
-            Text("PROCESS CONTROLS", color = PS5ThemeColors.TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+            Text("PROCESS CONTROLS", color = PS5ThemeColors.AccentCyan, fontSize = 10.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(4.dp))
-            
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                val statusColor = if (isProcessHalted) Color(0xFFC62828) else Color(0xFF2E7D32)
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .background(statusColor, CircleShape)
+                        .border(1.dp, statusColor.copy(alpha = 0.6f), CircleShape)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = if (isProcessHalted) "SUSPENDED" else "RUNNING",
+                    color = statusColor,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                        .background(statusColor.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
+                        .border(1.dp, statusColor, RoundedCornerShape(4.dp))
+                        .padding(horizontal = 8.dp, vertical = 3.dp)
+                )
+            }
+
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Button(
-                    onClick = { coroutineScope.launch { client.resumeProcess(); AppContainer.debuggerUseCase.log("DEBUGGER", "Process resumed", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO) } },
+                    onClick = {
+                        safeRunDebuggerAction {
+                            val resumed = client.resumeProcess(pid)
+                            if (resumed) {
+                                AppContainer.debuggerUseCase.setProcessStopped(false)
+                                AppContainer.debuggerUseCase.log("DEBUGGER", "Process resumed", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                                refreshThreadData()
+                            } else {
+                                AppContainer.debuggerUseCase.log("DEBUGGER", "Resume failed", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                            }
+                        }
+                    },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(4.dp),
                     contentPadding = PaddingValues(0.dp)
-                ) { Text("Cont", color = Color.White, fontSize = 11.sp) }
-                
+                ) { Text("Resume", color = Color.White, fontSize = 11.sp) }
+
                 Button(
-                    onClick = { coroutineScope.launch { client.stopProcess(); AppContainer.debuggerUseCase.log("DEBUGGER", "Process halted", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO); refreshThreadData() } },
+                    onClick = {
+                        safeRunDebuggerAction {
+                            val suspended = client.stopProcess(pid)
+                            if (suspended) {
+                                AppContainer.debuggerUseCase.setProcessStopped(true)
+                                AppContainer.debuggerUseCase.log("DEBUGGER", "Process suspended", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                                refreshThreadData()
+                            } else {
+                                AppContainer.debuggerUseCase.log("DEBUGGER", "Suspend failed", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                            }
+                        }
+                    },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC62828)),
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(4.dp),
                     contentPadding = PaddingValues(0.dp)
-                ) { Text("Halt", color = Color.White, fontSize = 11.sp) }
-                
-                Button(
-                    onClick = { coroutineScope.launch { client.stepProcess(); AppContainer.debuggerUseCase.log("DEBUGGER", "Single step", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO); refreshThreadData() } },
-                    colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.Surface),
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(4.dp),
-                    contentPadding = PaddingValues(0.dp)
-                ) { Text("Step", color = PS5ThemeColors.TextMain, fontSize = 11.sp) }
+                ) { Text("Suspend", color = Color.White, fontSize = 11.sp) }
+
             }
             
             Spacer(Modifier.height(12.dp))
-            Text("THREADS (${threadList.size})", color = PS5ThemeColors.TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+            Text("THREADS  •  ${threadList.size}", color = PS5ThemeColors.AccentCyan, fontSize = 10.sp, fontWeight = FontWeight.Bold)
             
             var expandedThreads by remember { mutableStateOf(false) }
             Box(Modifier.fillMaxWidth().padding(top = 4.dp)) {
@@ -198,23 +276,51 @@ fun DebugSidebar(
             if (selectedLwpid != null) {
                 Row(modifier = Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     Button(
-                        onClick = { coroutineScope.launch { client.suspendThread(selectedLwpid!!) } },
+                        onClick = {
+                            safeRunDebuggerAction {
+                                if (client.suspendThread(selectedLwpid!!)) {
+                                    AppContainer.debuggerUseCase.log("DEBUGGER", "Thread $selectedLwpid suspended", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                                }
+                            }
+                        },
                         colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.Surface),
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(4.dp),
                         contentPadding = PaddingValues(0.dp)
-                    ) { Text("Suspend", fontSize = 10.sp, color = PS5ThemeColors.TextMain) }
+                    ) { Text("Stop", fontSize = 10.sp, color = PS5ThemeColors.TextMain) }
                     Button(
-                        onClick = { coroutineScope.launch { client.resumeThread(selectedLwpid!!) } },
+                        onClick = {
+                            safeRunDebuggerAction {
+                                if (client.resumeThread(selectedLwpid!!)) {
+                                    AppContainer.debuggerUseCase.log("DEBUGGER", "Thread $selectedLwpid resumed", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                                }
+                            }
+                        },
                         colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.Surface),
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(4.dp),
                         contentPadding = PaddingValues(0.dp)
-                    ) { Text("Resume", fontSize = 10.sp, color = PS5ThemeColors.TextMain) }
+                    ) { Text("Go", fontSize = 10.sp, color = PS5ThemeColors.TextMain) }
                     Button(
-                        onClick = { coroutineScope.launch { client.stepThread(selectedLwpid!!); refreshThreadData() } },
+                        onClick = {
+                            if (!isProcessHalted) {
+                                AppContainer.debuggerUseCase.log("DEBUGGER", "Thread step ignored: process is running. Suspend first.", com.osr.ps5debugger.domain.model.LogEntry.Level.WARN)
+                                return@Button
+                            }
+                            safeRunDebuggerAction {
+                                val stepped = client.stepThread(selectedLwpid!!)
+                                if (stepped) {
+                                    AppContainer.debuggerUseCase.setProcessStopped(true)
+                                    AppContainer.debuggerUseCase.log("DEBUGGER", "Thread $selectedLwpid stepped", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                                    refreshThreadData()
+                                } else {
+                                    AppContainer.debuggerUseCase.log("DEBUGGER", "Thread step failed", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                                }
+                            }
+                        },
                         colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.Surface),
                         modifier = Modifier.weight(1f),
+                        enabled = isProcessHalted,
                         shape = RoundedCornerShape(4.dp),
                         contentPadding = PaddingValues(0.dp)
                     ) { Text("Step", fontSize = 10.sp, color = PS5ThemeColors.TextMain) }
@@ -225,10 +331,10 @@ fun DebugSidebar(
             Text("REGISTERS", color = PS5ThemeColors.TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(4.dp))
             
-            Box(Modifier.weight(1f).fillMaxWidth().background(PS5ThemeColors.Surface, RoundedCornerShape(4.dp)).border(1.dp, PS5ThemeColors.BorderColor, RoundedCornerShape(4.dp)).padding(6.dp)) {
-                if (selectedRegs != null) {
+            Box(Modifier.weight(1f).fillMaxWidth().background(PS5ThemeColors.Surface, RoundedCornerShape(8.dp)).border(1.dp, PS5ThemeColors.BorderColor, RoundedCornerShape(8.dp)).padding(8.dp)) {
+                val regs = selectedRegs
+                if (regs != null) {
                     LazyColumn(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        val regs = selectedRegs!!
                         item { RegisterRow("RIP", regs.rip) }
                         item { RegisterRow("RSP", regs.rsp) }
                         item { RegisterRow("RAX", regs.rax) }

@@ -26,13 +26,13 @@ import com.osr.ps5debugger.ui.HexViewer
 import com.osr.ps5debugger.ui.MemoryViewerLayout
 import com.osr.ps5debugger.ui.MemoryScannerView
 import com.osr.ps5debugger.ui.WatchList
+import com.osr.ps5debugger.service.MemoryDumper
 import com.osr.ps5debugger.ui.MemoryDumperView
 import com.osr.ps5debugger.ui.LoggerConsole
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import kotlinx.coroutines.launch
-import com.osr.ps5debugger.ui.screens.SettingsMenuOverlay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -41,9 +41,12 @@ fun MobileMainView() {
     val activeProcess by AppContainer.debuggerUseCase.activeProcess.collectAsState()
     val coroutineScope = rememberCoroutineScope()
 
+    var activeMap by remember { mutableStateOf<MemoryRange?>(null) }
+    val vmMaps by AppContainer.debuggerUseCase.vmMaps.collectAsState()
+    val hasLocalFile by remember { derivedStateOf { activeMap?.localData != null || vmMaps.any { it.localData != null } } }
+
     // 0: Connection/Main Dashboard, 1: Hex Viewer, 2: Memory Search, 3: Watch List, 4: Memory Dumper
     var currentScreen by remember { mutableStateOf(0) }
-    var activeMap by remember { mutableStateOf<MemoryRange?>(null) }
     var jumpToAddress by remember { mutableStateOf<Long?>(null) }
 
     // Bottom sheets / sub-panels
@@ -165,9 +168,44 @@ fun MobileMainView() {
                 .padding(paddingValues)
                 .background(PS5ThemeColors.DarkBg)
         ) {
-            if (!isConnected) {
+            if (!isConnected && !hasLocalFile) {
                 // ConnectionScreen optimized inside container
-                MobileConnectionScreen()
+                MobileConnectionScreen(onLoadEboot = {
+                    AppContainer.filePicker?.loadEboot { bytes, fileName ->
+                        if (bytes != null && fileName != null) {
+                            val mergedRange = com.osr.ps5debugger.util.ElfUtil.getMergedModule(bytes, fileName)
+                            val entry = com.osr.ps5debugger.util.ElfUtil.getEntryPoint(bytes)
+                            
+                            if (mergedRange != null) {
+                                activeMap = mergedRange
+                                if (entry != null) {
+                                    AppContainer.elfEntryPoint = entry
+                                    if (!AppContainer.discoveredFunctions.contains(entry)) {
+                                        AppContainer.discoveredFunctions.add(entry)
+                                        AppContainer.discoveredFunctions.sortBy { it.toULong() }
+                                    }
+                                    jumpToAddress = entry
+                                } else {
+                                    jumpToAddress = mergedRange.start
+                                }
+                                currentScreen = 1
+                                AppContainer.debuggerUseCase.log("FILE", "Loaded ELF file: $fileName. Merged ${mergedRange.subRanges.size} segments.", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                            } else {
+                                val newRange = MemoryRange(
+                                    name = fileName,
+                                    start = 0,
+                                    end = bytes.size.toLong(),
+                                    offset = 0,
+                                    protections = 7, // RWX for local file
+                                    localData = bytes
+                                )
+                                activeMap = newRange
+                                jumpToAddress = 0
+                                currentScreen = 1
+                            }
+                        }
+                    }
+                })
             } else {
                 when (currentScreen) {
                     0 -> MobileDashboard(
@@ -266,7 +304,7 @@ fun MobileMainView() {
             }
 
             if (showSettings) {
-                SettingsMenuOverlay(onClose = { showSettings = false })
+                com.osr.ps5debugger.ui.screens.SettingsDialog(onClose = { showSettings = false })
             }
         }
     }
@@ -318,11 +356,12 @@ fun MobileBottomSheet(
 }
 
 @Composable
-fun MobileConnectionScreen() {
+fun MobileConnectionScreen(onLoadEboot: (() -> Unit)? = null) {
     val coroutineScope = rememberCoroutineScope()
     var ipInput by remember { mutableStateOf(com.osr.ps5debugger.util.DefaultIpHelper.getDefaultIp() ?: "192.168.1.100") }
     var isConnecting by remember { mutableStateOf(false) }
     var isDiscovering by remember { mutableStateOf(false) }
+    var isInjecting by remember { mutableStateOf(false) }
     var statusMessage by remember { mutableStateOf("") }
     var statusColor by remember { mutableStateOf(PS5ThemeColors.TextMuted) }
 
@@ -410,7 +449,7 @@ fun MobileConnectionScreen() {
                             }
                         }
                     },
-                    enabled = !isConnecting && !isDiscovering,
+                    enabled = !isConnecting && !isDiscovering && !isInjecting,
                     shape = RoundedCornerShape(8.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.AccentCyan),
                     modifier = Modifier.fillMaxWidth()
@@ -436,12 +475,64 @@ fun MobileConnectionScreen() {
                             isDiscovering = false
                         }
                     },
-                    enabled = !isConnecting && !isDiscovering,
+                    enabled = !isConnecting && !isDiscovering && !isInjecting,
                     shape = RoundedCornerShape(8.dp),
                     colors = ButtonDefaults.filledTonalButtonColors(containerColor = PS5ThemeColors.SecondaryBg),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(if (isDiscovering) "Scanning..." else "Auto-Discover Console", color = PS5ThemeColors.TextMain)
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        val targetIp = ipInput.trim()
+                        if (targetIp.isEmpty()) {
+                            statusMessage = "Please enter console IP address"
+                            statusColor = PS5ThemeColors.StatusRed
+                            return@OutlinedButton
+                        }
+                        coroutineScope.launch {
+                            isInjecting = true
+                            val port = com.osr.ps5debugger.util.DefaultIpHelper.getPayloadPort()
+                            statusMessage = "Injecting debug payload to $targetIp:$port..."
+                            statusColor = PS5ThemeColors.AccentCyan
+                            val result = com.osr.ps5debugger.network.Ps5PayloadInjector.injectPayload(targetIp, port)
+                            result.onSuccess { bytesSent ->
+                                val sizeKb = bytesSent / 1024
+                                statusMessage = "Payload injected successfully ($sizeKb KB sent to $targetIp:$port)"
+                                statusColor = PS5ThemeColors.StatusGreen
+                            }.onFailure { e ->
+                                statusMessage = "Injection failed: ${e.message ?: "Unknown error"}"
+                                statusColor = PS5ThemeColors.StatusRed
+                            }
+                            isInjecting = false
+                        }
+                    },
+                    enabled = !isConnecting && !isDiscovering && !isInjecting,
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(
+                        1.dp,
+                        if (!isConnecting && !isDiscovering && !isInjecting) PS5ThemeColors.AccentCyan.copy(alpha = 0.6f) else PS5ThemeColors.BorderColor
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = if (isInjecting) "Injecting..." else "Inject debug payload",
+                        color = if (!isConnecting && !isDiscovering && !isInjecting) PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                if (onLoadEboot != null) {
+                    FilledTonalButton(
+                        onClick = onLoadEboot,
+                        enabled = !isConnecting && !isDiscovering && !isInjecting,
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.filledTonalButtonColors(containerColor = PS5ThemeColors.SecondaryBg),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Open Local eboot.bin / ELF", color = PS5ThemeColors.TextMain)
+                    }
                 }
 
                 if (statusMessage.isNotEmpty()) {
@@ -707,8 +798,9 @@ fun MobileRegionSelector(
     onMapSelected: (MemoryRange) -> Unit
 ) {
     val maps by AppContainer.debuggerUseCase.vmMaps.collectAsState()
+    val displayEntries = remember(maps) { MemoryDumper.mergeLibraryMaps(maps) }
     var searchText by remember { mutableStateOf("") }
-    var clickedMapId by remember { mutableStateOf<Long?>(null) }
+    var clickedMapId by remember { mutableStateOf<String?>(null) }
     val coroutineScope = rememberCoroutineScope()
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -727,24 +819,34 @@ fun MobileRegionSelector(
             )
         )
 
-        val filtered = maps.filter { it.name.contains(searchText, ignoreCase = true) }
+        val filtered = remember(displayEntries, searchText) {
+            if (searchText.isEmpty()) displayEntries
+            else displayEntries.filter {
+                it.name.contains(searchText, ignoreCase = true) ||
+                it.start.toString(16).contains(searchText, ignoreCase = true) ||
+                it.end.toString(16).contains(searchText, ignoreCase = true)
+            }
+        }
 
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            items(filtered) { map ->
-                val isSelected = activeMap?.start == map.start
-                val isClicked = clickedMapId == map.start
+            items(filtered, key = { it.id }) { entry ->
+                val isSelected = activeMap != null && (
+                    entry.subRanges.any { it.start == activeMap.start } ||
+                    (activeMap.start >= entry.start && activeMap.end <= entry.end)
+                )
+                val isClicked = clickedMapId == entry.id
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable {
                             if (clickedMapId == null) {
-                                clickedMapId = map.start
+                                clickedMapId = entry.id
                                 coroutineScope.launch {
                                     kotlinx.coroutines.delay(250)
-                                    onMapSelected(map)
+                                    onMapSelected(entry.toMemoryRange())
                                     clickedMapId = null
                                 }
                             }
@@ -758,27 +860,36 @@ fun MobileRegionSelector(
                 ) {
                     Column(modifier = Modifier.padding(12.dp)) {
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = map.name.ifEmpty { "unnamed region" },
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 12.sp,
-                                color = if (isSelected || isClicked) PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMain
-                            )
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(
+                                    text = entry.name.ifEmpty { "unnamed region" },
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp,
+                                    color = if (isSelected || isClicked) PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMain
+                                )
+                                if (entry.isMergedLibrary) {
+                                    Text(
+                                        text = "(${entry.subRanges.size} segs)",
+                                        fontSize = 10.sp,
+                                        color = PS5ThemeColors.TextMuted
+                                    )
+                                }
+                            }
                             Surface(
                                 shape = RoundedCornerShape(4.dp),
                                 color = when {
-                                    map.getProtString().contains("w") -> PS5ThemeColors.StatusRed.copy(alpha = 0.15f)
-                                    map.getProtString().contains("x") -> PS5ThemeColors.AccentAmber.copy(alpha = 0.15f)
+                                    entry.getProtString().contains("w") -> PS5ThemeColors.StatusRed.copy(alpha = 0.15f)
+                                    entry.getProtString().contains("x") -> PS5ThemeColors.AccentAmber.copy(alpha = 0.15f)
                                     else -> PS5ThemeColors.SecondaryBg
                                 }
                             ) {
                                 Text(
-                                    text = map.getProtString(),
+                                    text = entry.getProtString(),
                                     fontSize = 9.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = when {
-                                        map.getProtString().contains("w") -> PS5ThemeColors.StatusRed
-                                        map.getProtString().contains("x") -> PS5ThemeColors.AccentAmber
+                                        entry.getProtString().contains("w") -> PS5ThemeColors.StatusRed
+                                        entry.getProtString().contains("x") -> PS5ThemeColors.AccentAmber
                                         else -> PS5ThemeColors.TextMuted
                                     },
                                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
@@ -787,15 +898,15 @@ fun MobileRegionSelector(
                         }
                         Spacer(modifier = Modifier.height(6.dp))
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            val startStr = map.start.toString(16).uppercase()
-                            val endStr = map.end.toString(16).uppercase()
+                            val startStr = entry.start.toString(16).uppercase()
+                            val endStr = entry.end.toString(16).uppercase()
                             Text(
                                 text = "0x$startStr - 0x$endStr",
                                 fontSize = 10.sp,
                                 fontFamily = FontFamily.Monospace,
                                 color = PS5ThemeColors.TextMuted
                             )
-                            val sizeMb = map.size.toDouble() / (1024.0 * 1024.0)
+                            val sizeMb = entry.totalSize.toDouble() / (1024.0 * 1024.0)
                             Text(
                                 text = String.format("%.2f MB", sizeMb),
                                 fontSize = 10.sp,

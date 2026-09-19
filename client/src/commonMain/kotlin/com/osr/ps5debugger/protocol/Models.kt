@@ -51,4 +51,6 @@ data class Ps5DisasmInstr(
     val isRipRel: Boolean get() = (kind and 0x20) != 0
     val isRead: Boolean get() = (kind and 0x40) != 0
     val isWrite: Boolean get() = (kind and 0x80) != 0
+    val isDataString: Boolean get() = (kind and 0x0100) != 0
+    val isDataRaw: Boolean get() = (kind and 0x0200) != 0
 }

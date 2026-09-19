@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import com.osr.ps5debugger.ui.icons.PS5Icons
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -17,14 +18,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.TextStyle
 import com.osr.ps5debugger.domain.model.MemoryRange
+import com.osr.ps5debugger.domain.model.DumpRegionEntry
 import com.osr.ps5debugger.di.AppContainer
 import com.osr.ps5debugger.service.MemoryDumper
 import com.osr.ps5debugger.PS5ThemeColors
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
-import javax.swing.JFileChooser
-import javax.swing.SwingUtilities
-import java.awt.Frame
 import java.io.File
 
 @Composable
@@ -34,9 +33,29 @@ fun MemoryDumperView(modifier: Modifier = Modifier) {
     val activeProcess by AppContainer.debuggerUseCase.activeProcess.collectAsState()
     
     val maps by AppContainer.debuggerUseCase.vmMaps.collectAsState()
+    val displayEntries = remember(maps) { MemoryDumper.mergeLibraryMaps(maps) }
+    var searchText by remember { mutableStateOf("") }
+
+    val filteredEntries = remember(displayEntries, searchText) {
+        if (searchText.isBlank()) {
+            displayEntries
+        } else {
+            val query = searchText.trim()
+            displayEntries.filter { entry ->
+                entry.name.contains(query, ignoreCase = true) ||
+                entry.start.toString(16).contains(query, ignoreCase = true) ||
+                entry.end.toString(16).contains(query, ignoreCase = true)
+            }
+        }
+    }
+
     val isLoadingMaps = false
+    val selectedEntries = remember { mutableStateMapOf<String, Boolean>() }
     
-    val selectedMaps = remember { mutableStateMapOf<Long, Boolean>() }
+    LaunchedEffect(activeProcess?.pid) {
+        selectedEntries.clear()
+        searchText = ""
+    }
     
     var isDumping by remember { mutableStateOf(false) }
     var currentDumpRegionName by remember { mutableStateOf("") }
@@ -98,7 +117,7 @@ fun MemoryDumperView(modifier: Modifier = Modifier) {
                     ) {
                         Button(
                             onClick = {
-                                maps.forEach { selectedMaps[it.start] = true }
+                                filteredEntries.forEach { selectedEntries[it.id] = true }
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.SecondaryBg),
                             modifier = Modifier.weight(1f)
@@ -108,7 +127,7 @@ fun MemoryDumperView(modifier: Modifier = Modifier) {
                         
                         Button(
                             onClick = {
-                                selectedMaps.clear()
+                                selectedEntries.clear()
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.SecondaryBg),
                             modifier = Modifier.weight(1f)
@@ -151,7 +170,7 @@ fun MemoryDumperView(modifier: Modifier = Modifier) {
                         }
                     }
                     
-                    val targets = maps.filter { selectedMaps[it.start] == true }
+                    val targets = displayEntries.filter { selectedEntries[it.id] == true }
                     
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -213,7 +232,7 @@ fun MemoryDumperView(modifier: Modifier = Modifier) {
                 ) {
                     Button(
                         onClick = {
-                            maps.forEach { selectedMaps[it.start] = true }
+                            filteredEntries.forEach { selectedEntries[it.id] = true }
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.SecondaryBg)
                     ) {
@@ -222,7 +241,7 @@ fun MemoryDumperView(modifier: Modifier = Modifier) {
                     
                     Button(
                         onClick = {
-                            selectedMaps.clear()
+                            selectedEntries.clear()
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.SecondaryBg)
                     ) {
@@ -257,7 +276,7 @@ fun MemoryDumperView(modifier: Modifier = Modifier) {
                         Text("Browse", color = PS5ThemeColors.TextMain)
                     }
                     
-                    val targets = maps.filter { selectedMaps[it.start] == true }
+                    val targets = displayEntries.filter { selectedEntries[it.id] == true }
                     
                     Button(
                         onClick = {
@@ -323,6 +342,42 @@ fun MemoryDumperView(modifier: Modifier = Modifier) {
             }
         }
 
+        // Search Bar for filtering regions by name or address
+        OutlinedTextField(
+            value = searchText,
+            onValueChange = { searchText = it },
+            placeholder = { Text("Filter regions by name or address (e.g. libc, eboot, 0x8000)...", fontSize = 12.sp, color = PS5ThemeColors.TextMuted) },
+            leadingIcon = {
+                Icon(
+                    imageVector = PS5Icons.Search,
+                    contentDescription = "Search",
+                    tint = PS5ThemeColors.TextMuted,
+                    modifier = Modifier.size(18.dp)
+                )
+            },
+            trailingIcon = {
+                if (searchText.isNotEmpty()) {
+                    IconButton(onClick = { searchText = "" }) {
+                        Icon(
+                            imageVector = PS5Icons.Clear,
+                            contentDescription = "Clear search",
+                            tint = PS5ThemeColors.TextMuted,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+            },
+            singleLine = true,
+            textStyle = TextStyle(fontSize = 12.sp),
+            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = PS5ThemeColors.AccentCyan,
+                unfocusedBorderColor = PS5ThemeColors.BorderColor,
+                focusedTextColor = PS5ThemeColors.TextMain,
+                unfocusedTextColor = PS5ThemeColors.TextMain
+            )
+        )
+
         val headerFontSize = if (isMobile) 10.sp else 12.sp
         val itemFontSize = if (isMobile) 11.sp else 13.sp
         val fontMonospace = FontFamily.Monospace
@@ -333,7 +388,8 @@ fun MemoryDumperView(modifier: Modifier = Modifier) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Spacer(Modifier.width(if (isMobile) 32.dp else 48.dp))
-            Text("Name", fontWeight = FontWeight.Bold, fontSize = headerFontSize, modifier = Modifier.weight(2f))
+            val nameColTitle = if (searchText.isNotBlank()) "Name (${filteredEntries.size} of ${displayEntries.size})" else "Name"
+            Text(nameColTitle, fontWeight = FontWeight.Bold, fontSize = headerFontSize, modifier = Modifier.weight(2f))
             Text("Range", fontWeight = FontWeight.Bold, fontSize = headerFontSize, modifier = Modifier.weight(3f))
             Text("Size", fontWeight = FontWeight.Bold, fontSize = headerFontSize, modifier = Modifier.weight(1.2f))
             Text("Flags", fontWeight = FontWeight.Bold, fontSize = headerFontSize, modifier = Modifier.weight(1f))
@@ -345,39 +401,53 @@ fun MemoryDumperView(modifier: Modifier = Modifier) {
             }
         } else {
             LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f)) {
-                items(maps) { map ->
-                    val isSelected = selectedMaps[map.start] == true
+                items(filteredEntries, key = { it.id }) { entry ->
+                    val isSelected = selectedEntries[entry.id] == true
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(vertical = 2.dp)
-                            .clickable { selectedMaps[map.start] = !isSelected },
+                            .clickable { selectedEntries[entry.id] = !isSelected },
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Checkbox(
                             checked = isSelected,
-                            onCheckedChange = { selectedMaps[map.start] = it }
+                            onCheckedChange = { selectedEntries[entry.id] = it }
                         )
                         
+                        Row(
+                            modifier = Modifier.weight(2f),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                text = entry.name,
+                                fontSize = itemFontSize,
+                                maxLines = 1
+                            )
+                            if (entry.isMergedLibrary) {
+                                Text(
+                                    text = "(${entry.subRanges.size} segs)",
+                                    fontSize = (headerFontSize.value - 1).sp,
+                                    color = PS5ThemeColors.TextMuted
+                                )
+                            }
+                        }
+                        
                         Text(
-                            text = map.name.ifEmpty { "unnamed" },
-                            fontSize = itemFontSize,
-                            modifier = Modifier.weight(2f)
-                        )
-                        Text(
-                            text = String.format("0x%012X - 0x%012X", map.start, map.end),
+                            text = String.format("0x%012X - 0x%012X", entry.start, entry.end),
                             fontFamily = fontMonospace,
                             fontSize = headerFontSize,
                             color = PS5ThemeColors.TextMuted,
                             modifier = Modifier.weight(3f)
                         )
                         Text(
-                            text = String.format("%.2f MB", map.size.toDouble() / (1024 * 1024)),
+                            text = String.format("%.2f MB", entry.totalSize.toDouble() / (1024 * 1024)),
                             fontSize = headerFontSize,
                             modifier = Modifier.weight(1.2f)
                         )
                         Text(
-                            text = map.getProtString(),
+                            text = entry.getProtString(),
                             fontFamily = fontMonospace,
                             fontSize = headerFontSize,
                             color = PS5ThemeColors.AccentCyan,

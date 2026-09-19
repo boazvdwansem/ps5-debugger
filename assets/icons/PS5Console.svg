@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+  <!-- Outer curved aerodynamic wing plates -->
+  <path d="M6 3c1.5 6 1.5 12 0 18h12c-1.5-6-1.5-12 0-18H6z" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <!-- Center dark tower strip -->
+  <line x1="12" y1="6" x2="12" y2="18" stroke="white" stroke-width="2" stroke-linecap="round"/>
+  <!-- Power LED blue slit bar -->
+  <line x1="9.5" y1="4.5" x2="14.5" y2="4.5" stroke="white" stroke-width="1.8" stroke-linecap="round"/>
+</svg>

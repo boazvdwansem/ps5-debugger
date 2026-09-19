@@ -128,6 +128,27 @@ fun WatchRow(
             )
             HorizontalDivider()
             DropdownMenuItem(
+                text = { Text("Add to Cheats", fontSize = 12.sp, color = PS5ThemeColors.AccentCyan) },
+                onClick = {
+                    val procInfo = AppContainer.debuggerUseCase.activeProcessInfo.value
+                    val tId = procInfo?.titleId ?: "Unknown"
+                    
+                    AppContainer.onCreateCheatRequested?.invoke(
+                        com.osr.ps5debugger.domain.model.Cheat(
+                            id = "",
+                            name = "Cheat: ${item.label}",
+                            type = com.osr.ps5debugger.domain.model.CheatType.Toggle,
+                            address = item.address,
+                            hexOnValue = "",
+                            hexOffValue = item.valueStr,
+                            titleId = tId
+                        )
+                    )
+                    showContextMenu = false
+                }
+            )
+            HorizontalDivider()
+            DropdownMenuItem(
                 text = { Text("Delete", fontSize = 12.sp, color = PS5ThemeColors.StatusRed) },
                 onClick = { onDelete(); showContextMenu = false }
             )

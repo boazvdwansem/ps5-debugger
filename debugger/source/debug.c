@@ -30,6 +30,14 @@ struct dbgctx {
 
 };
 
+static inline void wait4_timeout(int pid) {
+    int wait_count = 0;
+    while (wait_count < 100 && wait4(pid, NULL, 1, NULL) <= 0) {
+        sceKernelUsleep(1000);
+        wait_count++;
+    }
+}
+
 static int g_cached_app_pid = 0;
 static int g_cached_app_id  = 0;
 
@@ -368,6 +376,13 @@ void debug_full_teardown(void *svc) {
     int      pid   = svc ? *(int *)svc : 0;
     uint32_t dbgfd = svc ? *(uint32_t *)((char *)svc + 4) : 0;
 
+    int we_stopped = 0;
+    if (pid > 0 && is_process_stopped(pid) == 0) {
+        kill(pid, 17);
+        wait4_timeout(pid);
+        we_stopped = 1;
+    }
+
     int   vm_count = 0;
     void *vm_maps  = NULL;
     int   alive_rc = sys_proc_vm_map((uint32_t)pid, &vm_maps, &vm_count);
@@ -404,7 +419,6 @@ void debug_full_teardown(void *svc) {
 
     int *lwpids = NULL;
     int  count  = 0;
-    int  we_stopped = 0;
 
     if (!have_active_dr) {
         int rc = (int)ptrace_raw(PT_GETNUMLWPS, pid, NULL, 0);
@@ -413,7 +427,7 @@ void debug_full_teardown(void *svc) {
                 goto teardown_done;
             }
             kill(pid, 17 );
-            wait4(pid, NULL, 0, NULL);
+            wait4_timeout(pid);
             we_stopped = 1;
             ptrace_raw(PT_GETNUMLWPS, pid, NULL, 0);
         }
@@ -426,7 +440,7 @@ void debug_full_teardown(void *svc) {
             goto teardown_done;
         }
         kill(pid, 17);
-        wait4(pid, NULL, 0, NULL);
+        wait4_timeout(pid);
         we_stopped = 1;
         rc    = (int)ptrace_raw(PT_GETNUMLWPS, pid, NULL, 0);
         count = rc;
@@ -500,7 +514,7 @@ int debug_stopgo_handle(int pid, char action) {
         } else if (action == 1) {
             g_stopgo_last_signal = 0x11;
             kill(pid, 0x11);
-            wait4(pid, NULL, 0, NULL);
+            wait4_timeout(pid);
             g_stopgo_mode = 2;
         } else if (action == 2) {
             g_stopgo_resume_signal = 9;
@@ -514,13 +528,13 @@ int debug_stopgo_handle(int pid, char action) {
             g_stopgo_mode = 1;
             g_stopgo_last_signal = sig;
             kill(pid, (int)sig);
-            wait4(pid, NULL, 0, NULL);
+            wait4_timeout(pid);
             if (action == 0 && g_debug_attached) {
                 resume_app_via_self_id((int)g_stopgo_resume_pid);
             }
         } else {
             kill(pid, 0);
-            wait4(pid, NULL, 0, NULL);
+            wait4_timeout(pid);
         }
     }
 
@@ -593,7 +607,6 @@ int debug_attach_handle(int fd, struct cmd_packet *packet) {
     }
 
     elev_restore(&es);
-
     void *evt_client_sockaddr = (char *)curdbgcli + 0x0C;
     if (connect_debugger(DBGCTX(), evt_client_sockaddr) != 0) {
         net_send_int32(fd, CMD_ERROR);
@@ -704,7 +717,7 @@ int debug_set_watchpoint_handle(int fd, struct cmd_packet *packet) {
         }
     } else {
         if (errno != 16 ) goto wp_err_no_resume;
-        kill(pid, 17); wait4(pid, NULL, 0, NULL);
+        kill(pid, 17); wait4_timeout(pid);
         count = (int)ptrace_raw(PT_GETNUMLWPS, pid, NULL, 0);
         we_stopped = 1;
         lwpids = (int *)net_alloc_buffer((unsigned long)(count * 4));
@@ -778,7 +791,7 @@ int debug_get_thread_list_handle(int fd, struct cmd_packet *packet) {
     if (count == -1) {
         if (errno != 16 ) { net_send_int32(fd, CMD_ERROR); return 1; }
         kill(pid, 17 );
-        wait4(pid, NULL, 0, NULL);
+        wait4_timeout(pid);
         count = (int)ptrace_elev(PT_GETNUMLWPS, pid, NULL, 0);
         we_stopped = 1;
     }
@@ -849,7 +862,7 @@ int debug_getregs_handle(int fd, struct cmd_packet *packet) {
     return 0;
 err:
     net_send_int32(fd, CMD_ERROR);
-    return 1;
+    return 0;
 }
 
 int debug_setregs_handle(int fd, struct cmd_packet *packet) {
@@ -860,7 +873,6 @@ int debug_setregs_handle(int fd, struct cmd_packet *packet) {
 
     struct cmd_debug_setreg_packet *sp = (struct cmd_debug_setreg_packet *)packet->data;
     if (!sp) goto err;
-
     net_send_int32(fd, CMD_SUCCESS);
     net_recv_all(fd, buf, sp->length, 1);
 
@@ -870,7 +882,7 @@ int debug_setregs_handle(int fd, struct cmd_packet *packet) {
     return 0;
 err:
     net_send_int32(fd, CMD_ERROR);
-    return 1;
+    return 0;
 }
 
 int debug_getfpregs_handle(int fd, struct cmd_packet *packet) {
@@ -882,18 +894,34 @@ int debug_getfpregs_handle(int fd, struct cmd_packet *packet) {
     struct cmd_debug_lwp_packet *gp = (struct cmd_debug_lwp_packet *)packet->data;
     if (!gp) { net_send_int32(fd, CMD_DATA_NULL); return 1; }
 
+    int we_stopped = 0;
+    if (is_process_stopped(pid) == 0) {
+        kill(pid, 17);
+        wait4_timeout(pid);
+        we_stopped = 1;
+    }
+
     memset(buf, 0, FPREG_BLOB_SIZE);
 
-    if (kern_get_fpregs(pid, gp->lwpid, buf) != 0) {
-        if (ptrace_elev(PT_GETFPREGS, gp->lwpid, buf, 0) == -1 && errno != 0) goto err;
+    int rc = kern_get_fpregs(pid, gp->lwpid, buf);
+    int ptrace_rc = 0;
+    if (rc != 0) {
+        ptrace_rc = ptrace_elev(PT_GETFPREGS, gp->lwpid, buf, 0);
     }
+
+    if (we_stopped) {
+        resume_app_via_self_id(pid);
+        ptrace_elev(PT_CONTINUE, pid, (void *)1, 0);
+    }
+
+    if (rc != 0 && ptrace_rc == -1 && errno != 0) goto err;
 
     net_send_int32(fd, CMD_SUCCESS);
     net_send_all(fd, buf, FPREG_BLOB_SIZE);
     return 0;
 err:
     net_send_int32(fd, CMD_ERROR);
-    return 1;
+    return 0;
 }
 
 int debug_setfpregs_handle(int fd, struct cmd_packet *packet) {
@@ -905,23 +933,38 @@ int debug_setfpregs_handle(int fd, struct cmd_packet *packet) {
     struct cmd_debug_setreg_packet *sp = (struct cmd_debug_setreg_packet *)packet->data;
     if (!sp) goto err;
     if (sp->length > FPREG_BLOB_SIZE) goto err;
-
     memset(buf, 0, FPREG_BLOB_SIZE);
     net_send_int32(fd, CMD_SUCCESS);
     if (net_recv_all(fd, buf, sp->length, 1) < 0) goto err;
 
+    int we_stopped = 0;
+    if (is_process_stopped(pid) == 0) {
+        kill(pid, 17);
+        wait4_timeout(pid);
+        we_stopped = 1;
+    }
+
     int applied = 0;
     if (sp->length == FPREG_BLOB_SIZE)
         applied = (kern_set_fpregs(pid, sp->lwpid, buf) == 0);
+    
+    int ptrace_rc = 0;
     if (!applied) {
-        if (ptrace_elev(PT_SETFPREGS, pid, buf, 0) == -1 && errno != 0) goto err;
+        ptrace_rc = ptrace_elev(PT_SETFPREGS, pid, buf, 0);
     }
+
+    if (we_stopped) {
+        resume_app_via_self_id(pid);
+        ptrace_elev(PT_CONTINUE, pid, (void *)1, 0);
+    }
+
+    if (!applied && ptrace_rc == -1 && errno != 0) goto err;
 
     net_send_int32(fd, CMD_SUCCESS);
     return 0;
 err:
     net_send_int32(fd, CMD_ERROR);
-    return 1;
+    return 0;
 }
 
 int debug_getdbregs_handle(int fd, struct cmd_packet *packet) {
@@ -936,7 +979,7 @@ int debug_getdbregs_handle(int fd, struct cmd_packet *packet) {
     int we_stopped = 0;
     if (is_process_stopped(pid) == 0) {
         kill(pid, 17 );
-        wait4(pid, NULL, 0, NULL);
+        wait4_timeout(pid);
         we_stopped = 1;
     }
 
@@ -958,7 +1001,7 @@ int debug_getdbregs_handle(int fd, struct cmd_packet *packet) {
     return 0;
 err:
     net_send_int32(fd, CMD_ERROR);
-    return 1;
+    return 0;
 }
 
 int debug_setdbregs_handle(int fd, struct cmd_packet *packet) {
@@ -969,13 +1012,12 @@ int debug_setdbregs_handle(int fd, struct cmd_packet *packet) {
 
     struct cmd_debug_setreg_packet *sp = (struct cmd_debug_setreg_packet *)packet->data;
     if (!sp) goto err;
-
     net_send_int32(fd, CMD_SUCCESS);
     net_recv_all(fd, buf, sp->length, 1);
 
     ptrace_elev(PT_CONTINUE, pid, (void *)1, 0);
     kill(pid, 17 );
-    wait4(pid, NULL, 0, NULL);
+    wait4_timeout(pid);
 
     if (ptrace_elev(PT_SETDBREGS, sp->lwpid, buf, 0) == -1 && errno != 0) goto err;
 
@@ -986,7 +1028,7 @@ int debug_setdbregs_handle(int fd, struct cmd_packet *packet) {
     return 0;
 err:
     net_send_int32(fd, CMD_ERROR);
-    return 1;
+    return 0;
 }
 
 int debug_getfsgsbase_handle(int fd, struct cmd_packet *packet) {
@@ -998,16 +1040,30 @@ int debug_getfsgsbase_handle(int fd, struct cmd_packet *packet) {
     struct cmd_debug_lwp_packet *gp = (struct cmd_debug_lwp_packet *)packet->data;
     if (!gp) { net_send_int32(fd, CMD_DATA_NULL); return 1; }
 
+    int we_stopped = 0;
+    if (is_process_stopped(pid) == 0) {
+        kill(pid, 17);
+        wait4_timeout(pid);
+        we_stopped = 1;
+    }
+
     memset(buf, 0, FSGSBASE_BLOB_SIZE);
 
-    if (kern_get_fsgsbase(pid, gp->lwpid, buf) != 0) goto err;
+    int rc = kern_get_fsgsbase(pid, gp->lwpid, buf);
+
+    if (we_stopped) {
+        resume_app_via_self_id(pid);
+        ptrace_elev(PT_CONTINUE, pid, (void *)1, 0);
+    }
+
+    if (rc != 0) goto err;
 
     net_send_int32(fd, CMD_SUCCESS);
     net_send_all(fd, buf, FSGSBASE_BLOB_SIZE);
     return 0;
 err:
     net_send_int32(fd, CMD_ERROR);
-    return 1;
+    return 0;
 }
 
 int debug_setfsgsbase_handle(int fd, struct cmd_packet *packet) {
@@ -1024,13 +1080,27 @@ int debug_setfsgsbase_handle(int fd, struct cmd_packet *packet) {
     net_send_int32(fd, CMD_SUCCESS);
     if (net_recv_all(fd, buf, sp->length, 1) < 0) goto err;
 
-    if (kern_set_fsgsbase(pid, sp->lwpid, buf) != 0) goto err;
+    int we_stopped = 0;
+    if (is_process_stopped(pid) == 0) {
+        kill(pid, 17);
+        wait4_timeout(pid);
+        we_stopped = 1;
+    }
+
+    int rc = kern_set_fsgsbase(pid, sp->lwpid, buf);
+
+    if (we_stopped) {
+        resume_app_via_self_id(pid);
+        ptrace_elev(PT_CONTINUE, pid, (void *)1, 0);
+    }
+
+    if (rc != 0) goto err;
 
     net_send_int32(fd, CMD_SUCCESS);
     return 0;
 err:
     net_send_int32(fd, CMD_ERROR);
-    return 1;
+    return 0;
 }
 
 int debug_continue_handle(int fd, struct cmd_packet *packet) {
@@ -1086,10 +1156,24 @@ int debug_thread_info_handle(int fd, struct cmd_packet *packet) {
     struct cmd_debug_lwp_packet *gp = (struct cmd_debug_lwp_packet *)packet->data;
     if (!gp) { net_send_int32(fd, CMD_DATA_NULL); return 1; }
 
+    int we_stopped = 0;
+    if (is_process_stopped(pid) == 0) {
+        kill(pid, 17);
+        wait4_timeout(pid);
+        we_stopped = 1;
+    }
+
     uint32_t thrinfo[10];
     memset(thrinfo, 0, sizeof(thrinfo));
     thrinfo[0] = gp->lwpid;
-    if (kern_get_thread_info(pid, thrinfo) != 0) {
+    int rc = kern_get_thread_info(pid, thrinfo);
+
+    if (we_stopped) {
+        resume_app_via_self_id(pid);
+        ptrace_elev(PT_CONTINUE, pid, (void *)1, 0);
+    }
+
+    if (rc != 0) {
         net_send_int32(fd, CMD_ERROR);
         return 1;
     }
@@ -1171,7 +1255,7 @@ static void debug_handle_breakpoint_resume(void) {
     ptrace_raw(PT_CONTINUE, pid, (void *)1, sig);
 
     if ((int)g_stopgo_resume_signal == 17) {
-        wait4(pid, NULL, 0, NULL);
+        wait4_timeout(pid);
     }
 
     g_stopgo_resume_signal = 0xFFFFFFFFu;

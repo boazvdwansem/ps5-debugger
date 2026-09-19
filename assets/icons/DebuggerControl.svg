@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+  <!-- CPU IC body -->
+  <rect x="6" y="6" width="12" height="12" rx="2" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <!-- Execution core play triangle -->
+  <polygon points="10,9.5 15,12 10,14.5" fill="white"/>
+  <!-- Pin traces: Top -->
+  <line x1="9" y1="2" x2="9" y2="6" stroke="white" stroke-width="2" stroke-linecap="round"/>
+  <line x1="15" y1="2" x2="15" y2="6" stroke="white" stroke-width="2" stroke-linecap="round"/>
+  <!-- Pin traces: Bottom -->
+  <line x1="9" y1="18" x2="9" y2="22" stroke="white" stroke-width="2" stroke-linecap="round"/>
+  <line x1="15" y1="18" x2="15" y2="22" stroke="white" stroke-width="2" stroke-linecap="round"/>
+  <!-- Pin traces: Left -->
+  <line x1="2" y1="9" x2="6" y2="9" stroke="white" stroke-width="2" stroke-linecap="round"/>
+  <line x1="2" y1="15" x2="6" y2="15" stroke="white" stroke-width="2" stroke-linecap="round"/>
+  <!-- Pin traces: Right -->
+  <line x1="18" y1="9" x2="22" y2="9" stroke="white" stroke-width="2" stroke-linecap="round"/>
+  <line x1="18" y1="15" x2="22" y2="15" stroke="white" stroke-width="2" stroke-linecap="round"/>
+</svg>

@@ -8,8 +8,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Search
+import com.osr.ps5debugger.ui.icons.PS5Icons
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -78,7 +77,8 @@ fun StringsView(
     // Auto-trigger scan reactively
     LaunchedEffect(activeMap, activeMaps.size, isConnected, pid, minLengthText) {
         val targets = if (activeMaps.isNotEmpty()) activeMaps.toList() else listOfNotNull(activeMap)
-        if (isConnected && pid != null && targets.isNotEmpty()) {
+        val canScan = targets.isNotEmpty() && (targets.all { it.localData != null } || (isConnected && pid != null))
+        if (canScan) {
             isScanning = true
             scanProgress = 0f
             statusMessage = "Reading memory..."
@@ -104,7 +104,11 @@ fun StringsView(
                         
                         val startAddr = map.start + offset
                         try {
-                            val chunkBytes = client.readMemory(pid, startAddr, toRead)
+                            val chunkBytes = if (map.localData != null) {
+                                map.localData.copyOfRange(offset.toInt(), (offset + toRead).toInt())
+                            } else {
+                                client.readMemory(pid!!, startAddr, toRead)
+                            }
                             if (chunkBytes.isNotEmpty()) {
                                 // Parse ASCII strings
                                 var i = 0
@@ -226,7 +230,7 @@ fun StringsView(
                 value = searchText,
                 onValueChange = { searchText = it },
                 placeholder = { Text("Search / filter strings instantly...", fontSize = 11.sp, color = PS5ThemeColors.TextMuted) },
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Filter", tint = PS5ThemeColors.TextMuted, modifier = Modifier.size(16.dp)) },
+                leadingIcon = { Icon(PS5Icons.Search, contentDescription = "Filter", tint = PS5ThemeColors.TextMuted, modifier = Modifier.size(16.dp)) },
                 modifier = Modifier.weight(1f).height(48.dp),
                 singleLine = true,
                 colors = TextFieldDefaults.outlinedTextFieldColors(
@@ -393,6 +397,25 @@ fun StringsView(
                                 text = { Text("Copy Value", color = PS5ThemeColors.TextMain) },
                                 onClick = {
                                     copyToClipboard(item.value)
+                                    showMenu = false
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Add to Cheats", color = PS5ThemeColors.AccentCyan) },
+                                onClick = {
+                                    val procInfo = AppContainer.debuggerUseCase.activeProcessInfo.value
+                                    val tId = procInfo?.titleId ?: activeMap?.titleId ?: "Unknown"
+                                    val gName = procInfo?.name ?: activeMap?.name ?: "Unknown"
+
+                                    val cheat = com.osr.ps5debugger.domain.model.Cheat(
+                                        id = "cheat_${System.currentTimeMillis()}_${(0..999).random()}",
+                                        name = "String: ${item.value.take(20)}",
+                                        type = com.osr.ps5debugger.domain.model.CheatType.Toggle,
+                                        address = item.address,
+                                        hexOnValue = item.value.encodeToByteArray().joinToString("") { "%02X".format(it) },
+                                        titleId = tId
+                                    )
+                                    AppContainer.debuggerUseCase.addCheat(tId, "1.00", cheat, gName)
                                     showMenu = false
                                 }
                             )

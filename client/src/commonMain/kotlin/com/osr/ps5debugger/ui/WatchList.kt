@@ -4,8 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
+import com.osr.ps5debugger.ui.icons.PS5Icons
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -59,7 +58,7 @@ private fun WatchListHeader(state: WatchListState, isMobile: Boolean) {
             onClick = { state.showAddDialog = true },
             colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.SecondaryBg)
         ) {
-            Icon(Icons.Default.Add, contentDescription = "Add Item", modifier = Modifier.size(18.dp))
+            Icon(PS5Icons.Add, contentDescription = "Add Item", modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(8.dp))
             Text("Add Item")
         }

@@ -1,10 +1,13 @@
 package com.osr.ps5debugger.ui.state
 
 import androidx.compose.runtime.*
+import androidx.compose.runtime.snapshots.SnapshotStateList
 import com.osr.ps5debugger.di.AppContainer
 import com.osr.ps5debugger.domain.model.MemoryRange
 import com.osr.ps5debugger.ui.DisasmLine
 import com.osr.ps5debugger.protocol.Ps5DisasmInstr
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
@@ -13,6 +16,7 @@ import androidx.compose.ui.graphics.Color
 import com.osr.ps5debugger.ui.disasm.DisasmFormatter
 
 class MemoryViewerState(
+    private val scope: kotlinx.coroutines.CoroutineScope,
     activeMapInitial: MemoryRange?,
     activeMapsInitial: List<MemoryRange> = emptyList(),
     jumpToAddressInitial: Long?,
@@ -39,7 +43,13 @@ class MemoryViewerState(
     }
 
     var currentJumpAddress by mutableStateOf(jumpToAddressInitial)
-    val instructions = mutableStateListOf<DisasmLine>()
+    
+    val instructions: SnapshotStateList<DisasmLine> get() {
+        val map = activeMap ?: activeMaps.firstOrNull()
+        val key = map?.let { "${it.start}_${it.end}_${it.name}" } ?: "default"
+        return AppContainer.getInstructions(key)
+    }
+
     val functions = mutableStateListOf<Long>()
     var isLoading by mutableStateOf(false)
 
@@ -133,69 +143,108 @@ class MemoryViewerState(
     val selectedRegs = AppContainer.debuggerUseCase.selectedRegs
     val selectedDbRegs = AppContainer.debuggerUseCase.selectedDbRegs
     val selectedFsGs = AppContainer.debuggerUseCase.selectedFsGs
+    private var lastLoadedMapKey: String? = null
 
     suspend fun loadInitialInstructions() {
-        val activeProcess = AppContainer.debuggerUseCase.activeProcess.value ?: return
-        val pid = activeProcess.pid
+        val activeProcess = AppContainer.debuggerUseCase.activeProcess.value
         val isConnected = AppContainer.debuggerUseCase.isConnected.value
-        if (!isConnected) return
 
-        // Use a snapshot of current maps to avoid concurrent modification issues
-        val currentTargets = if (activeMaps.isNotEmpty()) activeMaps.toList() else listOfNotNull(activeMap)
+        val allTargets = (listOfNotNull(activeMap) + activeMaps).distinctBy { it.start }
+        val currentTarget = activeMap ?: allTargets.firstOrNull() ?: return
+        
+        val hasRemote = allTargets.any { it.localData == null }
+        val hasLocal = allTargets.any { it.localData != null }
+        
+        if (hasRemote && !hasLocal && (activeProcess == null || !isConnected)) {
+            instructions.clear()
+            lastLoadedMapKey = null
+            return
+        }
+
+        val execTargets = allTargets.filter { (it.protections and 4) != 0 || it.localData != null }
+        val currentTargets = (listOfNotNull(activeMap) + execTargets).distinctBy { it.start }
         
         if (currentTargets.isEmpty()) {
             instructions.clear()
             functions.clear()
-            AppContainer.discoveredFunctions.clear()
-            AppContainer.discoveredJumpTargets.clear()
+            lastLoadedMapKey = null
             return
         }
 
-        isLoading = true
+        // Optimization: If local file and already loaded for this module, don't clear or reload
+        val mapKey = "${currentTarget.start}_${currentTarget.end}_${currentTarget.name}"
+        if (currentTarget.localData != null && mapKey == lastLoadedMapKey && instructions.isNotEmpty()) {
+            return
+        }
+
+        // Reset state before loading
+        withContext(Dispatchers.Main) {
+            instructions.clear()
+            functions.clear()
+            isLoading = true
+            lastLoadedMapKey = mapKey
+        }
         
         try {
             val (finalLines, finalFunctions) = withContext(Dispatchers.Default) {
                 val client = AppContainer.clientAdapter.client
                 val allLines = mutableListOf<DisasmLine>()
                 
-                // Limit the number of regions we load at once
-                val limitedTargets = if (currentTargets.size > 20) {
-                    val jumpAddr = currentJumpAddress
-                    if (jumpAddr != null) {
-                        val prioritized = currentTargets.filter { jumpAddr >= it.start && jumpAddr < it.end }
-                        (prioritized + currentTargets.filter { it !in prioritized }).take(20)
+                for (map in currentTargets) {
+                    if (map.localData != null && map.subRanges.isNotEmpty()) {
+                        // Parallel segment disassembly for local files
+                        val segmentResults = map.subRanges.map { seg ->
+                            async {
+                                val segData = seg.localData ?: return@async emptyList<DisasmLine>()
+                                val syncAddrs = (AppContainer.discoveredFunctions.toSet() + AppContainer.symbolNames.keys.toSet() + AppContainer.discoveredJumpTargets.toSet())
+                                val segInstrs = com.osr.ps5debugger.util.LocalDisassembler.disassemble(segData, seg.start, syncAddrs)
+                                
+                                segInstrs.map { instr ->
+                                    val offset = (instr.addr - seg.start).toInt()
+                                    val instrBytes = if (offset >= 0 && offset + instr.length <= segData.size) {
+                                        segData.copyOfRange(offset, offset + instr.length)
+                                    } else ByteArray(0)
+                                    val symbolName = AppContainer.symbolNames[instr.addr]
+                                    DisasmLine(instr, instrBytes, seg, symbolName)
+                                }
+                            }
+                        }.awaitAll().flatten()
+                        allLines.addAll(segmentResults)
                     } else {
-                        currentTargets.take(20)
-                    }
-                } else {
-                    currentTargets
-                }
+                        // Standard initial load for live memory (don't load everything, it's too much)
+                        val startAddr = if (currentJumpAddress != null && currentJumpAddress!! >= map.start && currentJumpAddress!! < map.end) {
+                            val parentFunc = AppContainer.discoveredFunctions
+                                .filter { it <= currentJumpAddress!! && it >= map.start }
+                                .maxOrNull()
+                            parentFunc ?: currentJumpAddress!!
+                        } else {
+                            AppContainer.getDisassemblyStartForMap(map)
+                        }
+                        
+                        val len = minOf(262144L, map.end - startAddr).toInt() // Load 256KB
+                        val rawBytes = try {
+                            if (map.localData != null) {
+                                val offset = (startAddr - map.start).toInt()
+                                map.localData.copyOfRange(offset, offset + len)
+                            } else {
+                                client.readMemory(activeProcess!!.pid, startAddr, len)
+                            }
+                        } catch (_: Exception) {
+                            ByteArray(0)
+                        }
 
-                for (map in limitedTargets) {
-                    val startAddr = if (currentJumpAddress != null && currentJumpAddress!! >= map.start && currentJumpAddress!! < map.end) {
-                        val parentFunc = AppContainer.discoveredFunctions
-                            .filter { it <= currentJumpAddress!! && it >= map.start }
-                            .maxOrNull()
-                        parentFunc ?: currentJumpAddress!!
-                    } else {
-                        map.start
-                    }
-                    
-                    val len = minOf(65536L, map.end - startAddr).toInt()
-                    if (len > 0) {
                         val rawInstrs = try {
-                            client.disassembleRegion(pid, startAddr, len, 2000)
+                            val syncAddrs = (AppContainer.discoveredFunctions.toSet() + AppContainer.symbolNames.keys.toSet() + AppContainer.discoveredJumpTargets.toSet())
+                            if (map.localData != null) {
+                                com.osr.ps5debugger.util.LocalDisassembler.disassemble(rawBytes, startAddr, syncAddrs)
+                            } else {
+                                client.disassembleRegion(activeProcess!!.pid, startAddr, len, 4000)
+                            }
                         } catch (e: Exception) {
                             emptyList()
                         }
                         
                         if (rawInstrs.isNotEmpty()) {
-                            val rawBytes = try {
-                                client.readMemory(pid, startAddr, len)
-                            } catch (_: Exception) {
-                                ByteArray(0)
-                            }
-                            
                             val lines = rawInstrs.map { instr ->
                                 val offset = (instr.addr - startAddr).toInt()
                                 val instrBytes = if (offset >= 0 && offset + instr.length <= rawBytes.size) {
@@ -203,74 +252,77 @@ class MemoryViewerState(
                                 } else {
                                     ByteArray(0)
                                 }
-                                DisasmLine(instr, instrBytes, map)
+                                val symbolName = AppContainer.symbolNames[instr.addr]
+                                val lineRegion = map.subRanges.firstOrNull { instr.addr >= it.start && instr.addr < it.end } ?: map
+                                DisasmLine(instr, instrBytes, lineRegion, symbolName)
                             }
                             allLines.addAll(lines)
-
-                            // Call Target Discovery
-                            val loadedAddresses = allLines.map { it.instr.addr }.toSet()
-                            val callTargets = rawInstrs
-                                .filter { it.isCall && it.ripRelTarget != 0L && !loadedAddresses.contains(it.ripRelTarget) }
-                                .map { it.ripRelTarget }
-                                .distinct()
-                                .take(5)
-
-                            for (target in callTargets) {
-                                try {
-                                    val subInstrs = client.disassembleRegion(pid, target, 4096, 200)
-                                    if (subInstrs.isNotEmpty()) {
-                                        val subBytes = try { client.readMemory(pid, target, 1024) } catch(_: Exception) { ByteArray(0) }
-                                        val targetMap = currentTargets.firstOrNull { target >= it.start && target < it.end }
-                                        val subLines = subInstrs.map { instr ->
-                                            val offset = (instr.addr - target).toInt()
-                                            val instrBytes = if (offset >= 0 && offset + instr.length <= subBytes.size) {
-                                                subBytes.copyOfRange(offset, offset + instr.length)
-                                            } else ByteArray(0)
-                                            DisasmLine(instr, instrBytes, targetMap)
-                                        }
-                                        allLines.addAll(subLines)
-                                    }
-                                } catch (_: Exception) {}
-                            }
                         }
                     }
                 }
                 
                 val lines = allLines.distinctBy { it.instr.addr }.sortedBy { it.instr.addr }
-                
                 val extractedFunctions = mutableListOf<Long>()
                 if (lines.isNotEmpty()) {
-                    val firstAddr = lines.first().instr.addr
-                    val isMapStart = limitedTargets.any { firstAddr == it.start }
-                    val isKnownFunc = AppContainer.discoveredFunctions.contains(firstAddr)
-                    val isKnownLoc = AppContainer.discoveredJumpTargets.contains(firstAddr)
-                    
-                    if (isMapStart || isKnownFunc || !isKnownLoc) {
-                        extractedFunctions.add(firstAddr)
-                    }
-                    
+                    extractedFunctions.add(lines.first().instr.addr)
                     for (i in 0 until lines.size - 1) {
-                        if (lines[i].instr.isRet) {
-                            extractedFunctions.add(lines[i+1].instr.addr)
+                        if (lines[i].instr.isRet) extractedFunctions.add(lines[i+1].instr.addr)
+                    }
+                }
+                Pair(lines, extractedFunctions.distinct().sorted())
+            }
+
+            withContext(Dispatchers.Main) {
+                instructions.clear()
+                instructions.addAll(finalLines)
+                functions.clear()
+                functions.addAll(finalFunctions)
+                val mergedFuncs = (AppContainer.discoveredFunctions + finalFunctions).distinct().sortedBy { it.toULong() }
+                AppContainer.discoveredFunctions.clear()
+                AppContainer.discoveredFunctions.addAll(mergedFuncs)
+            }
+            updateMetadata()
+            scope.launch { fetchXrefs(finalLines) }
+        } catch (e: Exception) {
+            // ignore
+        } finally {
+            withContext(Dispatchers.Main) {
+                isLoading = false
+            }
+        }
+    }
+
+    private suspend fun fetchXrefs(lines: List<DisasmLine>) = withContext(Dispatchers.Default) {
+        val activeProcess = AppContainer.debuggerUseCase.activeProcess.value ?: return@withContext
+        val isConnected = AppContainer.debuggerUseCase.isConnected.value
+        if (!isConnected) return@withContext
+        
+        val pid = activeProcess.pid
+        val client = AppContainer.clientAdapter.client
+        val scanMap = activeMap ?: activeMaps.firstOrNull() ?: return@withContext
+        
+        val scanStart = scanMap.start
+        val scanLen = (scanMap.end - scanMap.start).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        
+        // Only fetch for function starts or significant labels to save time
+        val targets = lines.filter { AppContainer.symbolNames.containsKey(it.instr.addr) || AppContainer.discoveredFunctions.contains(it.instr.addr) }
+            .map { it.instr.addr }
+            .distinct()
+            .take(50) // Limit per batch
+
+        for (target in targets) {
+            try {
+                val refs = client.findXrefs(pid, scanStart, scanLen, target)
+                if (refs.isNotEmpty()) {
+                    withContext(Dispatchers.Main) {
+                        val idx = instructions.indexOfFirst { it.instr.addr == target }
+                        if (idx != -1) {
+                            val old = instructions[idx]
+                            instructions[idx] = old.copy(xrefs = refs)
                         }
                     }
                 }
-                val finalFuncs = extractedFunctions.distinct().sorted()
-                Pair(lines, finalFuncs)
-            }
-
-            instructions.clear()
-            instructions.addAll(finalLines)
-            functions.clear()
-            functions.addAll(finalFunctions)
-            val mergedFuncs = (AppContainer.discoveredFunctions + finalFunctions).distinct().sortedBy { it.toULong() }
-            AppContainer.discoveredFunctions.clear()
-            AppContainer.discoveredFunctions.addAll(mergedFuncs)
-            updateMetadata()
-        } catch (e: Exception) {
-            AppContainer.debuggerUseCase.log("DISASM", "Initial load failed: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
-        } finally {
-            isLoading = false
+            } catch (_: Exception) {}
         }
     }
 }
@@ -286,14 +338,18 @@ fun rememberMemoryViewerState(
     selectionEndParam: Long?,
     onSelectionChanged: ((Long?, Long?) -> Unit)?
 ): MemoryViewerState {
-    val state = remember(activeMap, activeMaps.toList()) {
-        MemoryViewerState(activeMap, activeMaps, jumpToAddress, viewModeParam, onViewModeChanged, selectionStartParam, selectionEndParam, onSelectionChanged)
+    val activeMapsSnapshot = activeMaps.toList()
+    val scope = rememberCoroutineScope()
+
+    val state = remember(activeMap, activeMapsSnapshot) {
+        MemoryViewerState(scope, activeMap, activeMaps, jumpToAddress, viewModeParam, onViewModeChanged, selectionStartParam, selectionEndParam, onSelectionChanged)
     }
-    
-    SideEffect {
+
+    // Sync mutable state only when upstream inputs change, not on every recomposition.
+    LaunchedEffect(activeMap, activeMapsSnapshot, jumpToAddress, viewModeParam, selectionStartParam, selectionEndParam) {
         state.activeMap = activeMap
         state.activeMaps.clear()
-        state.activeMaps.addAll(activeMaps)
+        state.activeMaps.addAll(activeMapsSnapshot)
         state.jumpToAddress = jumpToAddress
         state.viewModeParam = viewModeParam
         state.onViewModeChanged = onViewModeChanged
@@ -310,8 +366,15 @@ fun rememberMemoryViewerState(
 
     val isConnected by AppContainer.debuggerUseCase.isConnected.collectAsState()
     val activeProcess by AppContainer.debuggerUseCase.activeProcess.collectAsState()
-    LaunchedEffect(state.activeMap, state.activeMaps.size, state.currentJumpAddress, isConnected, activeProcess) {
-        if ((state.activeMap != null || state.activeMaps.isNotEmpty()) && isConnected && activeProcess != null) {
+    val selectedMapsSnapshot = state.activeMaps.toList()
+    LaunchedEffect(state.activeMap, selectedMapsSnapshot, state.currentJumpAddress, isConnected, activeProcess) {
+        val allMaps = (listOfNotNull(state.activeMap) + selectedMapsSnapshot).distinctBy { it.start }
+        if (allMaps.isEmpty()) return@LaunchedEffect
+
+        val hasLocal = allMaps.any { it.localData != null }
+        val hasRemote = allMaps.any { it.localData == null }
+
+        if (hasLocal || (hasRemote && isConnected && activeProcess != null)) {
             state.loadInitialInstructions()
         }
     }

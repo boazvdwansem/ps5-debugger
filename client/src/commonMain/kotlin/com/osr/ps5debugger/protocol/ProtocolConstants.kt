@@ -96,6 +96,7 @@ object ProtocolConstants {
     const val CMD_CONSOLE_NOTIFY = 0xBDDD0004.toInt()
     const val CMD_CONSOLE_INFO = 0xBDDD0005.toInt()
     const val CMD_CONSOLE_FOREGROUND_APP = 0xBDDD0006.toInt()
+    const val CMD_CONSOLE_PULL_FILE = 0xBDDD0007.toInt()
 
     // Kernel
     const val CMD_KERN_BASE = 0xBDCC0001.toInt()

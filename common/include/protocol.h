@@ -424,8 +424,8 @@ struct disasm_instr_entry {
     uint8_t  mem_base_reg;
     uint8_t  mem_index_reg;
     uint8_t  mem_scale;
-    uint8_t  mnemonic_lo;
-    uint16_t pad;
+    uint16_t mnemonic;
+    uint8_t  reserved;
 } __attribute__((packed));
 #define DISASM_INSTR_ENTRY_SIZE 32
 

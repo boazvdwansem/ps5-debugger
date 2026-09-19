@@ -94,6 +94,10 @@ class MainActivity : ComponentActivity() {
                 loadLauncher.launch(arrayOf("application/json", "application/octet-stream", "*/*"))
             }
 
+            override fun loadEboot(onResult: (ByteArray?, String?) -> Unit) {
+                onResult(null, null)
+            }
+
             override fun pickDirectory(onResult: (String?) -> Unit) {
                 dirCallback = onResult
                 dirLauncher.launch(null)

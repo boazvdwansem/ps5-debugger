@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+  <!-- Left plug body & cord -->
+  <path d="M2 12h4m2-4v8m0-6h3a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H8" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <!-- Disconnect slash / break spark -->
+  <line x1="14" y1="4" x2="16" y2="8" stroke="white" stroke-width="2" stroke-linecap="round"/>
+  <line x1="14" y1="16" x2="16" y2="20" stroke="white" stroke-width="2" stroke-linecap="round"/>
+  <!-- Right socket -->
+  <path d="M19 8v8m3-4h-3" stroke="white" stroke-width="2" stroke-linecap="round"/>
+</svg>

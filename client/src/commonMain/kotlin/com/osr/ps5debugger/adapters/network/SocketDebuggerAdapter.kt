@@ -19,7 +19,7 @@ class SocketDebuggerAdapter(
     private val debugChannel = com.osr.ps5debugger.network.Ps5DebugChannel(scope)
     private val klogForwarder = com.osr.ps5debugger.network.Ps5KlogForwarder(scope)
 
-    override val isConnected: Boolean get() = connection.isConnected
+    override val isConnected: Boolean get() = if (com.osr.ps5debugger.di.AppContainer.debugMockEnabled) true else connection.isConnected
     override val debugEvents: SharedFlow<Ps5DebugEvent> get() = debugChannel.events
     override val logLines: SharedFlow<String> get() = klogForwarder.logLines
 
@@ -69,8 +69,20 @@ class SocketDebuggerAdapter(
         return client.getProcessInfo(pid)
     }
 
+    override suspend fun getForegroundApp(): com.osr.ps5debugger.protocol.Ps5ForegroundApp {
+        return client.getForegroundApp()
+    }
+
+    override suspend fun pullFile(path: String): ByteArray? {
+        return client.pullFile(path)
+    }
+
     override suspend fun readMemory(pid: Int, address: Long, length: Int): ByteArray {
         return client.readMemory(pid, address, length)
+    }
+
+    override suspend fun uploadElfRpc(pid: Int, elfBytes: ByteArray): Long? {
+        return client.uploadElfRpc(pid, elfBytes)
     }
 
     override suspend fun writeMemory(pid: Int, address: Long, data: ByteArray): Boolean {

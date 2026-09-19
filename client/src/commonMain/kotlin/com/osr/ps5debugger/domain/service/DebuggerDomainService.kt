@@ -4,6 +4,7 @@ import com.osr.ps5debugger.domain.model.Process
 import com.osr.ps5debugger.domain.model.MemoryRange
 import com.osr.ps5debugger.domain.model.LogEntry
 import com.osr.ps5debugger.domain.model.WatchItem
+import com.osr.ps5debugger.domain.service.managers.CheatManager
 import com.osr.ps5debugger.domain.service.managers.LogManager
 import com.osr.ps5debugger.domain.service.managers.ProcessManager
 import com.osr.ps5debugger.domain.service.managers.WatchlistManager
@@ -17,7 +18,8 @@ import kotlinx.coroutines.flow.*
 
 class DebuggerDomainService(
     private val clientPort: DebuggerClientPort,
-    private val logPort: LogStoragePort
+    private val logPort: LogStoragePort,
+    private val cheatStorage: com.osr.ps5debugger.ports.outbound.CheatStoragePort
 ) : DebuggerUseCase {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -25,12 +27,26 @@ class DebuggerDomainService(
     private val logManager = LogManager(logPort)
     private val watchlistManager = WatchlistManager(clientPort, scope, logManager)
     private val processManager = ProcessManager(clientPort, logManager)
+    private val cheatManager = CheatManager(clientPort, scope, logManager, cheatStorage)
+
+    init {
+        scope.launch {
+            processManager.activeProcessInfo.collect { info ->
+                if (info != null) {
+                    cheatManager.updateGameName(info.titleId, info.name)
+                }
+            }
+        }
+    }
 
     private val _isConnected = MutableStateFlow(false)
     override val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
 
     private val _isAttached = MutableStateFlow(false)
     override val isAttached: StateFlow<Boolean> = _isAttached.asStateFlow()
+
+    private val _isProcessStopped = MutableStateFlow(false)
+    override val isProcessStopped: StateFlow<Boolean> = _isProcessStopped.asStateFlow()
 
     private val _threadList = MutableStateFlow<List<Int>>(emptyList())
     override val threadList: StateFlow<List<Int>> = _threadList.asStateFlow()
@@ -54,6 +70,7 @@ class DebuggerDomainService(
     override val logs: StateFlow<List<LogEntry>> get() = logManager.logs
     override val watchlist: StateFlow<List<WatchItem>> get() = watchlistManager.watchlist
     override val vmMaps: StateFlow<List<MemoryRange>> get() = processManager.vmMaps
+    override val gameCheatProfiles: StateFlow<List<com.osr.ps5debugger.domain.model.GameCheatProfile>> get() = cheatManager.gameProfiles
 
     private var lastConnectedIp: String? = null
 
@@ -101,6 +118,8 @@ class DebuggerDomainService(
                     clientPort.startDebugChannel()
                 } else {
                     log("SYSTEM", "Disconnected from PS5 target", LogEntry.Level.WARN)
+                    _isAttached.value = false
+                    _isProcessStopped.value = false
                     clientPort.stopDebugChannel()
                     clientPort.stopKlogForwarder()
                     watchlistManager.clearFrozen()
@@ -119,6 +138,10 @@ class DebuggerDomainService(
         // Forward debug channel events
         scope.launch {
             clientPort.debugEvents.collect { event ->
+                _isProcessStopped.value = true
+                _selectedLwpid.value = event.lwpid
+                _selectedRegs.value = event.regs
+                _selectedDbRegs.value = event.dbregs
                 log("DEBUG", "Hit breakpoint/event on LWP ID ${event.lwpid} (thread: ${event.threadName}, rip: 0x${event.regs.rip.toString(16)})", LogEntry.Level.INFO)
             }
         }
@@ -126,6 +149,11 @@ class DebuggerDomainService(
 
     override fun setAttached(attached: Boolean) {
         _isAttached.value = attached
+        if (!attached) _isProcessStopped.value = false
+    }
+
+    override fun setProcessStopped(stopped: Boolean) {
+        _isProcessStopped.value = stopped
     }
 
     override fun setThreadList(threads: List<Int>) {
@@ -195,7 +223,28 @@ class DebuggerDomainService(
         processManager.loadMemoryMaps(proc)
     }
 
+    override suspend fun pullFile(path: String): Result<ByteArray> = try {
+        val data = clientPort.pullFile(path)
+        if (data != null) Result.success(data) else Result.failure(Exception("File not found or empty: $path"))
+    } catch (e: Exception) {
+        Result.failure(e)
+    }
+
     override suspend fun readMemory(address: Long, length: Int): Result<ByteArray> {
+        // Check if the address is within any local map first
+        val localMap = vmMaps.value.firstOrNull { it.localData != null && address >= it.start && address < it.end }
+        if (localMap != null) {
+            val offset = (address - localMap.start).toInt()
+            val available = (localMap.end - address).toInt()
+            val readLen = minOf(length, available)
+            if (readLen <= 0) return Result.success(ByteArray(0))
+            return try {
+                Result.success(localMap.localData!!.copyOfRange(offset, offset + readLen))
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+
         val pid = processManager.activeProcess.value?.pid ?: return Result.failure(IllegalStateException("No active process selected"))
         return try {
             val data = clientPort.readMemory(pid, address, length)
@@ -206,6 +255,21 @@ class DebuggerDomainService(
     }
 
     override suspend fun writeMemory(address: Long, data: ByteArray): Result<Boolean> {
+        // Check if the address is within any local map first
+        val localMap = vmMaps.value.firstOrNull { it.localData != null && address >= it.start && address < it.end }
+        if (localMap != null) {
+            val offset = (address - localMap.start).toInt()
+            val available = (localMap.end - address).toInt()
+            val writeLen = minOf(data.size, available)
+            if (writeLen <= 0) return Result.success(true)
+            return try {
+                data.copyInto(localMap.localData!!, offset, 0, writeLen)
+                Result.success(true)
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+
         val pid = processManager.activeProcess.value?.pid ?: return Result.failure(IllegalStateException("No active process selected"))
         return try {
             val ok = clientPort.writeMemory(pid, address, data)
@@ -245,5 +309,41 @@ class DebuggerDomainService(
 
     override fun toggleFreezeWatchItem(item: WatchItem) {
         watchlistManager.toggleFreezeWatchItem(item) { addr, len -> readMemory(addr, len) }
+    }
+
+    override fun addCheat(titleId: String, version: String, cheat: com.osr.ps5debugger.domain.model.Cheat, gameName: String) {
+        cheatManager.addCheat(titleId, version, cheat, gameName)
+    }
+
+    override fun toggleCheat(titleId: String, version: String, cheatId: String) {
+        cheatManager.toggleCheat(titleId, version, cheatId)
+    }
+
+    override fun deleteCheat(titleId: String, version: String, cheatId: String) {
+        cheatManager.deleteCheat(titleId, version, cheatId)
+    }
+
+    override fun updateGameName(titleId: String, name: String) {
+        cheatManager.updateGameName(titleId, name)
+    }
+
+    override fun updateGameVersion(titleId: String, version: String) {
+        cheatManager.updateGameVersion(titleId, version)
+    }
+
+    override fun updateGamePlatform(titleId: String, platform: String) {
+        cheatManager.updateGamePlatform(titleId, platform)
+    }
+
+    override suspend fun applyCheat(pid: Int, cheat: com.osr.ps5debugger.domain.model.Cheat, newValue: String?) {
+        cheatManager.applyCheat(pid, cheat, newValue)
+    }
+
+    override fun saveCheats(onResult: (String) -> Unit) {
+        cheatManager.saveCheats(onResult)
+    }
+
+    override fun loadCheats(json: String) {
+        cheatManager.loadCheats(json)
     }
 }

@@ -4,8 +4,13 @@ import com.osr.ps5debugger.network.Ps5Connection
 import com.osr.ps5debugger.protocol.*
 import java.io.InputStream
 import java.io.OutputStream
+import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.json.Json
 
 class ProcessService(private val connection: Ps5Connection) {
+    private val pullMutex = kotlinx.coroutines.sync.Mutex()
 
     suspend fun getProcesses(): List<Ps5Process> = connection.execute { inStr, outStr ->
         connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_LIST)
@@ -80,5 +85,109 @@ class ProcessService(private val connection: Ps5Connection) {
         val name = buf.readString(40)
         val appVer = buf.readString(16)
         Ps5ForegroundApp(pid, titleId, contentId, name, appVer)
+    }
+
+    suspend fun pullFile(path: String): ByteArray? = pullMutex.withLock {
+        if (com.osr.ps5debugger.di.AppContainer.unsupportedCommands.contains(ProtocolConstants.CMD_CONSOLE_PULL_FILE)) return null
+        
+        return try {
+            connection.execute(readTimeoutMs = 4000) { inStr, outStr ->
+                val pathBytes = path.toByteArray(Charsets.UTF_8)
+                val payload = BinaryBuffer(pathBytes.size + 1).apply {
+                    writeBytes(pathBytes)
+                    writeByte(0) // NULL terminator
+                }.bytes
+                
+                connection.sendPacket(outStr, ProtocolConstants.CMD_CONSOLE_PULL_FILE, payload)
+                
+                val status = try { 
+                    connection.receiveStatus(inStr) 
+                } catch (e: Exception) {
+                    // Fatal error during pull, likely command unsupported
+                    com.osr.ps5debugger.di.AppContainer.unsupportedCommands.add(ProtocolConstants.CMD_CONSOLE_PULL_FILE)
+                    throw e
+                }
+
+                if (status != ProtocolConstants.CMD_SUCCESS) {
+                    return@execute null
+                }
+                
+                val sizeBytes = connection.readExactly(inStr, 8)
+                val size = BinaryBuffer(sizeBytes).readLong()
+                
+                if (size < 0 || size > 20 * 1024 * 1024) return@execute null
+                if (size == 0L) return@execute ByteArray(0)
+                
+                connection.readExactly(inStr, size.toInt())
+            }
+        } catch (e: Exception) {
+            // If it timed out or socket broke, don't try again this session
+            if (e !is kotlinx.coroutines.CancellationException) {
+                com.osr.ps5debugger.di.AppContainer.unsupportedCommands.add(ProtocolConstants.CMD_CONSOLE_PULL_FILE)
+            }
+            null
+        }
+    }
+
+    suspend fun uploadElfRpc(pid: Int, elfBytes: ByteArray): Long? = connection.execute { inStr, outStr ->
+        // Build header: pid (4) + length (4)
+        val payload = BinaryBuffer(8).apply {
+            writeInt(pid)
+            writeInt(elfBytes.size)
+        }.bytes
+        connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_ELF_RPC, payload)
+
+        // Server acknowledges and then expects the ELF bytes
+        val ready = connection.receiveStatus(inStr)
+        if (ready != ProtocolConstants.CMD_SUCCESS) return@execute null
+
+        // send ELF bytes
+        outStr.write(elfBytes)
+        outStr.flush()
+
+        // read response status + entry + optional JSON symbol payload
+        val status = connection.receiveStatus(inStr)
+        if (status != ProtocolConstants.CMD_SUCCESS) return@execute null
+
+        val respBytes = connection.readExactly(inStr, 8)
+        val entry = BinaryBuffer(respBytes).readLong()
+        if (entry != 0L) {
+            com.osr.ps5debugger.di.AppContainer.elfEntryPoint = entry
+        }
+
+        // read trailing JSON length (u32) then payload
+        val lenBytes = connection.readExactly(inStr, 4)
+        val jsonLen = BinaryBuffer(lenBytes).readInt()
+        if (jsonLen > 0) {
+            try {
+                // safety caps
+                val MAX_JSON = 5 * 1024 * 1024 // 5 MB
+                val MAX_SYMBOLS = 20000
+                if (jsonLen.toLong() > MAX_JSON) throw IllegalArgumentException("JSON payload too large")
+                val jsonBytes = connection.readExactly(inStr, jsonLen)
+                val jsonStr = String(jsonBytes, Charsets.UTF_8)
+
+                @Serializable
+                data class SymbolDTO(val addr: Long, val size: Long = 0L, val type: Int = 0, val name: String = "")
+
+                val symbols: List<SymbolDTO> = Json.decodeFromString(jsonStr)
+                var count = 0
+                for (s in symbols) {
+                    if (s.name.isEmpty()) continue
+                    com.osr.ps5debugger.di.AppContainer.renameSymbol(s.addr, s.name)
+                    if ((s.type and 0xF) == 2) {
+                        if (!com.osr.ps5debugger.di.AppContainer.discoveredFunctions.contains(s.addr)) {
+                            com.osr.ps5debugger.di.AppContainer.discoveredFunctions.add(s.addr)
+                        }
+                    }
+                    count++
+                    if (count >= MAX_SYMBOLS) break
+                }
+            } catch (e: Exception) {
+                // on parse failure, ignore and continue
+            }
+        }
+
+        entry
     }
 }

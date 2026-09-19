@@ -208,6 +208,20 @@ class Ps5Client(val connection: Ps5Connection) {
         return processService.getForegroundApp()
     }
 
+    suspend fun pullFile(path: String): ByteArray? {
+        if (com.osr.ps5debugger.di.AppContainer.debugMockEnabled) return null
+        return try {
+            processService.pullFile(path)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    suspend fun uploadElfRpc(pid: Int, elfBytes: ByteArray): Long? {
+        if (com.osr.ps5debugger.di.AppContainer.debugMockEnabled) return null
+        return processService.uploadElfRpc(pid, elfBytes)
+    }
+
     // Memory Delegation
     suspend fun readMemory(pid: Int, address: Long, length: Int): ByteArray {
         if (com.osr.ps5debugger.di.AppContainer.debugMockEnabled) {
@@ -253,6 +267,13 @@ class Ps5Client(val connection: Ps5Connection) {
     suspend fun changeProtection(pid: Int, address: Long, length: Int, prot: Int): Boolean {
         if (com.osr.ps5debugger.di.AppContainer.debugMockEnabled) return true
         return memoryService.changeProtection(pid, address, length, prot)
+    }
+
+    suspend fun findXrefs(pid: Int, scanAddress: Long, scanLength: Int, targetAddress: Long): List<Long> {
+        if (com.osr.ps5debugger.di.AppContainer.debugMockEnabled) {
+            return listOf(targetAddress + 0x10, targetAddress + 0x24, targetAddress - 0x1c)
+        }
+        return memoryService.findXrefs(pid, scanAddress, scanLength, targetAddress)
     }
 
     private data class MockInstrSpec(val len: Int, val mnemonicId: Int, val kind: Int, val ripRelTarget: Long, val memDisp: Long)
@@ -326,14 +347,14 @@ class Ps5Client(val connection: Ps5Connection) {
         return debuggerService.setWatchpoint(index, enabled, length, breakType, address)
     }
 
-    suspend fun stopProcess(): Boolean {
+    suspend fun stopProcess(pidFallback: Int? = null): Boolean {
         if (com.osr.ps5debugger.di.AppContainer.debugMockEnabled) return true
-        return debuggerService.stopProcess()
+        return debuggerService.stopProcess(pidFallback)
     }
 
-    suspend fun resumeProcess(): Boolean {
+    suspend fun resumeProcess(pidFallback: Int? = null): Boolean {
         if (com.osr.ps5debugger.di.AppContainer.debugMockEnabled) return true
-        return debuggerService.resumeProcess()
+        return debuggerService.resumeProcess(pidFallback)
     }
 
     suspend fun stepProcess(): Boolean {

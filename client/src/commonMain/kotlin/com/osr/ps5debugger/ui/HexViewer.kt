@@ -6,17 +6,12 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Undo
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
@@ -25,7 +20,6 @@ import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -35,7 +29,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.osr.ps5debugger.PS5ThemeColors
 import com.osr.ps5debugger.di.AppContainer
-import com.osr.ps5debugger.domain.model.MemoryRange
 import com.osr.ps5debugger.ui.components.Tooltip
 import com.osr.ps5debugger.ui.hex.*
 import com.osr.ps5debugger.util.copyToClipboard
@@ -46,23 +39,22 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun HexViewer(
-    activeMap: MemoryRange?,
-    activeMaps: List<MemoryRange> = emptyList(),
-    jumpToAddress: Long? = null,
+    state: HexState,
     modifier: Modifier = Modifier,
     showAddress: Boolean = true,
-    selectionStartParam: Long? = null,
-    selectionEndParam: Long? = null,
-    onSelectionChanged: ((Long?, Long?) -> Unit)? = null
+    columns: Int = 16
 ) {
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
-        val state = rememberHexState(activeMap, activeMaps, jumpToAddress, selectionStartParam, selectionEndParam, onSelectionChanged)
         val density = LocalDensity.current.density
         val isMobile = maxWidth < 600.dp
         val coroutineScope = rememberCoroutineScope()
 
-        LaunchedEffect(isMobile) {
-            state.bytesPerRow = if (isMobile) 8 else 16
+        LaunchedEffect(columns) {
+            if (state.bytesPerRow != columns) {
+                state.bytesPerRow = columns
+                state.memoryCache.clear()
+                state.updateScrollPosition(0L)
+            }
         }
 
         LaunchedEffect(maxHeight, density, state) {
@@ -70,44 +62,43 @@ fun HexViewer(
             state.visibleRowsCount = ((maxHeight - nonGridHeight) / 24.dp).toInt().coerceAtLeast(1)
         }
 
-        LaunchedEffect(Unit) {
-            val target = selectionStartParam
-            if (target != null) {
-                val targetRow = state.getRowForAddress(target)
-                state.updateScrollPosition(targetRow.coerceIn(0L, state.getMaxScrollPosition()))
-            }
-        }
-
         LaunchedEffect(state.scrollPosition, state.bytesPerRow, state.startAddress, state.endAddress, state.visibleRowsCount) {
             state.loadMemory()
         }
 
-        LaunchedEffect(activeMap, activeMaps.toList()) {
-            val targets = if (activeMaps.isNotEmpty()) activeMaps.toList() else listOfNotNull(activeMap)
-            if (targets.isNotEmpty()) {
-                val minStart = targets.minOf { it.start }
-                val maxEnd = targets.maxOf { it.end }
-                state.startAddress = minStart
-                state.endAddress = maxEnd
-            } else {
-                state.startAddress = 0L
-                state.endAddress = 0L
-                state.updateScrollPosition(0L)
-                state.onSelectionChanged?.invoke(null, null)
+        // NAVIGATION SYNC
+        val currentJumpAddr = state.currentJumpAddress
+        var lastJumpAddr by remember { mutableStateOf<Long?>(null) }
+        LaunchedEffect(currentJumpAddr) {
+            if (currentJumpAddr != null && currentJumpAddr != lastJumpAddr) {
+                lastJumpAddr = currentJumpAddr
+                val targetRow = state.getRowForAddress(currentJumpAddr)
+                state.updateScrollPosition(targetRow.coerceIn(0L, state.getMaxScrollPosition()))
+                state.onSelectionChanged?.invoke(currentJumpAddr, currentJumpAddr)
+                state.goToAddressText = currentJumpAddr.toString(16).uppercase()
             }
         }
 
-        var lastJumpAddress by remember { mutableStateOf<Long?>(null) }
-        LaunchedEffect(jumpToAddress) {
-            if (jumpToAddress != null && jumpToAddress != lastJumpAddress) {
-                lastJumpAddress = jumpToAddress
-                val targets = if (activeMaps.isNotEmpty()) activeMaps.toList() else listOfNotNull(activeMap)
-                if (targets.any { jumpToAddress >= it.start && jumpToAddress < it.end }) {
-                    val targetRow = state.getRowForAddress(jumpToAddress)
-                    state.updateScrollPosition(targetRow.coerceIn(0L, state.getMaxScrollPosition()))
-                    state.onSelectionChanged?.invoke(jumpToAddress, jumpToAddress)
-                    state.goToAddressText = jumpToAddress.toString(16).uppercase()
+        val isConnected by AppContainer.debuggerUseCase.isConnected.collectAsState()
+
+        // AUTO-POLLING LOOP
+        LaunchedEffect(state.refreshRateMs, isConnected, state.activeMap, state.activeMaps.size) {
+            if (state.refreshRateMs <= 0) return@LaunchedEffect
+            while (true) {
+                delay(state.refreshRateMs)
+                if (isConnected || (state.activeMap?.localData != null)) {
+                    state.loadMemory(forceRefresh = true)
                 }
+            }
+        }
+
+        // CHANGE HIGHLIGHT CLEANUP
+        LaunchedEffect(Unit) {
+            while (true) {
+                delay(1000)
+                val now = System.currentTimeMillis()
+                val toRemove = state.changedBytes.filter { now - it.value > 5000 }.keys
+                toRemove.forEach { state.changedBytes.remove(it) }
             }
         }
 
@@ -136,137 +127,34 @@ fun HexViewer(
         }
 
         Column(
-            modifier = modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = if (isMobile) 0.dp else 8.dp)
+            modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = if (isMobile) 0.dp else 8.dp)
                 .focusRequester(state.focusRequester).focusable()
                 .pointerInput(Unit) { detectTapGestures(onTap = { if (!isMobile) try { state.focusRequester.requestFocus() } catch (_: Exception) {} }) }
                 .onKeyEvent(state::handleKeyEvent)
         ) {
-            HexToolbar(state, isMobile)
-            
-            if (activeMap == null && state.activeMaps.isEmpty()) {
-                Box(Modifier.fillMaxSize().weight(1f), contentAlignment = Alignment.Center) {
-                    Text("Select a Process and Virtual Memory Map to view hex memory")
+            Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                if (state.activeMap == null && state.activeMaps.isEmpty()) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("Select a Process and Virtual Memory Map to view hex memory")
+                    }
+                } else {
+                    HexGrid(state, isMobile, showAddress, modifier = Modifier.fillMaxWidth().fillMaxHeight())
                 }
-            } else {
-                HexGrid(state, isMobile, showAddress, modifier = Modifier.fillMaxWidth().weight(1f))
-            }
-        }
-    }
-}
 
-@Composable
-private fun HexToolbar(state: HexState, isMobile: Boolean) {
-    if (isMobile) {
-        Column(Modifier.fillMaxWidth().padding(bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(Modifier.fillMaxWidth().height(IntrinsicSize.Max), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = state.goToAddressText,
-                    onValueChange = { state.goToAddressText = it },
-                    label = { Text("Go to Address (Hex)") },
-                    modifier = Modifier.weight(1f),
-                    textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 13.sp),
-                    singleLine = true
-                )
-                Button(
-                    onClick = {
-                        val addr = state.goToAddressText.trim().toLongOrNull(16)
-                        if (addr != null) {
-                            val targets = if (state.activeMaps.isNotEmpty()) state.activeMaps.toList() else listOfNotNull(state.activeMap)
-                            if (targets.any { addr >= it.start && addr < it.end }) {
-                                val rowIdx = state.getRowForAddress(addr)
-                                state.updateScrollPosition(rowIdx.coerceIn(0L, state.getMaxScrollPosition()))
-                            }
+                if (state.isLoading && state.memoryCache.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.3f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            CircularProgressIndicator(color = PS5ThemeColors.AccentCyan)
+                            Text("Loading Memory...", color = PS5ThemeColors.AccentCyan, fontSize = 14.sp, fontWeight = FontWeight.Bold)
                         }
-                    },
-                    modifier = Modifier.height(40.dp)
-                ) { Text("Go") }
-            }
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    EditActions(state)
-                }
-                ColumnChips(state)
-            }
-        }
-    } else {
-        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Max).padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(
-                value = state.goToAddressText,
-                onValueChange = { state.goToAddressText = it },
-                label = { Text("Go to Address (Hex)") },
-                modifier = Modifier.width(200.dp),
-                textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 13.sp),
-                singleLine = true
-            )
-            Button(onClick = {
-                val addr = state.goToAddressText.trim().toLongOrNull(16)
-                if (addr != null) {
-                    val targets = if (state.activeMaps.isNotEmpty()) state.activeMaps.toList() else listOfNotNull(state.activeMap)
-                    if (targets.any { addr >= it.start && addr < it.end }) {
-                        val rowIdx = state.getRowForAddress(addr)
-                        state.updateScrollPosition(rowIdx.coerceIn(0L, state.getMaxScrollPosition()))
                     }
                 }
-            }) { Text("Go") }
-            Spacer(Modifier.weight(1f))
-            EditActions(state)
-            VerticalDivider(modifier = Modifier.height(32.dp), color = PS5ThemeColors.BorderColor)
-            Text("Columns:")
-            ColumnChips(state)
-        }
-    }
-}
-
-@Composable
-private fun EditActions(state: HexState) {
-    val coroutineScope = rememberCoroutineScope()
-    val pid = AppContainer.debuggerUseCase.activeProcess.value?.pid
-    val client = AppContainer.clientAdapter.client
-
-    Tooltip(if (state.isEditingUnlocked) "Lock Editing" else "Unlock Editing") {
-        IconButton(onClick = { state.isEditingUnlocked = !state.isEditingUnlocked }) {
-            Icon(if (state.isEditingUnlocked) Icons.Default.LockOpen else Icons.Default.Lock, null)
-        }
-    }
-    Tooltip("Undo changes") {
-        IconButton(onClick = { state.pendingEdits.clear() }, enabled = state.pendingEdits.isNotEmpty()) {
-            Icon(Icons.AutoMirrored.Filled.Undo, null)
-        }
-    }
-    Tooltip("Inject overrides to memory") {
-        Button(
-            onClick = {
-                if (pid != null) {
-                    coroutineScope.launch {
-                        state.pendingEdits.forEach { (addr, b) ->
-                            client.writeMemory(pid, addr, byteArrayOf(b))
-                        }
-                        state.pendingEdits.clear()
-                        state.loadMemory()
-                    }
-                }
-            },
-            enabled = state.isEditingUnlocked && state.pendingEdits.isNotEmpty()
-        ) { Text("Inject (${state.pendingEdits.size})") }
-    }
-}
-
-@Composable
-private fun ColumnChips(state: HexState) {
-    Row {
-        listOf(8, 16, 32).forEach { cols ->
-            FilterChip(
-                selected = state.bytesPerRow == cols,
-                onClick = {
-                    state.bytesPerRow = cols
-                    state.memoryCache.clear()
-                    state.onSelectionChanged?.invoke(null, null)
-                    state.pendingEdits.clear()
-                    state.updateScrollPosition(0L)
-                },
-                label = { Text("$cols") },
-                modifier = Modifier.padding(horizontal = 2.dp)
-            )
+            }
         }
     }
 }
@@ -454,24 +342,22 @@ private fun HexGridBody(state: HexState, isMobile: Boolean, showAddress: Boolean
                 }
             }
         ) {
-            val totalRows = if (state.activeMaps.isNotEmpty()) {
-                state.activeMaps.sumOf { (it.end - it.start + state.bytesPerRow - 1) / state.bytesPerRow }
-            } else if (state.activeMap != null) {
+            val totalRows = if (state.activeMap != null) {
                 (state.activeMap!!.end - state.activeMap!!.start + state.bytesPerRow - 1) / state.bytesPerRow
+            } else if (state.activeMaps.isNotEmpty()) {
+                state.activeMaps.sumOf { (it.end - it.start + state.bytesPerRow - 1) / state.bytesPerRow }
             } else 0L
 
             for (rowIndex in 0 until state.visibleRowsCount) {
                 if (state.scrollPosition + rowIndex >= totalRows) break
                 
                 val rowAddress = state.getAddressForRow(state.scrollPosition + rowIndex)
-                val targets = if (state.activeMaps.isNotEmpty()) state.activeMaps.toList() else listOfNotNull(state.activeMap)
+                val targets = if (state.activeMap != null) listOf(state.activeMap!!) else state.activeMaps.toList()
                 val currentMap = targets.firstOrNull { rowAddress >= it.start && rowAddress < it.end }
                 
-                // For cross-map row, we might need a special logic or just use prev row addr
                 val prevRowAddress = if (state.scrollPosition + rowIndex > 0) state.getAddressForRow(state.scrollPosition + rowIndex - 1) else -1L
                 val prevMap = if (prevRowAddress != -1L) targets.firstOrNull { prevRowAddress >= it.start && prevRowAddress < it.end } else null
                     
-                // Render separator if this row starts a new map or transition
                 val isNewRegion = currentMap != null && (rowIndex == 0 || prevMap == null || currentMap.start != prevMap.start)
                 
                 if (isNewRegion) {
@@ -499,12 +385,26 @@ private fun HexGridBody(state: HexState, isMobile: Boolean, showAddress: Boolean
                 val cachedPage = state.memoryCache[pageStart]
                 val offsetInPage = (rowAddress - pageStart).toInt()
                 
-                val stableRowBytes = remember(rowAddress, cachedPage) {
+                val stableRowBytes = remember(rowAddress, cachedPage, state.activeMap, state.activeMaps.size) {
                     val bytes = ByteArray(state.bytesPerRow)
                     if (cachedPage != null && offsetInPage >= 0 && offsetInPage < cachedPage.size) {
                         val toCopy = minOf(state.bytesPerRow, cachedPage.size - offsetInPage)
                         if (toCopy > 0) {
                             System.arraycopy(cachedPage, offsetInPage, bytes, 0, toCopy)
+                        }
+                    } else {
+                        // Fast path fallback for local files during rendering
+                        val targets = if (state.activeMap != null) listOf(state.activeMap!!) else state.activeMaps.toList()
+                        val localMap = targets.firstOrNull { it.localData != null && rowAddress >= it.start && rowAddress < it.end }
+                        if (localMap != null) {
+                            val localOffset = (rowAddress - localMap.start).toInt()
+                            val data = localMap.localData
+                            if (data != null && localOffset >= 0 && localOffset < data.size) {
+                                val toCopy = minOf(state.bytesPerRow, data.size - localOffset)
+                                if (toCopy > 0) {
+                                    System.arraycopy(data, localOffset, bytes, 0, toCopy)
+                                }
+                            }
                         }
                     }
                     StableRowBytes(bytes)
@@ -518,6 +418,7 @@ private fun HexGridBody(state: HexState, isMobile: Boolean, showAddress: Boolean
                     selectionMax = if (state.selectionStart != null && state.selectionEnd != null) maxOf(state.selectionStart!!, state.selectionEnd!!) else null,
                     cursorAddress = state.selectionEnd,
                     pendingEdits = state.pendingEdits,
+                    changedBytes = state.changedBytes,
                     hexInputBuffer = state.hexInputBuffer,
                     isMobile = isMobile,
                     showAddress = showAddress
@@ -536,10 +437,10 @@ private fun BoxScope.HexScrollbar(state: HexState, modifier: Modifier = Modifier
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val trackHeight = maxHeight
             
-            val totalRows = if (state.activeMaps.isNotEmpty()) {
-                state.activeMaps.sumOf { (it.end - it.start + state.bytesPerRow - 1) / state.bytesPerRow }
-            } else if (state.activeMap != null) {
+            val totalRows = if (state.activeMap != null) {
                 (state.activeMap!!.end - state.activeMap!!.start + state.bytesPerRow - 1) / state.bytesPerRow
+            } else if (state.activeMaps.isNotEmpty()) {
+                state.activeMaps.sumOf { (it.end - it.start + state.bytesPerRow - 1) / state.bytesPerRow }
             } else 0L
 
             // Calculate thumbHeight carefully using Long math to prevent float overflow/infinity
@@ -609,6 +510,47 @@ private fun HexContextMenu(state: HexState) {
                 copyToClipboard(state.getSelectedAsciiText())
                 state.showContextMenu = false
             })
+            DropdownMenuItem(
+                text = { Text("Paste Hex") },
+                onClick = {
+                    val clipboardText = com.osr.ps5debugger.util.getFromClipboard()
+                    if (clipboardText.isNotEmpty()) {
+                        state.pasteHex(clipboardText, state.contextMenuAddr)
+                    }
+                    state.showContextMenu = false
+                },
+                enabled = state.isEditingUnlocked
+            )
+            DropdownMenuItem(
+                text = { Text("Add to Cheats", color = PS5ThemeColors.AccentCyan) },
+                onClick = {
+                    val procInfo = AppContainer.debuggerUseCase.activeProcessInfo.value
+                    val titleId = procInfo?.titleId ?: state.activeMap?.titleId ?: "Unknown"
+                    
+                    val start = if (state.selectionStart != null && state.selectionEnd != null) minOf(state.selectionStart!!, state.selectionEnd!!) else state.contextMenuAddr ?: 0L
+                    val end = if (state.selectionStart != null && state.selectionEnd != null) maxOf(state.selectionStart!!, state.selectionEnd!!) else start
+                    val len = (end - start + 1).toInt()
+                    
+                    val originalBytes = buildString {
+                        for (addr in start..end) {
+                            append("%02X".format(state.getByteAt(addr)))
+                        }
+                    }
+
+                    com.osr.ps5debugger.di.AppContainer.onCreateCheatRequested?.invoke(
+                        com.osr.ps5debugger.domain.model.Cheat(
+                            id = "", // Will be set by dialog
+                            name = "New Cheat",
+                            type = com.osr.ps5debugger.domain.model.CheatType.Toggle,
+                            address = start,
+                            hexOnValue = "",
+                            hexOffValue = originalBytes, // Put original value in OFF
+                            titleId = titleId
+                        )
+                    )
+                    state.showContextMenu = false
+                }
+            )
         }
     }
 }

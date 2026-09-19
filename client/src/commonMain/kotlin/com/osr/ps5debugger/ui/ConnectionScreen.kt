@@ -12,19 +12,24 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.osr.ps5debugger.network.Ps5Discovery
+import com.osr.ps5debugger.network.Ps5PayloadInjector
 import com.osr.ps5debugger.di.AppContainer
 import com.osr.ps5debugger.PS5ThemeColors
 import com.osr.ps5debugger.util.DefaultIpHelper
 import kotlinx.coroutines.launch
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Settings
+import com.osr.ps5debugger.ui.icons.PS5Icons
 
 @Composable
-fun ConnectionScreen(onSettingsClick: () -> Unit, modifier: Modifier = Modifier) {
+fun ConnectionScreen(
+    onSettingsClick: () -> Unit,
+    onLoadEboot: (() -> Unit)? = null,
+    modifier: Modifier = Modifier
+) {
     val coroutineScope = rememberCoroutineScope()
     var ipInput by remember { mutableStateOf(DefaultIpHelper.getDefaultIp() ?: "192.168.1.100") }
     var isConnecting by remember { mutableStateOf(false) }
     var isDiscovering by remember { mutableStateOf(false) }
+    var isInjecting by remember { mutableStateOf(false) }
     var statusMessage by remember { mutableStateOf("") }
     var statusColor by remember { mutableStateOf(PS5ThemeColors.TextMuted) }
 
@@ -113,7 +118,7 @@ fun ConnectionScreen(onSettingsClick: () -> Unit, modifier: Modifier = Modifier)
                                 }
                             }
                         },
-                        enabled = !isConnecting && !isDiscovering,
+                        enabled = !isConnecting && !isDiscovering && !isInjecting,
                         colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.AccentCyan),
                         modifier = Modifier.weight(1f)
                     ) {
@@ -138,11 +143,65 @@ fun ConnectionScreen(onSettingsClick: () -> Unit, modifier: Modifier = Modifier)
                                 isDiscovering = false
                             }
                         },
-                        enabled = !isConnecting && !isDiscovering,
+                        enabled = !isConnecting && !isDiscovering && !isInjecting,
                         colors = ButtonDefaults.filledTonalButtonColors(containerColor = PS5ThemeColors.SecondaryBg),
                         modifier = Modifier.weight(1.2f)
                     ) {
                         Text(if (isDiscovering) "Scanning..." else "Auto-Discover", color = PS5ThemeColors.TextMain)
+                    }
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        val targetIp = ipInput.trim()
+                        if (targetIp.isEmpty()) {
+                            statusMessage = "Please enter console IP address"
+                            statusColor = PS5ThemeColors.StatusRed
+                            return@OutlinedButton
+                        }
+                        coroutineScope.launch {
+                            isInjecting = true
+                            val payloadPort = DefaultIpHelper.getPayloadPort()
+                            statusMessage = "Injecting debug payload to $targetIp:$payloadPort..."
+                            statusColor = PS5ThemeColors.AccentCyan
+                            val result = Ps5PayloadInjector.injectPayload(targetIp, payloadPort)
+                            result.onSuccess { bytesSent ->
+                                val sizeKb = bytesSent / 1024
+                                statusMessage = "Payload injected successfully ($sizeKb KB sent to $targetIp:$payloadPort)"
+                                statusColor = PS5ThemeColors.StatusGreen
+                            }.onFailure { e ->
+                                statusMessage = "Injection failed: ${e.message ?: "Unknown error"}"
+                                statusColor = PS5ThemeColors.StatusRed
+                            }
+                            isInjecting = false
+                        }
+                    },
+                    enabled = !isConnecting && !isDiscovering && !isInjecting,
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = Color.Transparent,
+                        contentColor = PS5ThemeColors.AccentCyan
+                    ),
+                    border = BorderStroke(
+                        1.dp,
+                        if (!isConnecting && !isDiscovering && !isInjecting) PS5ThemeColors.AccentCyan.copy(alpha = 0.6f) else PS5ThemeColors.BorderColor
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = if (isInjecting) "Injecting..." else "Inject debug payload",
+                        color = if (!isConnecting && !isDiscovering && !isInjecting) PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                if (onLoadEboot != null) {
+                    FilledTonalButton(
+                        onClick = onLoadEboot,
+                        enabled = !isConnecting && !isDiscovering && !isInjecting,
+                        colors = ButtonDefaults.filledTonalButtonColors(containerColor = PS5ThemeColors.SecondaryBg),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Open Local eboot.bin / ELF", color = PS5ThemeColors.TextMain)
                     }
                 }
 
@@ -164,7 +223,7 @@ fun ConnectionScreen(onSettingsClick: () -> Unit, modifier: Modifier = Modifier)
                 .padding(16.dp)
         ) {
             Icon(
-                imageVector = Icons.Default.Settings,
+                imageVector = PS5Icons.Settings,
                 contentDescription = "Settings",
                 tint = PS5ThemeColors.TextMuted
             )

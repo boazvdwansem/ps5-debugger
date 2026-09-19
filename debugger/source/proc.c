@@ -92,7 +92,8 @@ static void disasm_fill_entry(struct disasm_instr_entry *out,
     memset(out, 0, sizeof(*out));
     out->addr = addr;
     out->length = insn->length;
-    out->mnemonic_lo = (uint8_t)(insn->mnemonic & 0xFF);
+    out->mnemonic = (uint16_t)insn->mnemonic;
+    out->reserved = 0;
 
     switch (insn->meta.category) {
         case ZYDIS_CATEGORY_CALL:      out->kind |= 0x01; break;
@@ -848,11 +849,267 @@ int proc_elf_rpc_handle(int fd, struct cmd_packet *packet) {
         return 1;
     }
 
+    /* Build a JSON array of symbols from the ELF's symtab/dynsym + reloc sections.
+     * Collect symbols into a temporary vector, supplement with relocation-based entries,
+     * then sort and infer sizes for zero-sized symbols by next-symbol distance.
+     * Format: [{"addr":<u64>,"size":<u64>,"type":<u8>,"name":"..."},...]
+     * If parsing fails, send [] to client.
+     */
+    char *json = NULL;
+    uint32_t json_len = 0;
+    typedef struct { uint64_t addr; uint64_t size; uint8_t type; char *name; } sym_t;
+    sym_t *symv = NULL; size_t symv_len = 0; size_t symv_cap = 0;
+    do {
+        if (ep->length < 0x40) break;
+        const unsigned char *eb = (const unsigned char *)elf;
+        uint64_t e_shoff = *(uint64_t *)(eb + 0x28);
+        uint16_t e_shentsize = *(uint16_t *)(eb + 0x3A);
+        uint16_t e_shnum = *(uint16_t *)(eb + 0x3C);
+        uint16_t e_shstrndx = *(uint16_t *)(eb + 0x3E);
+        if (e_shoff == 0 || e_shnum == 0 || e_shentsize == 0) break;
+        if (e_shoff + (uint64_t)e_shentsize * e_shnum > (uint64_t)ep->length) break;
+
+        const unsigned char *shdr_base = eb + e_shoff;
+        const char *shstr = NULL;
+        uint64_t shstr_off = 0;
+        if (e_shstrndx < e_shnum) {
+            const unsigned char *sh = shdr_base + (uint64_t)e_shstrndx * e_shentsize;
+            shstr_off = *(uint64_t *)(sh + 0x18);
+            if (shstr_off && shstr_off < (uint64_t)ep->length) shstr = (const char *)(eb + shstr_off);
+        }
+
+        /* Find symtab/dynsym sections and remember their section indices */
+        uint64_t sym_off = 0, sym_size = 0, sym_entsize = 0, sym_link = 0; int sym_idx = -1;
+        uint64_t dyn_off = 0, dyn_size = 0, dyn_entsize = 0, dyn_link = 0; int dyn_idx = -1;
+        for (uint16_t i = 0; i < e_shnum; i++) {
+            const unsigned char *sh = shdr_base + (uint64_t)i * e_shentsize;
+            uint32_t sh_type = *(uint32_t *)(sh + 0x4);
+            uint64_t sh_offset = *(uint64_t *)(sh + 0x18);
+            uint64_t sh_size = *(uint64_t *)(sh + 0x20);
+            uint64_t sh_link = *(uint32_t *)(sh + 0x28);
+            uint64_t sh_entsize = *(uint64_t *)(sh + 0x38);
+
+            if (sh_type == 2) { /* SHT_SYMTAB */
+                sym_off = sh_offset; sym_size = sh_size; sym_entsize = sh_entsize; sym_link = sh_link; sym_idx = i;
+            }
+            if (sh_type == 11) { /* SHT_DYNSYM */
+                dyn_off = sh_offset; dyn_size = sh_size; dyn_entsize = sh_entsize; dyn_link = sh_link; dyn_idx = i;
+            }
+        }
+
+        /* prefer dynsym then symtab */
+        uint64_t chosen_off = 0, chosen_size = 0, chosen_entsize = 0, chosen_link = 0; int chosen_idx = -1;
+        if (dyn_off && dyn_size && dyn_entsize) {
+            chosen_off = dyn_off; chosen_size = dyn_size; chosen_entsize = dyn_entsize; chosen_link = dyn_link; chosen_idx = dyn_idx;
+        } else if (sym_off && sym_size && sym_entsize) {
+            chosen_off = sym_off; chosen_size = sym_size; chosen_entsize = sym_entsize; chosen_link = sym_link; chosen_idx = sym_idx;
+        }
+        if (!chosen_off) break;
+        if (chosen_off + chosen_size > (uint64_t)ep->length) break;
+
+        /* resolve string table for chosen symtab (link index points to strtab section) */
+        const char *strtab = NULL;
+        uint64_t strtab_size = 0;
+        if (chosen_link < e_shnum) {
+            const unsigned char *shstrtab = shdr_base + (uint64_t)chosen_link * e_shentsize;
+            uint64_t stroff = *(uint64_t *)(shstrtab + 0x18);
+            uint64_t strsiz = *(uint64_t *)(shstrtab + 0x20);
+            if (stroff && stroff < (uint64_t)ep->length && stroff + strsiz <= (uint64_t)ep->length) {
+                strtab = (const char *)(eb + stroff);
+                strtab_size = strsiz;
+            }
+        }
+        if (!strtab) break;
+
+        /* collect symbols from chosen table */
+        uint64_t nsyms = chosen_entsize ? (chosen_size / chosen_entsize) : 0;
+        for (uint64_t i = 0; i < nsyms; i++) {
+            uint64_t off = chosen_off + i * chosen_entsize;
+            if (off + 24 > (uint64_t)ep->length) continue;
+            uint32_t st_name = *(uint32_t *)(eb + off + 0);
+            uint8_t st_info = *(uint8_t *)(eb + off + 4);
+            uint64_t st_value = *(uint64_t *)(eb + off + 8);
+            uint64_t st_size = *(uint64_t *)(eb + off + 16);
+            const char *name = (st_name < strtab_size) ? (strtab + st_name) : NULL;
+            if (!name || name[0] == '\0') continue;
+            if (st_value == 0) {
+                /* defer zero-valued symbols; may be resolved via relocations */
+                continue;
+            }
+            if (symv_len + 1 > symv_cap) {
+                size_t ncap = symv_cap ? symv_cap * 2 : 64;
+                symv = (sym_t *)realloc(symv, ncap * sizeof(sym_t));
+                symv_cap = ncap;
+            }
+            symv[symv_len].addr = st_value;
+            symv[symv_len].size = st_size;
+            symv[symv_len].type = st_info & 0xFF;
+            symv[symv_len].name = strdup(name);
+            symv_len++;
+        }
+
+        /* parse reloc sections to add referenced symbols (use their relocation r_offset as best-effort address)
+         * For each section with type SHT_RELA(4) or SHT_REL(9), resolve its linked symbol table and read entries.
+         */
+        for (uint16_t i = 0; i < e_shnum; i++) {
+            const unsigned char *sh = shdr_base + (uint64_t)i * e_shentsize;
+            uint32_t sh_type = *(uint32_t *)(sh + 0x4);
+            if (sh_type != 4 && sh_type != 9) continue; /* SHT_RELA or SHT_REL */
+            uint64_t rel_off = *(uint64_t *)(sh + 0x18);
+            uint64_t rel_size = *(uint64_t *)(sh + 0x20);
+            uint64_t rel_entsize = *(uint64_t *)(sh + 0x38);
+            uint32_t rel_link = *(uint32_t *)(sh + 0x28); /* symbol table index */
+            if (!rel_off || rel_off + rel_size > (uint64_t)ep->length) continue;
+            if (rel_entsize == 0) continue;
+            /* locate linked symbol table */
+            if (rel_link >= e_shnum) continue;
+            const unsigned char *symsh = shdr_base + (uint64_t)rel_link * e_shentsize;
+            uint32_t sym_sh_type = *(uint32_t *)(symsh + 0x4);
+            uint64_t sym_sh_off = *(uint64_t *)(symsh + 0x18);
+            uint64_t sym_sh_size = *(uint64_t *)(symsh + 0x20);
+            uint64_t sym_sh_entsize = *(uint64_t *)(symsh + 0x38);
+            uint32_t sym_sh_link = *(uint32_t *)(symsh + 0x28);
+            if (!sym_sh_off || sym_sh_off + sym_sh_size > (uint64_t)ep->length) continue;
+            /* resolve string table for this symbol table */
+            const char *local_strtab = NULL; uint64_t local_strtab_size = 0;
+            if (sym_sh_link < e_shnum) {
+                const unsigned char *sstr = shdr_base + (uint64_t)sym_sh_link * e_shentsize;
+                uint64_t sstroff = *(uint64_t *)(sstr + 0x18);
+                uint64_t sstrsiz = *(uint64_t *)(sstr + 0x20);
+                if (sstroff && sstroff < (uint64_t)ep->length && sstroff + sstrsiz <= (uint64_t)ep->length) {
+                    local_strtab = (const char *)(eb + sstroff);
+                    local_strtab_size = sstrsiz;
+                }
+            }
+            uint64_t nrels = rel_size / rel_entsize;
+            for (uint64_t j = 0; j < nrels; j++) {
+                uint64_t roff = rel_off + j * rel_entsize;
+                if (roff + rel_entsize > (uint64_t)ep->length) continue;
+                uint64_t r_offset = *(uint64_t *)(eb + roff + 0);
+                uint64_t r_info = *(uint64_t *)(eb + roff + 8);
+                uint32_t sym_index = (uint32_t)(r_info >> 32);
+                /* read symbol from sym table */
+                uint64_t sym_ent_off = sym_sh_off + (uint64_t)sym_index * sym_sh_entsize;
+                if (sym_ent_off + 24 > (uint64_t)ep->length) continue;
+                uint32_t s_st_name = *(uint32_t *)(eb + sym_ent_off + 0);
+                uint8_t s_st_info = *(uint8_t *)(eb + sym_ent_off + 4);
+                uint64_t s_st_value = *(uint64_t *)(eb + sym_ent_off + 8);
+                uint64_t s_st_size = *(uint64_t *)(eb + sym_ent_off + 16);
+                const char *s_name = (s_st_name < local_strtab_size && local_strtab) ? (local_strtab + s_st_name) : NULL;
+                if (!s_name || s_name[0] == '\0') continue;
+                /* If this symbol name not already present, add an entry using r_offset as address if non-zero; else use s_st_value */
+                uint64_t use_addr = r_offset ? r_offset : s_st_value;
+                if (use_addr == 0) continue;
+                int found = 0;
+                for (size_t k = 0; k < symv_len; k++) if (symv[k].addr == use_addr) { found = 1; break; }
+                if (found) continue;
+                if (symv_len + 1 > symv_cap) {
+                    size_t ncap = symv_cap ? symv_cap * 2 : 64;
+                    symv = (sym_t *)realloc(symv, ncap * sizeof(sym_t));
+                    symv_cap = ncap;
+                }
+                symv[symv_len].addr = use_addr;
+                symv[symv_len].size = s_st_size;
+                symv[symv_len].type = s_st_info & 0xFF;
+                symv[symv_len].name = strdup(s_name);
+                symv_len++;
+            }
+        }
+
+        /* sort symbols by addr (simple stable sort) */
+        if (symv_len > 1) {
+            for (size_t x = 0; x + 1 < symv_len; x++) {
+                for (size_t y = x + 1; y < symv_len; y++) {
+                    if (symv[x].addr > symv[y].addr) {
+                        sym_t tmp = symv[x]; symv[x] = symv[y]; symv[y] = tmp;
+                    }
+                }
+            }
+        }
+
+        /* infer sizes for zero-sized symbols by next symbol distance */
+        for (size_t i = 0; i < symv_len; i++) {
+            if (symv[i].size == 0) {
+                if (i + 1 < symv_len && symv[i+1].addr > symv[i].addr) symv[i].size = symv[i+1].addr - symv[i].addr;
+                else symv[i].size = 1;
+            }
+        }
+
+        /* prepare JSON buffer estimate */
+        uint64_t est = 2 + symv_len * 80;
+        for (size_t i = 0; i < symv_len; i++) if (symv[i].name) est += strlen(symv[i].name);
+        json = (char *)malloc((size_t)est + 1);
+        if (!json) break;
+        uint32_t pos = 0;
+        json[pos++] = '[';
+        int first = 1;
+
+        for (size_t i = 0; i < symv_len; i++) {
+            if (!symv[i].name) continue;
+            if (!first) json[pos++] = ',';
+            first = 0;
+            size_t needed = 128 + strlen(symv[i].name) * 2;
+            if (pos + needed > (uint32_t)est) {
+                est = est * 2 + (uint64_t)needed;
+                char *njson = (char *)realloc(json, (size_t)est + 1);
+                if (!njson) { free(json); json = NULL; break; }
+                json = njson;
+            }
+            int n = snprintf(json + pos, (size_t)(est - pos + 1), "{\"addr\":%llu,\"size\":%llu,\"type\":%u,\"name\":\"",
+                             (unsigned long long)symv[i].addr, (unsigned long long)symv[i].size, (unsigned)symv[i].type & 0xFF);
+            if (n < 0) { free(json); json = NULL; break; }
+            pos += (uint32_t)n;
+            for (const char *p = symv[i].name; *p; p++) {
+                if (*p == '"' || *p == '\\') {
+                    if (pos + 2 >= est) { est = est * 2 + 16; char *njson = (char *)realloc(json, (size_t)est + 1); if (!njson) { free(json); json = NULL; break; } json = njson; }
+                    json[pos++] = '\\';
+                    json[pos++] = *p;
+                } else if ((unsigned char)*p >= 0x20) {
+                    json[pos++] = *p;
+                }
+            }
+            if (!json) break;
+            if (pos + 4 >= est) { est = est * 2 + 16; char *njson = (char *)realloc(json, (size_t)est + 1); if (!njson) { free(json); json = NULL; break; } json = njson; }
+            int m = snprintf(json + pos, (size_t)(est - pos + 1), "\"}");
+            if (m < 0) { free(json); json = NULL; break; }
+            pos += (uint32_t)m;
+        }
+        if (!json) break;
+        if (pos + 2 >= est) { est = est + 16; char *njson = (char *)realloc(json, (size_t)est + 1); if (!njson) { free(json); json = NULL; break; } json = njson; }
+        json[pos++] = ']';
+        json[pos] = '\0';
+        json_len = pos;
+
+    } while (0);
+
+    /* If parsing failed, ensure an empty JSON array */
+    if (!json) {
+        json = (char *)malloc(3);
+        if (json) { memcpy(json, "[]", 3); json_len = 2; }
+    }
+
+    /* cleanup sym vector */
+    if (symv) {
+        for (size_t i = 0; i < symv_len; i++) if (symv[i].name) free(symv[i].name);
+        free(symv);
+    }
+
     free(elf);
 
     resp.entry = args.entry;
     net_send_int32(fd, CMD_SUCCESS);
     net_send_all(fd, &resp, (int)sizeof(resp));
+
+    if (json && json_len > 0) {
+        uint32_t len32 = (uint32_t)json_len;
+        net_send_all(fd, &len32, 4);
+        net_send_all(fd, json, (int)len32);
+        free(json);
+    } else {
+        uint32_t len32 = 0;
+        net_send_all(fd, &len32, 4);
+    }
+
     return 0;
 }
 

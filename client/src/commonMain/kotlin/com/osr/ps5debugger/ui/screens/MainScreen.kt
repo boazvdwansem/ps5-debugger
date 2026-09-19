@@ -7,19 +7,13 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Build
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.automirrored.filled.List
-import androidx.compose.material.icons.automirrored.filled.ExitToApp
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.text.font.FontWeight
@@ -30,8 +24,11 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import com.osr.ps5debugger.PS5ThemeColors
 import com.osr.ps5debugger.Ps5DebuggerTheme
+import com.osr.ps5debugger.ui.icons.PS5Icons
 import com.osr.ps5debugger.di.AppContainer
 import com.osr.ps5debugger.ui.*
 import com.osr.ps5debugger.ui.components.Tooltip
@@ -44,150 +41,124 @@ import kotlinx.coroutines.launch
 import com.osr.ps5debugger.util.DefaultIpHelper
 
 @Composable
-fun MainScreen(onExit: () -> Unit = {}) {
-    val state = rememberMainState(onExit = onExit)
+fun MainScreen(state: MainState) {
     val isConnected by state.isConnected.collectAsState()
-    
-    val activeProcess by AppContainer.debuggerUseCase.activeProcess.collectAsState()
-    
-    LaunchedEffect(activeProcess) {
-        state.activeMap = null
-        state.activeMaps.clear()
-        state.selectionStart = null
-        state.selectionEnd = null
-        AppContainer.discoveredFunctions.clear()
-        AppContainer.discoveredJumpTargets.clear()
-        AppContainer.symbolNames.clear()
-    }
 
-    LaunchedEffect(isConnected) {
-        if (isConnected) {
-            try {
-                AppContainer.debuggerUseCase.refreshProcesses()
-            } catch (_: Exception) {}
+    // Global Hooks
+    LaunchedEffect(Unit) {
+        AppContainer.onNavigateToMemory = { addr ->
+            val vmMaps = AppContainer.debuggerUseCase.vmMaps.value
+            val map = vmMaps.firstOrNull { addr >= it.start && addr < it.end }
+            if (map != null) {
+                state.activeMap = map
+                state.jumpToAddress = addr
+                state.selectedTab = 0
+            } else {
+                state.jumpToAddress = addr
+                state.selectedTab = 0
+            }
+        }
+        
+        AppContainer.onCreateCheatRequested = { cheat ->
+            state.pendingCheatToCreate = cheat
+            state.showAddCheatDialog = true
         }
     }
 
     Ps5DebuggerTheme {
-        Box(modifier = Modifier.fillMaxSize()) {
-            Surface(
-                modifier = Modifier.fillMaxSize(),
-                color = MaterialTheme.colorScheme.background
-            ) {
-                if (!isConnected) {
-                    ConnectionScreen(onSettingsClick = { state.isSettingsOpen = true })
-                } else {
-                    MainContent(state)
-                }
-            }
-            if (state.isSettingsOpen) {
-                SettingsMenuOverlay(onClose = { state.isSettingsOpen = false })
-            }
+        if (!isConnected && !AppContainer.debugMockEnabled) {
+            ConnectionScreen(
+                onSettingsClick = { state.isSettingsOpen = true },
+                onLoadEboot = { state.handleFileAction("Load eboot") }
+            )
+        } else {
+            MainLayout(state)
+        }
+
+        if (state.isSettingsOpen) {
+            SettingsDialog(onClose = { state.isSettingsOpen = false })
         }
     }
 }
 
 @Composable
-private fun MainContent(state: MainState) {
-    val coroutineScope = rememberCoroutineScope()
-    
-    // Track active tool window ids. We use "connections" for left, "debugger" for right.
-    var activeLeftTab by remember { mutableStateOf<String?>("connections") }
-    var activeRightTab by remember { mutableStateOf<String?>(null) }
-    
-    Box(modifier = Modifier.fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-                val isMobile = maxWidth < 800.dp
-                TopBar(state, isMobile = isMobile, onSettingsClick = { state.isSettingsOpen = true })
-            }
-            HorizontalDivider(color = PS5ThemeColors.BorderColor)
+private fun MainLayout(state: MainState) {
+    var activeLeftTab by remember { mutableStateOf<String?>(null) }
 
-            Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
-                // LEFT STRIP BAR (50px)
+    Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+            Row(modifier = Modifier.fillMaxSize()) {
+                // LEFT SIDEBAR (ICONS)
                 Column(
                     modifier = Modifier
                         .fillMaxHeight()
-                        .width(50.dp)
-                        .background(PS5ThemeColors.SecondaryBg),
+                        .width(48.dp)
+                        .background(PS5ThemeColors.SecondaryBg)
+                        .padding(vertical = 12.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    Spacer(Modifier.height(8.dp))
-                    
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        // Connections Icon Tab
-                        Tooltip("Connection Manager") {
-                            IconButton(
-                                onClick = {
-                                    activeLeftTab = if (activeLeftTab == "connections") null else "connections"
-                                },
-                                modifier = Modifier
-                                    .size(38.dp)
-                                    .background(
-                                        if (activeLeftTab == "connections") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
-                                        RoundedCornerShape(6.dp)
-                                    )
-                            ) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.List,
-                                    contentDescription = "Connection Manager",
-                                    tint = if (activeLeftTab == "connections") PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
-                                    modifier = Modifier.size(20.dp)
+                    Tooltip("Connections") {
+                        IconButton(
+                            onClick = { activeLeftTab = if (activeLeftTab == "connections") null else "connections" },
+                            modifier = Modifier
+                                .size(38.dp)
+                                .background(
+                                    if (activeLeftTab == "connections") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
+                                    RoundedCornerShape(6.dp)
                                 )
-                            }
+                        ) {
+                            Icon(
+                                imageVector = PS5Icons.Connections,
+                                contentDescription = "Connections",
+                                tint = if (activeLeftTab == "connections") PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
+                                modifier = Modifier.size(20.dp)
+                            )
                         }
-                        // Memory Map Icon Tab
-                        Tooltip("Memory Map") {
-                            IconButton(
-                                onClick = {
-                                    activeLeftTab = if (activeLeftTab == "map") null else "map"
-                                },
-                                modifier = Modifier
-                                    .size(38.dp)
-                                    .background(
-                                        if (activeLeftTab == "map") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
-                                        RoundedCornerShape(6.dp)
-                                    )
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Search,
-                                    contentDescription = "Memory Map",
-                                    tint = if (activeLeftTab == "map") PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                        }
-                        // Symbols (Subroutines & Labels) Tab
-                        Tooltip("Symbols") {
-                            IconButton(
-                                onClick = {
-                                    activeLeftTab = if (activeLeftTab == "symbols") null else "symbols"
-                                },
-                                modifier = Modifier
-                                    .size(38.dp)
-                                    .background(
-                                        if (activeLeftTab == "symbols") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
-                                        RoundedCornerShape(6.dp)
-                                    )
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Info,
-                                    contentDescription = "Symbols",
-                                    tint = if (activeLeftTab == "symbols") PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                        }
-                        // Place future left sidebar tab icons here...
                     }
 
-                    Spacer(Modifier.weight(1f))
+                    Tooltip("Memory Map") {
+                        IconButton(
+                            onClick = { activeLeftTab = if (activeLeftTab == "map") null else "map" },
+                            modifier = Modifier
+                                .size(38.dp)
+                                .background(
+                                    if (activeLeftTab == "map") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
+                                    RoundedCornerShape(6.dp)
+                                )
+                        ) {
+                            Icon(
+                                imageVector = PS5Icons.MemoryMap,
+                                contentDescription = "Memory Map",
+                                tint = if (activeLeftTab == "map") PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
 
-                    // Console Toggle Button at the bottom
-                    Tooltip(if (state.isConsoleVisible) "Close Console" else "Open Console") {
+                    Tooltip("Symbols") {
+                        IconButton(
+                            onClick = { activeLeftTab = if (activeLeftTab == "symbols") null else "symbols" },
+                            modifier = Modifier
+                                .size(38.dp)
+                                .background(
+                                    if (activeLeftTab == "symbols") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
+                                    RoundedCornerShape(6.dp)
+                                )
+                        ) {
+                            Icon(
+                                imageVector = PS5Icons.Symbols,
+                                contentDescription = "Symbols",
+                                tint = if (activeLeftTab == "symbols") PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.weight(1f))
+
+                    // Console Toggle
+                    Tooltip("Console Logs") {
                         IconButton(
                             onClick = { state.isConsoleVisible = !state.isConsoleVisible },
                             modifier = Modifier
@@ -242,18 +213,16 @@ private fun MainContent(state: MainState) {
                                     state.activeMap = it
                                     state.selectedTab = 0
                                 },
-                                activeMap = state.activeMap,
-                                activeMaps = state.activeMaps,
                                 onMapsSelected = { maps ->
                                     state.activeMaps.clear()
                                     state.activeMaps.addAll(maps)
-                                    if (maps.isEmpty()) {
-                                        state.activeMap = null
-                                    } else if (state.activeMap == null || !maps.any { it.start == state.activeMap?.start }) {
-                                        state.activeMap = maps.first()
+                                    if (state.activeMap == null || !maps.any { it.start == state.activeMap?.start }) {
+                                        state.activeMap = maps.firstOrNull()
                                     }
+                                    state.selectedTab = 0
                                 },
-                                onCollapse = { activeLeftTab = null }
+                                activeMap = state.activeMap,
+                                activeMaps = state.activeMaps
                             )
                             "map" -> MemoryMapView(
                                 onJumpToAddress = { addr ->
@@ -261,29 +230,14 @@ private fun MainContent(state: MainState) {
                                     if (map != null) {
                                         state.activeMap = map
                                         state.jumpToAddress = addr
-                                        state.selectionStart = addr
-                                        state.selectionEnd = addr
                                         state.selectedTab = 0
                                     }
                                 },
                                 onCollapse = { activeLeftTab = null }
                             )
-                             "symbols" -> SymbolsView(
+                            "symbols" -> SymbolsView(
                                 onJumpToAddress = { addr ->
-                                    val currentMap = state.activeMap
-                                    val currentMaps = state.activeMaps
-                                    val isLoaded = (currentMap != null && addr >= currentMap.start && addr < currentMap.end) ||
-                                            currentMaps.any { addr >= it.start && addr < it.end }
-                                    
-                                    if (!isLoaded) {
-                                        val map = AppContainer.debuggerUseCase.vmMaps.value.firstOrNull { addr >= it.start && addr < it.end }
-                                        if (map != null) {
-                                            state.activeMap = map
-                                        }
-                                    }
                                     state.jumpToAddress = addr
-                                    state.selectionStart = addr
-                                    state.selectionEnd = addr
                                     state.selectedTab = 0
                                 },
                                 onCollapse = { activeLeftTab = null }
@@ -293,58 +247,60 @@ private fun MainContent(state: MainState) {
                     }
                 }
 
-                // MAIN CONTENT AREA
-                MainArea(state, modifier = Modifier.fillMaxHeight().weight(1f))
+                // MAIN CONTENT
+                Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                        val isMobileToolbar = maxWidth < 800.dp
+                        TopBar(state, isMobile = isMobileToolbar, onSettingsClick = { state.isSettingsOpen = true })
+                    }
+                    HorizontalDivider(color = PS5ThemeColors.BorderColor)
+                    MainArea(state, modifier = Modifier.weight(1f).fillMaxWidth())
+                }
 
                 // RIGHT PANEL (EXPANDED CONTAINER)
                 AnimatedVisibility(
-                    visible = activeRightTab != null,
+                    visible = state.activeRightTab != null,
                     enter = slideInHorizontally(initialOffsetX = { it }, animationSpec = tween(200)) + fadeIn(tween(200)),
                     exit = slideOutHorizontally(targetOffsetX = { it }, animationSpec = tween(200)) + fadeOut(tween(200))
                 ) {
                     Row(modifier = Modifier.fillMaxHeight()) {
                         VerticalDivider(modifier = Modifier.fillMaxHeight().width(1.dp), color = PS5ThemeColors.BorderColor)
-                        when (activeRightTab) {
-                            "debugger" -> DebugSidebar(
-                                state = state,
-                                onCollapse = { activeRightTab = null }
-                            )
-                            "breakpoints" -> BreakpointsSidebar(
-                                state = state,
-                                onCollapse = { activeRightTab = null }
-                            )
+                        when (state.activeRightTab) {
+                            "debugger" -> DebugSidebar(state = state, onCollapse = { state.activeRightTab = null })
+                            "breakpoints" -> BreakpointsSidebar(state = state, onCollapse = { state.activeRightTab = null })
+                            "references" -> ReferencesSidebar(state = state, targetAddress = state.xrefTargetAddress, onCollapse = { state.activeRightTab = null })
                         }
                     }
                 }
 
                 VerticalDivider(modifier = Modifier.fillMaxHeight().width(1.dp), color = PS5ThemeColors.BorderColor)
-                // RIGHT STRIP BAR (50px)
+
+                // RIGHT SIDEBAR (ICONS)
                 Column(
                     modifier = Modifier
                         .fillMaxHeight()
-                        .width(50.dp)
-                        .background(PS5ThemeColors.SecondaryBg),
+                        .width(48.dp)
+                        .background(PS5ThemeColors.SecondaryBg)
+                        .padding(vertical = 12.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    Spacer(Modifier.height(8.dp))
-                    // Debugger Icon Tab
-                    Tooltip("Debugger") {
+                    Tooltip("Debugger Control") {
                         IconButton(
                             onClick = {
-                                activeRightTab = if (activeRightTab == "debugger") null else "debugger"
+                                state.activeRightTab = if (state.activeRightTab == "debugger") null else "debugger"
                             },
                             modifier = Modifier
                                 .size(38.dp)
                                 .background(
-                                    if (activeRightTab == "debugger") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
+                                    if (state.activeRightTab == "debugger") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
                                     RoundedCornerShape(6.dp)
                                 )
                         ) {
                             Icon(
-                                imageVector = Icons.Default.Build,
+                                imageVector = PS5Icons.DebuggerControl,
                                 contentDescription = "Debugger",
-                                tint = if (activeRightTab == "debugger") PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
+                                tint = if (state.activeRightTab == "debugger") PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
                                 modifier = Modifier.size(20.dp)
                             )
                         }
@@ -353,35 +309,69 @@ private fun MainContent(state: MainState) {
                     Tooltip("Breakpoints") {
                         IconButton(
                             onClick = {
-                                activeRightTab = if (activeRightTab == "breakpoints") null else "breakpoints"
+                                state.activeRightTab = if (state.activeRightTab == "breakpoints") null else "breakpoints"
                             },
                             modifier = Modifier
                                 .size(38.dp)
                                 .background(
-                                    if (activeRightTab == "breakpoints") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
+                                    if (state.activeRightTab == "breakpoints") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
                                     RoundedCornerShape(6.dp)
                                 )
                         ) {
                             Icon(
-                                imageVector = Icons.AutoMirrored.Filled.List,
+                                imageVector = PS5Icons.Breakpoints,
                                 contentDescription = "Breakpoints",
-                                tint = if (activeRightTab == "breakpoints") PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
+                                tint = if (state.activeRightTab == "breakpoints") PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
                                 modifier = Modifier.size(20.dp)
                             )
                         }
                     }
-                    // Place future right sidebar tab icons here...
+                    // References Icon Tab
+                    Tooltip("References") {
+                        IconButton(
+                            onClick = {
+                                state.activeRightTab = if (state.activeRightTab == "references") null else "references"
+                            },
+                            modifier = Modifier
+                                .size(38.dp)
+                                .background(
+                                    if (state.activeRightTab == "references") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
+                                    RoundedCornerShape(6.dp)
+                                )
+                        ) {
+                            Icon(
+                                imageVector = PS5Icons.References,
+                                contentDescription = "References",
+                                tint = if (state.activeRightTab == "references") PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
                 }
             }
+        }
 
-            ConsolePanel(state)
+        ConsolePanel(state)
+
+        if (state.showAddCheatDialog) {
+            val procInfo by AppContainer.debuggerUseCase.activeProcessInfo.collectAsState()
+            AddCheatDialog(
+                titleId = procInfo?.titleId ?: "Unknown",
+                version = "1.00",
+                gameName = procInfo?.name ?: "Unknown",
+                existingCheat = state.pendingCheatToCreate,
+                onDismiss = { 
+                    state.showAddCheatDialog = false
+                    state.pendingCheatToCreate = null
+                }
+            )
         }
     }
 }
 
 @Composable
 private fun MainArea(state: MainState, modifier: Modifier = Modifier) {
-    val tabs = listOf("Memory Viewer", "Memory Search", "Watch List", "Memory Dumper")
+    val tabs = listOf("Memory Viewer", "Memory Search", "Watch List", "Memory Dumper", "Cheats", "File Browser")
     
     Column(modifier = modifier) {
         Row(
@@ -395,10 +385,12 @@ private fun MainArea(state: MainState, modifier: Modifier = Modifier) {
         ) {
             tabs.forEachIndexed { index, title ->
                 val icon = when (index) {
-                    0 -> Icons.AutoMirrored.Filled.List
-                    1 -> Icons.Default.Search
-                    2 -> Icons.Default.Star
-                    else -> Icons.Default.Build
+                    0 -> PS5Icons.MemoryViewer
+                    1 -> PS5Icons.MemoryScan
+                    2 -> PS5Icons.WatchList
+                    3 -> PS5Icons.MemoryDumper
+                    4 -> PS5Icons.Cheats
+                    else -> PS5Icons.FileBrowser
                 }
                 TabItem(
                     title = title,
@@ -409,6 +401,11 @@ private fun MainArea(state: MainState, modifier: Modifier = Modifier) {
             }
         }
         HorizontalDivider(color = PS5ThemeColors.BorderColor)
+
+        if (state.selectedTab == 0 && state.activeMaps.isNotEmpty()) {
+            OpenedRegionsBar(state)
+            HorizontalDivider(color = PS5ThemeColors.BorderColor)
+        }
 
         Box(modifier = Modifier.fillMaxWidth().weight(1f).background(MaterialTheme.colorScheme.surface.copy(alpha = 0.5f))) {
             TabContent(state)
@@ -421,7 +418,7 @@ private fun TabContent(state: MainState) {
     when (state.selectedTab) {
         0 -> MemoryViewerLayout(
             activeMap = state.activeMap,
-            activeMaps = state.activeMaps,
+            activeMaps = emptyList(), // Only show activeMap, don't stack them
             jumpToAddress = state.jumpToAddress,
             viewModeParam = state.viewMode,
             onViewModeChanged = { state.viewMode = it },
@@ -430,9 +427,14 @@ private fun TabContent(state: MainState) {
             onSelectionChanged = { start, end ->
                 state.selectionStart = start
                 state.selectionEnd = end
+                state.xrefTargetAddress = null
             },
             activeBreakpoints = state.activeBreakpoints,
-            activeWatchpoints = state.activeWatchpoints
+            activeWatchpoints = state.activeWatchpoints,
+            onShowXrefs = { address ->
+                state.xrefTargetAddress = address
+                state.activeRightTab = "references"
+            }
         )
         1 -> MemoryScannerView(
             activeMap = state.activeMap,
@@ -454,26 +456,107 @@ private fun TabContent(state: MainState) {
             }
         })
         3 -> MemoryDumperView()
+        4 -> CheatsView()
+        5 -> FileBrowserView()
     }
 }
 
 @Composable
 private fun ConsolePanel(state: MainState) {
+    val coroutineScope = rememberCoroutineScope()
+    var isDraggingSplitter by remember { mutableStateOf(false) }
+
+    // Docked Panel layout at the bottom with resizable height splitter drag bar
+    val height = if (state.isConsoleMaximized) 800.dp else state.consoleDockHeight.dp
+    
     AnimatedVisibility(
-        visible = state.isConsoleVisible,
+        visible = state.isConsoleVisible && !state.isConsoleFloating,
         enter = slideInVertically(initialOffsetY = { it }, animationSpec = tween(200)) + fadeIn(tween(200)),
         exit = slideOutVertically(targetOffsetY = { it }, animationSpec = tween(200)) + fadeOut(tween(200))
     ) {
-        Column {
-            HorizontalDivider(color = PS5ThemeColors.BorderColor)
-            LoggerConsole(
-                modifier = Modifier.padding(top = 4.dp),
-                actionButton = {
-                    ConsoleToggleButton(
-                        onClick = { state.isConsoleVisible = false },
-                        isLarge = false,
-                        modifier = Modifier.padding(end = 4.dp)
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(height)
+        ) {
+            // Splitter Resizer Handle (Only if not maximized)
+            if (!state.isConsoleMaximized) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(5.dp)
+                        .background(if (isDraggingSplitter) PS5ThemeColors.AccentCyan else PS5ThemeColors.BorderColor)
+                        .pointerInput(Unit) {
+                            awaitPointerEventScope {
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    val changes = event.changes
+                                    if (changes.isNotEmpty()) {
+                                        val change = changes.first()
+                                        if (event.type == PointerEventType.Press) {
+                                            isDraggingSplitter = true
+                                        }
+                                        if (event.type == PointerEventType.Move && isDraggingSplitter) {
+                                            val deltaY = change.previousPosition.y - change.position.y
+                                            state.consoleDockHeight = (state.consoleDockHeight + deltaY).coerceIn(100f, 800f)
+                                            change.consume()
+                                        }
+                                        if (event.type == PointerEventType.Release) {
+                                            isDraggingSplitter = false
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                )
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(28.dp)
+                    .background(PS5ThemeColors.SecondaryBg)
+                    .padding(horizontal = 8.dp)
+                    .pointerInput(Unit) {
+                        detectDragGestures { change, dragAmount ->
+                            if (dragAmount.y < -15) { 
+                                state.isConsoleFloating = true
+                                change.consume()
+                            }
+                        }
+                    },
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = if (state.isConsoleMaximized) "Maximized Console Logs" else "Docked Console Logs",
+                    color = PS5ThemeColors.TextMuted,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
+                )
+
+                IconButton(onClick = { state.isConsoleMaximized = !state.isConsoleMaximized }, modifier = Modifier.size(22.dp)) {
+                    Icon(
+                        imageVector = if (state.isConsoleMaximized) PS5Icons.Dock else PS5Icons.ResetView,
+                        contentDescription = "Toggle Maximize",
+                        tint = PS5ThemeColors.TextMuted,
+                        modifier = Modifier.size(14.dp)
                     )
+                }
+
+                IconButton(onClick = { state.isConsoleFloating = true }, modifier = Modifier.size(22.dp)) {
+                    Icon(PS5Icons.Undock, contentDescription = "Undock", tint = PS5ThemeColors.AccentCyan, modifier = Modifier.size(14.dp))
+                }
+
+                IconButton(onClick = { state.isConsoleVisible = false }, modifier = Modifier.size(22.dp)) {
+                    Icon(PS5Icons.Close, contentDescription = "Close", tint = PS5ThemeColors.StatusRed, modifier = Modifier.size(14.dp))
+                }
+            }
+
+            LoggerConsole(
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                onAddressClick = { addr ->
+                    AppContainer.onNavigateToMemory?.invoke(addr)
                 }
             )
         }
@@ -501,369 +584,300 @@ private fun TopBar(state: MainState, isMobile: Boolean, onSettingsClick: () -> U
                         state.handleFileAction(action)
                     }
                 },
-                onEditAction = { action ->
-                    if (action == "Preferences") {
-                        onSettingsClick()
-                    } else {
-                        state.handleEditAction(action)
-                    }
-                },
-                onViewAction = state::handleViewAction
+                onEditAction = { state.handleEditAction(it) },
+                onViewAction = { state.handleViewAction(it) }
             )
         } else {
-            Text(
-                text = "PS5 Debugger",
-                color = PS5ThemeColors.AccentCyan,
-                fontWeight = FontWeight.Bold,
-                fontSize = 14.sp
-            )
+            IconButton(onClick = { /* Open mobile menu */ }) {
+                Icon(PS5Icons.FileBrowser, null)
+            }
         }
 
-        Spacer(modifier = Modifier.weight(1f))
+        Spacer(Modifier.weight(1f))
 
-        if (isMobile) {
-            IconButton(
-                onClick = onSettingsClick,
-                modifier = Modifier
-                    .padding(end = 8.dp)
-                    .size(36.dp)
-                    .background(PS5ThemeColors.SecondaryBg, RoundedCornerShape(4.dp))
+        // Connection Status Indicator
+        Surface(
+            color = if (state.isConnected.collectAsState().value) Color(0xFF43A047).copy(alpha = 0.1f) else Color(0xFFE53935).copy(alpha = 0.1f),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.padding(end = 12.dp)
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Default.Settings,
-                    contentDescription = "Settings",
-                    tint = Color.White,
-                    modifier = Modifier.size(18.dp)
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .background(
+                            if (state.isConnected.collectAsState().value) Color(0xFF43A047) else Color(0xFFE53935),
+                            RoundedCornerShape(4.dp)
+                        )
                 )
-            }
-
-            IconButton(
-                onClick = { state.isConsoleVisible = !state.isConsoleVisible },
-                modifier = Modifier
-                    .padding(end = 8.dp)
-                    .size(36.dp)
-                    .background(PS5ThemeColors.SecondaryBg, RoundedCornerShape(4.dp))
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.List,
-                    contentDescription = "Console",
-                    tint = if (state.isConsoleVisible) PS5ThemeColors.AccentCyan else Color.White,
-                    modifier = Modifier.size(18.dp)
+                Text(
+                    text = if (state.isConnected.collectAsState().value) "CONNECTED" else "DISCONNECTED",
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (state.isConnected.collectAsState().value) Color(0xFF43A047) else Color(0xFFE53935)
                 )
             }
         }
 
-        Tooltip("Disconnect") {
-            Button(
-                onClick = {
-                    coroutineScope.launch {
-                        AppContainer.debuggerUseCase.disconnect()
-                    }
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.StatusRed),
-                contentPadding = PaddingValues(0.dp),
-                modifier = Modifier.size(36.dp),
-                shape = RoundedCornerShape(4.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ExitToApp,
-                    contentDescription = "Disconnect",
-                    tint = Color.White,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
+        IconButton(onClick = onSettingsClick) {
+            Icon(PS5Icons.Settings, null, tint = PS5ThemeColors.TextMuted)
         }
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsMenuOverlay(
-    onClose: () -> Unit
-) {
-    var currentScreen by remember { mutableStateOf("main") }
+internal fun SettingsDialog(onClose: () -> Unit) {
+    var activeCategory by remember { mutableStateOf("general") }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(PS5ThemeColors.DarkBg)
-    ) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            // Header
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(56.dp)
-                    .background(PS5ThemeColors.SecondaryBg)
-                    .padding(horizontal = 16.dp),
-                verticalAlignment = Alignment.CenterVertically
+    AlertDialog(
+        onDismissRequest = onClose,
+        modifier = Modifier.fillMaxWidth(0.85f).fillMaxHeight(0.85f),
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        content = {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                shape = RoundedCornerShape(16.dp),
+                color = PS5ThemeColors.DarkBg,
+                border = BorderStroke(1.dp, PS5ThemeColors.BorderColor)
             ) {
-                IconButton(
-                    onClick = {
-                        if (currentScreen == "main") {
-                            onClose()
-                        } else {
-                            currentScreen = "main"
+                Column(modifier = Modifier.fillMaxSize()) {
+                    // Header
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(20.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Preferences", style = MaterialTheme.typography.headlineSmall, color = Color.White, fontWeight = FontWeight.Bold)
+                        IconButton(onClick = onClose) {
+                            Icon(PS5Icons.Close, null, tint = Color.Gray)
                         }
                     }
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.ArrowBack,
-                        contentDescription = "Back",
-                        tint = PS5ThemeColors.TextMain
-                    )
-                }
-                Spacer(Modifier.width(16.dp))
-                Text(
-                    text = when (currentScreen) {
-                        "appearance" -> "Appearance Settings"
-                        "connection" -> "Connection Settings"
-                        "accessibility" -> "Accessibility Settings"
-                        "debug" -> "Debug Settings"
-                        "support" -> "Support"
-                        else -> "Settings"
-                    },
-                    color = PS5ThemeColors.TextMain,
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-            HorizontalDivider(color = PS5ThemeColors.BorderColor)
 
-            // Body
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .padding(16.dp)
-            ) {
-                when (currentScreen) {
-                    "main" -> {
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            SettingsItem(
-                                title = "Appearance",
-                                icon = Icons.Default.Settings,
-                                iconBg = Color(0xFF0A84FF),
-                                onClick = { currentScreen = "appearance" }
-                            )
-                            SettingsItem(
-                                title = "Connection",
-                                icon = Icons.Default.Share,
-                                iconBg = Color(0xFF30D158),
-                                onClick = { currentScreen = "connection" }
-                            )
-                            SettingsItem(
-                                title = "Accessibility",
-                                icon = Icons.Default.Info,
-                                iconBg = Color(0xFFBF5AF2),
-                                onClick = { currentScreen = "accessibility" }
-                            )
-                            SettingsItem(
-                                title = "Debug",
-                                icon = Icons.Default.Build,
-                                iconBg = Color(0xFFFF453A),
-                                onClick = { currentScreen = "debug" }
-                            )
-                            SettingsItem(
-                                title = "Support",
-                                icon = Icons.Default.Info,
-                                iconBg = Color(0xFFFF9F0A),
-                                onClick = { currentScreen = "support" }
-                            )
+                    HorizontalDivider(color = PS5ThemeColors.BorderColor)
+
+                    Row(modifier = Modifier.fillMaxSize()) {
+                        // Settings Sidebar
+                        Column(
+                            modifier = Modifier
+                                .width(200.dp)
+                                .fillMaxHeight()
+                                .background(PS5ThemeColors.SecondaryBg)
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            SettingsTabItem("General", PS5Icons.SettingsGeneral, activeCategory == "general") { activeCategory = "general" }
+                            SettingsTabItem("Connection", PS5Icons.SettingsNetwork, activeCategory == "network") { activeCategory = "network" }
+                            SettingsTabItem("Simulation", PS5Icons.SettingsSimulation, activeCategory == "mock") { activeCategory = "mock" }
+                            SettingsTabItem("About", PS5Icons.Info, activeCategory == "support") { activeCategory = "support" }
                         }
-                    }
-                    "appearance" -> {
-                        var expanded by remember { mutableStateOf(false) }
-                        val themes = listOf("Dark", "Light", "Solarized")
-                        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                            Text("Theme Preference", color = PS5ThemeColors.TextMain, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                            
-                            Box {
-                                OutlinedButton(
-                                    onClick = { expanded = true },
-                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = PS5ThemeColors.TextMain),
-                                    border = BorderStroke(1.dp, PS5ThemeColors.BorderColor)
-                                ) {
-                                    Text(PS5ThemeColors.activeTheme)
-                                    Spacer(Modifier.width(8.dp))
-                                    Text("▼", fontSize = 10.sp)
+
+                        VerticalDivider(color = PS5ThemeColors.BorderColor)
+
+                        // Settings Content
+                        Box(modifier = Modifier.weight(1f).fillMaxHeight().padding(24.dp)) {
+                            when (activeCategory) {
+                                "general" -> {
+                                    Column(verticalArrangement = Arrangement.spacedBy(20.dp)) {
+                                        Text("General Settings", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                                        
+                                        var autoReconnect by remember { mutableStateOf(DefaultIpHelper.isAutoReconnectEnabled()) }
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Checkbox(
+                                                checked = autoReconnect,
+                                                onCheckedChange = { 
+                                                    autoReconnect = it
+                                                    DefaultIpHelper.setAutoReconnectEnabled(it)
+                                                },
+                                                colors = CheckboxDefaults.colors(checkedColor = PS5ThemeColors.AccentCyan)
+                                            )
+                                            Spacer(Modifier.width(8.dp))
+                                            Text("Auto-reconnect on socket loss", color = Color.LightGray, fontSize = 13.sp)
+                                        }
+
+                                        var showTooltips by remember { mutableStateOf(true) }
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Checkbox(
+                                                checked = showTooltips,
+                                                onCheckedChange = { showTooltips = it },
+                                                colors = CheckboxDefaults.colors(checkedColor = PS5ThemeColors.AccentCyan)
+                                            )
+                                            Spacer(Modifier.width(8.dp))
+                                            Text("Show tooltips", color = Color.LightGray, fontSize = 13.sp)
+                                        }
+                                    }
                                 }
-                                
-                                DropdownMenu(
-                                    expanded = expanded,
-                                    onDismissRequest = { expanded = false },
-                                    modifier = Modifier.background(PS5ThemeColors.Surface)
-                                ) {
-                                    themes.forEach { theme ->
-                                        DropdownMenuItem(
-                                            text = { Text(theme, color = PS5ThemeColors.TextMain) },
-                                            onClick = {
-                                                PS5ThemeColors.activeTheme = theme
-                                                DefaultIpHelper.setTheme(theme)
-                                                expanded = false
-                                            }
+                                "network" -> {
+                                    Column(verticalArrangement = Arrangement.spacedBy(20.dp)) {
+                                        Text("Network Configuration", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                                        
+                                        var timeout by remember { mutableStateOf(DefaultIpHelper.getConnectionTimeoutMs().toString()) }
+                                        OutlinedTextField(
+                                            value = timeout,
+                                            onValueChange = { 
+                                                if (it.all { c -> c.isDigit() }) {
+                                                    timeout = it
+                                                    it.toIntOrNull()?.let { ms -> DefaultIpHelper.setConnectionTimeoutMs(ms) }
+                                                }
+                                            },
+                                            label = { Text("Connection Timeout (ms)") },
+                                            modifier = Modifier.fillMaxWidth(),
+                                            textStyle = TextStyle(color = Color.White)
                                         )
                                     }
                                 }
-                            }
-                        }
-                    }
-                    "connection" -> {
-                        var defaultIp by remember { mutableStateOf(DefaultIpHelper.getDefaultIp() ?: "") }
-                        var autoReconnect by remember { mutableStateOf(DefaultIpHelper.isAutoReconnectEnabled()) }
-                        var timeoutStr by remember { mutableStateOf(DefaultIpHelper.getConnectionTimeoutMs().toString()) }
-                        
-                        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                            Text("Connection Preferences", color = PS5ThemeColors.TextMain, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                            
-                            OutlinedTextField(
-                                value = defaultIp,
-                                onValueChange = { 
-                                    defaultIp = it 
-                                    DefaultIpHelper.setDefaultIp(it)
-                                },
-                                label = { Text("Default IP Address") },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = PS5ThemeColors.AccentCyan,
-                                    unfocusedBorderColor = PS5ThemeColors.BorderColor,
-                                    focusedTextColor = PS5ThemeColors.TextMain,
-                                    unfocusedTextColor = PS5ThemeColors.TextMain
-                                )
-                            )
-                            
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text("Auto-Reconnect on Connection Loss", color = PS5ThemeColors.TextMain, fontSize = 14.sp)
-                                Switch(
-                                    checked = autoReconnect,
-                                    onCheckedChange = { 
-                                        autoReconnect = it
-                                        DefaultIpHelper.setAutoReconnectEnabled(it)
-                                    },
-                                    colors = SwitchDefaults.colors(
-                                        checkedThumbColor = PS5ThemeColors.AccentCyan,
-                                        checkedTrackColor = PS5ThemeColors.AccentCyan.copy(alpha = 0.5f)
-                                    )
-                                )
-                            }
-                            
-                            OutlinedTextField(
-                                value = timeoutStr,
-                                onValueChange = { 
-                                    timeoutStr = it 
-                                    val newTimeout = it.toIntOrNull()
-                                    if (newTimeout != null) {
-                                        DefaultIpHelper.setConnectionTimeoutMs(newTimeout)
+                                "mock" -> {
+                                    Column(verticalArrangement = Arrangement.spacedBy(20.dp)) {
+                                        Text("Simulation / Mock Mode", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Switch(
+                                                checked = AppContainer.debugMockEnabled,
+                                                onCheckedChange = { 
+                                                    AppContainer.debugMockEnabled = it
+                                                    DefaultIpHelper.setMockEnabled(it)
+                                                },
+                                                colors = SwitchDefaults.colors(checkedThumbColor = PS5ThemeColors.AccentCyan)
+                                            )
+                                            Spacer(Modifier.width(12.dp))
+                                            Text("Enable Connection Simulation", color = Color.LightGray, fontSize = 13.sp)
+                                        }
+                                        Text(
+                                            text = "When enabled, the client will simulate a console connection, bypassing network sockets and generating mock disassembly/subroutine CFG graphs.",
+                                            fontSize = 12.sp,
+                                            color = Color.Gray
+                                        )
                                     }
-                                },
-                                label = { Text("Connection Timeout (ms)") },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = PS5ThemeColors.AccentCyan,
-                                    unfocusedBorderColor = PS5ThemeColors.BorderColor,
-                                    focusedTextColor = PS5ThemeColors.TextMain,
-                                    unfocusedTextColor = PS5ThemeColors.TextMain
-                                )
-                            )
-                        }
-                    }
-                    "accessibility" -> {
-                        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                            Text("Accessibility Options", color = PS5ThemeColors.TextMain, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                            Text("Text Size: Medium", color = Color.Gray, fontSize = 12.sp)
-                            Text("High Contrast: Off", color = Color.Gray, fontSize = 12.sp)
-                        }
-                    }
-                    "debug" -> {
-                        var mockEnabled by remember { mutableStateOf(AppContainer.debugMockEnabled) }
-                        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                            Text("Debug Options", color = PS5ThemeColors.TextMain, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                            
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text("Enable Debug Settings (Fake Connection)", color = PS5ThemeColors.TextMain, fontSize = 14.sp)
-                                Switch(
-                                    checked = mockEnabled,
-                                    onCheckedChange = { 
-                                        mockEnabled = it
-                                        AppContainer.debugMockEnabled = it
-                                        DefaultIpHelper.setMockEnabled(it)
-                                    },
-                                    colors = SwitchDefaults.colors(
-                                        checkedThumbColor = PS5ThemeColors.AccentCyan,
-                                        checkedTrackColor = PS5ThemeColors.AccentCyan.copy(alpha = 0.5f)
-                                    )
-                                )
+                                }
+                                "support" -> {
+                                    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                                        Text("Support & Version Info", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                                        Text("PS5 Debugger Client v1.0.3", color = Color.Gray, fontSize = 12.sp)
+                                        Text("Developed by Boaz.", color = Color.Gray, fontSize = 12.sp)
+                                    }
+                                }
                             }
-                            Text(
-                                text = "When enabled, the client will simulate a console connection, bypassing network sockets and generating mock disassembly/subroutine CFG graphs.",
-                                fontSize = 12.sp,
-                                color = Color.Gray
-                            )
-                        }
-                    }
-                    "support" -> {
-                        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                            Text("Support & Version Info", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                            Text("PS5 Debugger Client v1.0.3", color = Color.Gray, fontSize = 12.sp)
-                            Text("Developed by Boaz.", color = Color.Gray, fontSize = 12.sp)
                         }
                     }
                 }
             }
         }
-    }
+    )
 }
 
 @Composable
-fun SettingsItem(
+private fun SettingsTabItem(
     title: String,
     icon: androidx.compose.ui.graphics.vector.ImageVector,
-    iconBg: Color,
+    selected: Boolean,
     onClick: () -> Unit
 ) {
-    Row(
+    Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .background(PS5ThemeColors.SecondaryBg, RoundedCornerShape(10.dp))
-            .clickable { onClick() }
-            .padding(12.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .height(40.dp)
+            .clickable { onClick() },
+        color = if (selected) PS5ThemeColors.Surface else Color.Transparent,
+        shape = RoundedCornerShape(8.dp)
     ) {
-        Box(
-            modifier = Modifier
-                .size(32.dp)
-                .background(iconBg, RoundedCornerShape(6.dp)),
-            contentAlignment = Alignment.Center
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Icon(
                 imageVector = icon,
                 contentDescription = null,
-                tint = Color.White,
+                tint = if (selected) PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
                 modifier = Modifier.size(18.dp)
             )
+            Text(
+                text = title,
+                color = if (selected) PS5ThemeColors.TextMain else PS5ThemeColors.TextMuted,
+                fontSize = 13.sp,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+            )
         }
-        Spacer(Modifier.width(12.dp))
-        Text(
-            text = title,
-            color = PS5ThemeColors.TextMain,
-            fontSize = 15.sp,
-            fontWeight = FontWeight.Medium,
-            modifier = Modifier.weight(1f)
-        )
-        Icon(
-            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-            contentDescription = null,
-            tint = PS5ThemeColors.TextMuted,
-            modifier = Modifier.size(20.dp)
-        )
+    }
+}
+
+@Composable
+private fun OpenedRegionsBar(state: MainState) {
+    val scrollState = rememberScrollState()
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(32.dp)
+            .background(PS5ThemeColors.SecondaryBg)
+            .horizontalScroll(scrollState)
+            .padding(horizontal = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        state.activeMaps.forEach { map ->
+            MemoryRegionTab(
+                map = map,
+                isSelected = state.activeMap?.start == map.start,
+                onClick = { state.activeMap = map },
+                onClose = {
+                    val index = state.activeMaps.indexOf(map)
+                    state.activeMaps.remove(map)
+                    if (state.activeMap?.start == map.start) {
+                        state.activeMap = if (state.activeMaps.isNotEmpty()) {
+                            if (index < state.activeMaps.size) state.activeMaps[index] else state.activeMaps.last()
+                        } else {
+                            null
+                        }
+                    }
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun MemoryRegionTab(
+    map: com.osr.ps5debugger.domain.model.MemoryRange,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    onClose: () -> Unit
+) {
+    val backgroundColor = if (isSelected) PS5ThemeColors.Surface else Color.Transparent
+    val contentColor = if (isSelected) PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted
+    val borderColor = if (isSelected) PS5ThemeColors.BorderColor else Color.Transparent
+
+    Box(
+        modifier = Modifier
+            .height(26.dp)
+            .background(backgroundColor, RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
+            .border(1.dp, borderColor, RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
+            .clickable { onClick() }
+            .padding(horizontal = 8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            val titleIdSuffix = if (!map.titleId.isNullOrEmpty()) " [${map.titleId}]" else ""
+            Text(
+                text = (if (map.name.isEmpty()) "0x${map.start.toString(16).uppercase()}" else map.name) + titleIdSuffix,
+                color = contentColor,
+                fontSize = 11.sp,
+                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                maxLines = 1
+            )
+            Icon(
+                imageVector = PS5Icons.Close,
+                contentDescription = "Close",
+                tint = contentColor.copy(alpha = 0.6f),
+                modifier = Modifier
+                    .size(12.dp)
+                    .clickable { onClose() }
+            )
+        }
     }
 }

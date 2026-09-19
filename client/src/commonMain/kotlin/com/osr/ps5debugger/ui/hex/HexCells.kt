@@ -22,6 +22,7 @@ fun ByteHexCell(
     isSelected: Boolean,
     isCursor: Boolean,
     isPendingEdit: Boolean,
+    isChanged: Boolean,
     hexInputBuffer: String,
     width: Dp,
     isMobile: Boolean
@@ -39,12 +40,14 @@ fun ByteHexCell(
             .background(
                 if (isCursor) PS5ThemeColors.AccentCyan.copy(alpha = 0.55f)
                 else if (isSelected) PS5ThemeColors.AccentCyan.copy(alpha = 0.45f)
+                else if (isChanged) PS5ThemeColors.AccentAmber.copy(alpha = 0.35f)
                 else Color.Transparent
             )
             .border(
                 1.dp,
                 if (isPendingEdit) PS5ThemeColors.AccentAmber
                 else if (isCursor) PS5ThemeColors.AccentCyan
+                else if (isChanged) PS5ThemeColors.AccentAmber.copy(alpha = 0.5f)
                 else Color.Transparent,
                 RoundedCornerShape(2.dp)
             ),
@@ -54,7 +57,7 @@ fun ByteHexCell(
             text = displayStr,
             fontFamily = FontFamily.Monospace,
             fontSize = if (isMobile) 11.sp else 13.sp,
-            color = if (isPendingEdit) PS5ThemeColors.AccentAmber
+            color = if (isPendingEdit || isChanged) PS5ThemeColors.AccentAmber
                     else if (isCursor) PS5ThemeColors.AccentCyan
                     else MaterialTheme.colorScheme.onBackground
         )
@@ -65,6 +68,7 @@ fun ByteHexCell(
 fun ByteAsciiCell(
     byte: Byte,
     isSelected: Boolean,
+    isChanged: Boolean,
     width: Dp,
     isMobile: Boolean
 ) {
@@ -74,14 +78,20 @@ fun ByteAsciiCell(
         modifier = Modifier
             .width(width)
             .height(24.dp)
-            .background(if (isSelected) PS5ThemeColors.AccentCyan.copy(alpha = 0.45f) else Color.Transparent),
+            .background(
+                if (isSelected) PS5ThemeColors.AccentCyan.copy(alpha = 0.45f)
+                else if (isChanged) PS5ThemeColors.AccentAmber.copy(alpha = 0.35f)
+                else Color.Transparent
+            ),
         contentAlignment = Alignment.Center
     ) {
         Text(
             text = charStr,
             fontFamily = FontFamily.Monospace,
             fontSize = if (isMobile) 11.sp else 13.sp,
-            color = if (isSelected) PS5ThemeColors.AccentCyan else PS5ThemeColors.StatusGreen
+            color = if (isSelected) PS5ThemeColors.AccentCyan 
+                    else if (isChanged) PS5ThemeColors.AccentAmber
+                    else PS5ThemeColors.StatusGreen
         )
     }
 }

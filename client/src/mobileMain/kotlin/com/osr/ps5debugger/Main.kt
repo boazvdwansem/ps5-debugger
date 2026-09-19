@@ -76,6 +76,9 @@ fun main() {
     }
 
     application {
+        val scope = rememberCoroutineScope()
+        val state = com.osr.ps5debugger.ui.state.rememberMainState(scope = scope, onExit = ::exitApplication)
+        
         val windowState = rememberWindowState(
         width = 410.dp,
         height = 840.dp,

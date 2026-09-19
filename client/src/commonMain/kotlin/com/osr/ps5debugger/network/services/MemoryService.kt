@@ -152,8 +152,8 @@ class MemoryService(private val connection: Ps5Connection) {
             val memBaseReg = buf.readUByte()
             val memIndexReg = buf.readUByte()
             val memScale = buf.readUByte()
-            val mnemonicLo = buf.readUByte()
-            val mnemonic16 = buf.readUShort()
+            val mnemonic = buf.readUShort()
+            val reserved = buf.readUByte()
 
             list.add(Ps5DisasmInstr(
                 addr = addr,
@@ -164,9 +164,31 @@ class MemoryService(private val connection: Ps5Connection) {
                 memBaseReg = memBaseReg,
                 memIndexReg = memIndexReg,
                 memScale = memScale,
-                mnemonic = mnemonic16,
-                mnemonicLo = mnemonicLo
+                mnemonic = mnemonic,
+                mnemonicLo = mnemonic and 0xFF
             ))
+        }
+        list
+    }
+
+    suspend fun findXrefs(pid: Int, scanAddress: Long, scanLength: Int, targetAddress: Long): List<Long> = connection.execute { inStr, outStr ->
+        val payload = BinaryBuffer(24).apply {
+            writeInt(pid)
+            writeLong(scanAddress)
+            writeInt(scanLength)
+            writeLong(targetAddress)
+        }.bytes
+        connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_FIND_XREFS_TO, payload)
+        
+        val status = connection.receiveStatus(inStr)
+        if (status != ProtocolConstants.CMD_SUCCESS) throw java.io.IOException("Find XRefs command failed: status 0x${status.toString(16)}")
+
+        val list = mutableListOf<Long>()
+        while (true) {
+            val bufBytes = connection.readExactly(inStr, 8)
+            val valLong = BinaryBuffer(bufBytes).readLong()
+            if (valLong == -1L) break // 0xFFFFFFFFFFFFFFFF
+            list.add(valLong)
         }
         list
     }

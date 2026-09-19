@@ -8,6 +8,8 @@ import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.key.utf16CodePoint
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import com.osr.ps5debugger.di.AppContainer
@@ -15,6 +17,8 @@ import com.osr.ps5debugger.domain.model.MemoryRange
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.yield
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -32,7 +36,11 @@ class HexState(
     val scope: CoroutineScope
 ) {
     val pageSize = 65536
-    val memoryCache = mutableStateMapOf<Long, ByteArray>()
+    val memoryCache: androidx.compose.runtime.snapshots.SnapshotStateMap<Long, ByteArray> get() {
+        val map = activeMap ?: activeMaps.firstOrNull()
+        val key = map?.let { "${it.start}_${it.end}_${it.name}" } ?: "default"
+        return AppContainer.getHexCache(key)
+    }
     val pendingEdits = mutableStateMapOf<Long, Byte>()
     
     var activeMap by mutableStateOf(activeMapInitial)
@@ -51,6 +59,7 @@ class HexState(
     var isEditingUnlocked by mutableStateOf(false)
     var hexInputBuffer by mutableStateOf("")
     var goToAddressText by mutableStateOf("")
+    var currentJumpAddress by mutableStateOf<Long?>(null)
     
     var clickedArea by mutableStateOf<ClickedArea?>(null)
     var contextMenuAddr by mutableStateOf<Long?>(null)
@@ -71,11 +80,22 @@ class HexState(
     var lastTapTime by mutableStateOf(0L)
     var isLongPressActive by mutableStateOf(false)
     var hasTriggeredLongPress by mutableStateOf(false)
+    var isLoading by mutableStateOf(false)
+    var isGreedyLoading by mutableStateOf(false)
+    
+    var refreshRateMs by mutableLongStateOf(2000L)
+    val changedBytes = mutableStateMapOf<Long, Long>() // address -> timestamp of change
+
+    var loadedPagesCount by mutableIntStateOf(0)
+    var totalPagesCount by mutableIntStateOf(0)
+    val loadingProgress by derivedStateOf { 
+        if (totalPagesCount > 0) loadedPagesCount.toFloat() / totalPagesCount.toFloat() else 0f 
+    }
 
     fun updateScrollPosition(newPos: Long) {
         scrollPosition = newPos
         // Store scroll position based on the first map's start to maintain context
-        val sorted = if (activeMaps.isNotEmpty()) activeMaps.sortedBy { it.start } else listOfNotNull(activeMap)
+        val sorted = if (activeMap != null) listOf(activeMap!!) else activeMaps.sortedBy { it.start }
         sorted.firstOrNull()?.let { hexViewerScrollPositions[it.start] = newPos }
     }
 
@@ -87,7 +107,7 @@ class HexState(
 
     fun getAddressForRow(row: Long): Long {
         var remainingRows = row
-        val sorted = if (activeMaps.isNotEmpty()) activeMaps.sortedBy { it.start } else listOfNotNull(activeMap)
+        val sorted = if (activeMap != null) listOf(activeMap!!) else activeMaps.sortedBy { it.start }
         for (map in sorted) {
             val rowsInMap = (map.end - map.start + bytesPerRow - 1) / bytesPerRow
             if (remainingRows < rowsInMap) {
@@ -100,7 +120,7 @@ class HexState(
 
     fun getRowForAddress(address: Long): Long {
         var rowCount = 0L
-        val sorted = if (activeMaps.isNotEmpty()) activeMaps.sortedBy { it.start } else listOfNotNull(activeMap)
+        val sorted = if (activeMap != null) listOf(activeMap!!) else activeMaps.sortedBy { it.start }
         for (map in sorted) {
             if (address >= map.start && address < map.end) {
                 return rowCount + (address - map.start) / bytesPerRow
@@ -111,7 +131,7 @@ class HexState(
     }
 
     fun getMaxScrollPosition(): Long {
-        val sorted = if (activeMaps.isNotEmpty()) activeMaps.sortedBy { it.start } else listOfNotNull(activeMap)
+        val sorted = if (activeMap != null) listOf(activeMap!!) else activeMaps.sortedBy { it.start }
         val rowCount = sorted.sumOf { (it.end - it.start + bytesPerRow - 1) / bytesPerRow }
         return maxOf(0L, rowCount - visibleRowsCount)
     }
@@ -136,7 +156,7 @@ class HexState(
             val nextCursor = if (kotlin.math.abs(step) == 1) {
                 // Horizontal move: try simple add but check if it's still in a valid map
                 val simpleNext = cursor + step
-                val targets = if (activeMaps.isNotEmpty()) activeMaps.toList() else listOfNotNull(activeMap)
+                val targets = if (activeMap != null) listOf(activeMap!!) else activeMaps.toList()
                 if (targets.any { simpleNext >= it.start && simpleNext < it.end }) {
                     simpleNext
                 } else {
@@ -145,7 +165,7 @@ class HexState(
                 }
             } else {
                 // Vertical move: jump by row index
-                val nextRow = (currentRow + (step / bytesPerRow)).coerceIn(0L, (if (activeMaps.isNotEmpty()) activeMaps.sortedBy { it.start }.sumOf { (it.end - it.start + bytesPerRow - 1) / bytesPerRow } else 0L) - 1)
+                val nextRow = (currentRow + (step / bytesPerRow)).coerceIn(0L, ((if (activeMap != null) listOf(activeMap!!) else activeMaps).sumOf { (it.end - it.start + bytesPerRow - 1) / bytesPerRow }) - 1)
                 getAddressForRow(nextRow) + (cursor % bytesPerRow) // Try to maintain column
             }
 
@@ -162,6 +182,13 @@ class HexState(
             }
             return true
         } else if (isEditingUnlocked) {
+            if ((keyEvent.isCtrlPressed || keyEvent.isMetaPressed) && keyEvent.key == Key.V) {
+                val clipboardText = com.osr.ps5debugger.util.getFromClipboard()
+                if (clipboardText.isNotEmpty()) {
+                    pasteHex(clipboardText)
+                    return true
+                }
+            }
             val keyChar = keyEvent.utf16CodePoint.toChar()
             if (keyEvent.key == Key.Backspace || keyEvent.key == Key.Delete) {
                 pendingEdits.remove(cursor)
@@ -199,7 +226,7 @@ class HexState(
     fun advanceCursor() {
         val cursor = selectionEnd ?: return
         val nextCursor = cursor + 1
-        val targets = if (activeMaps.isNotEmpty()) activeMaps.toList() else listOfNotNull(activeMap)
+        val targets = if (activeMap != null) listOf(activeMap!!) else activeMaps.toList()
         if (targets.any { nextCursor >= it.start && nextCursor < it.end }) {
             val nextStart = if (selectionStart == cursor) nextCursor else selectionStart
             changeSelection(nextStart, nextCursor)
@@ -207,56 +234,184 @@ class HexState(
     }
 
     private var loadJob: kotlinx.coroutines.Job? = null
+    private var greedyJob: kotlinx.coroutines.Job? = null
 
-    fun loadMemory() {
-        val pid = AppContainer.debuggerUseCase.activeProcess.value?.pid ?: return
-        val targets = if (activeMaps.isNotEmpty()) activeMaps.toList() else listOfNotNull(activeMap)
+    fun loadMemory(forceRefresh: Boolean = false) {
+        val pid = AppContainer.debuggerUseCase.activeProcess.value?.pid
+        val targets = if (activeMap != null) listOf(activeMap!!) else activeMaps.toList()
         if (targets.isEmpty()) return
+        
+        val allLocal = targets.all { it.localData != null }
+        if (!allLocal && pid == null) return
         
         loadJob?.cancel()
         loadJob = scope.launch {
-            delay(100)
-            val visibleStart = getAddressForRow(scrollPosition)
-            val visibleEnd = getAddressForRow(scrollPosition + visibleRowsCount)
+            if (!allLocal && !forceRefresh) delay(10) // Small delay to prevent jitter
             
-            withContext(Dispatchers.IO) {
-                // Use absolute page alignment to ensure consistency with getByteAt and rendering
-                var page = (visibleStart / pageSize) * pageSize
-                while (page <= visibleEnd) {
-                    if (!memoryCache.containsKey(page)) {
-                        try {
-                            val pageData = ByteArray(pageSize)
-                            var hasData = false
-                            
-                            // Find all maps that overlap with this page [page, page + pageSize)
-                            val overlappingMaps = targets.filter { it.start < page + pageSize && it.end > page }
-                            
-                            for (map in overlappingMaps) {
-                                val readStart = maxOf(page, map.start)
-                                val readEnd = minOf(page + pageSize, map.end)
-                                if (readStart < readEnd) {
-                                    val readLen = (readEnd - readStart).toInt()
-                                    try {
-                                        val data = AppContainer.clientAdapter.client.readMemory(pid, readStart, readLen)
-                                        val destOffset = (readStart - page).toInt()
-                                        System.arraycopy(data, 0, pageData, destOffset, data.size)
-                                        hasData = true
-                                    } catch (_: Exception) {
-                                        // Individual read failure (e.g. guard page), skip this map segment
-                                    }
+            isLoading = true
+            try {
+                val visibleStart = getAddressForRow(scrollPosition)
+                // Use visibleRowsCount + some buffer to pre-load slightly ahead
+                val bufferRows = 10
+                val visibleEnd = getAddressForRow(scrollPosition + visibleRowsCount + bufferRows)
+                
+                withContext(Dispatchers.IO) {
+                    var page = (visibleStart / pageSize) * pageSize
+                    while (page <= visibleEnd) {
+                        if (forceRefresh || !memoryCache.containsKey(page)) {
+                            loadPage(pid, page, targets)
+                            withContext(Dispatchers.Main) { 
+                                loadedPagesCount = memoryCache.size
+                            }
+                        }
+                        page += pageSize.toLong()
+                    }
+                }
+            } finally {
+                isLoading = false
+            }
+        }
+    }
+
+    private suspend fun loadPage(pid: Int?, page: Long, targets: List<MemoryRange>) {
+        try {
+            val pageData = ByteArray(pageSize)
+            var hasData = false
+            val overlappingMaps = targets.filter { it.start < page + pageSize && it.end > page }
+            
+            for (map in overlappingMaps) {
+                val readStart = maxOf(page, map.start)
+                val readEnd = minOf(page + pageSize, map.end)
+                if (readStart < readEnd) {
+                    val readLen = (readEnd - readStart).toInt()
+                    try {
+                        val data = if (map.localData != null) {
+                            val localOffset = (readStart - map.start).toInt()
+                            map.localData.copyOfRange(localOffset, localOffset + readLen)
+                        } else if (pid != null) {
+                            AppContainer.clientAdapter.client.readMemory(pid, readStart, readLen)
+                        } else ByteArray(readLen)
+                        
+                        val destOffset = (readStart - page).toInt()
+                        
+                        // CHANGE TRACKING LOGIC
+                        val oldData = memoryCache[page]
+                        if (oldData != null) {
+                            for (i in 0 until data.size) {
+                                val absAddr = readStart + i
+                                val oldVal = oldData[destOffset + i]
+                                val newVal = data[i]
+                                if (newVal != oldVal) {
+                                    changedBytes[absAddr] = System.currentTimeMillis()
+                                    
+                                    // Log the change
+                                    AppContainer.debuggerUseCase.log(
+                                        "MEMORY",
+                                        "Value at 0x${absAddr.toString(16).uppercase()} changed: 0x${(oldVal.toInt() and 0xFF).toString(16).padStart(2, '0').uppercase()} -> 0x${(newVal.toInt() and 0xFF).toString(16).padStart(2, '0').uppercase()}",
+                                        com.osr.ps5debugger.domain.model.LogEntry.Level.INFO
+                                    )
                                 }
                             }
-                            
-                            if (hasData || overlappingMaps.isEmpty()) {
+                        }
+
+                        System.arraycopy(data, 0, pageData, destOffset, data.size)
+                        hasData = true
+                    } catch (_: Exception) {}
+                }
+            }
+            if (hasData || overlappingMaps.isEmpty()) {
+                memoryCache[page] = pageData
+            }
+        } catch (e: Exception) {
+            memoryCache[page] = ByteArray(pageSize)
+        }
+    }
+
+    fun startGreedyLoader() {
+        val pid = AppContainer.debuggerUseCase.activeProcess.value?.pid
+        val targets = if (activeMap != null) listOf(activeMap!!) else activeMaps.toList()
+        if (targets.isEmpty()) return
+        
+        greedyJob?.cancel()
+        greedyJob = scope.launch(Dispatchers.IO) {
+            isGreedyLoading = true
+            try {
+                // 1. Calculate total pages
+                var total = 0
+                for (map in targets) {
+                    total += ((map.end - map.start + pageSize - 1) / pageSize).toInt()
+                }
+                withContext(Dispatchers.Main) { 
+                    totalPagesCount = total
+                    loadedPagesCount = memoryCache.size
+                }
+
+                val allLocal = targets.all { it.localData != null }
+
+                if (allLocal) {
+                    // FAST PATH: Parallel local processing
+                    targets.forEach { map ->
+                        val mapData = map.localData ?: return@forEach
+                        val start = map.start
+                        val end = map.end
+                        
+                        var current = start
+                        while (current < end) {
+                            if (!isActive) return@launch
+                            val page = (current / pageSize) * pageSize
+                            if (!memoryCache.containsKey(page)) {
+                                val pageData = ByteArray(pageSize)
+                                val readStart = maxOf(page, start)
+                                val readEnd = minOf(page + pageSize, end)
+                                val offsetInMap = (readStart - start).toInt()
+                                val len = (readEnd - readStart).toInt()
+                                mapData.copyInto(pageData, (readStart - page).toInt(), offsetInMap, offsetInMap + len)
                                 memoryCache[page] = pageData
+                                withContext(Dispatchers.Main) { loadedPagesCount = memoryCache.size }
                             }
-                        } catch (e: Exception) {
-                            // Page failed entirely, insert empty to prevent infinite retry loop
-                            memoryCache[page] = ByteArray(pageSize)
+                            current = page + pageSize
+                            // Allow UI thread to breathe every 100 pages
+                            if ((current / pageSize) % 100 == 0L) yield()
                         }
                     }
-                    page += pageSize.toLong()
+                } else {
+                    // CONSOLE PATH: Optimized parallel fetching
+                    // Use a worker pool to fetch pages without overwhelming the console
+                    val pageChannel = kotlinx.coroutines.channels.Channel<Long>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+                    
+                    // Populate channel with missing pages
+                    for (map in targets) {
+                        var current = map.start
+                        while (current < map.end) {
+                            val page = (current / pageSize) * pageSize
+                            if (!memoryCache.containsKey(page)) {
+                                pageChannel.trySend(page)
+                            }
+                            current = page + pageSize
+                        }
+                    }
+                    pageChannel.close()
+
+                    // Launch 4 parallel fetchers
+                    val workers = List(4) {
+                        launch {
+                            for (page in pageChannel) {
+                                if (!isActive) break
+                                while (isLoading) delay(200) // Yield to visible area
+                                loadPage(pid, page, targets)
+                                withContext(Dispatchers.Main) { loadedPagesCount = memoryCache.size }
+                                yield()
+                            }
+                        }
+                    }
+                    workers.forEach { it.join() }
                 }
+                
+                withContext(Dispatchers.Main) { 
+                    loadedPagesCount = totalPagesCount 
+                }
+            } finally {
+                isGreedyLoading = false
             }
         }
     }
@@ -275,7 +430,7 @@ class HexState(
         
         val rowAddress = getAddressForRow(scrollPosition + rowIndex)
         
-        val sorted = if (activeMaps.isNotEmpty()) activeMaps.sortedBy { it.start } else listOfNotNull(activeMap)
+        val sorted = if (activeMap != null) listOf(activeMap!!) else activeMaps.sortedBy { it.start }
         if (sorted.isEmpty()) return null
         if (rowAddress >= sorted.last().end) return null
         
@@ -336,10 +491,73 @@ class HexState(
 
     fun getByteAt(addr: Long): Byte {
         pendingEdits[addr]?.let { return it }
+        
+        // Fast path for local files: read directly from source data if cache is missing
+        val targets = if (activeMap != null) listOf(activeMap!!) else activeMaps.toList()
+        val localMap = targets.firstOrNull { it.localData != null && addr >= it.start && addr < it.end }
+        if (localMap != null) {
+            val offset = (addr - localMap.start).toInt()
+            if (offset >= 0 && offset < (localMap.localData?.size ?: 0)) {
+                return localMap.localData!![offset]
+            }
+        }
+
         val pageStart = (addr / pageSize) * pageSize
         val offset = (addr - pageStart).toInt()
         val page = memoryCache[pageStart]
         return if (page != null && offset in page.indices) page[offset] else 0.toByte()
+    }
+
+    fun pasteHex(hexStr: String, targetAddr: Long? = null) {
+        if (!isEditingUnlocked) return
+        val baseAddr = targetAddr ?: selectionEnd ?: return
+        
+        val sanitized = hexStr.replace("0x", " ")
+            .replace("\\x", " ")
+            .replace(",", " ")
+            .replace("\n", " ")
+            .replace("\r", " ")
+        val tokens = sanitized.split("\\s+".toRegex()).filter { it.isNotEmpty() }
+        val bytes = mutableListOf<Byte>()
+        for (token in tokens) {
+            if (token.length > 2 && token.all { it.isDigit() || it.uppercaseChar() in 'A'..'F' }) {
+                var i = 0
+                while (i < token.length) {
+                    if (i + 1 < token.length) {
+                        token.substring(i, i + 2).toIntOrNull(16)?.toByte()?.let { bytes.add(it) }
+                        i += 2
+                    } else {
+                        token.substring(i, i + 1).toIntOrNull(16)?.toByte()?.let { bytes.add(it) }
+                        i += 1
+                    }
+                }
+            } else {
+                token.toIntOrNull(16)?.toByte()?.let { bytes.add(it) }
+            }
+        }
+        
+        if (bytes.isEmpty()) return
+        
+        val targets = if (activeMap != null) listOf(activeMap!!) else activeMaps.toList()
+        var currentAddr = baseAddr
+        for (b in bytes) {
+            if (!targets.any { currentAddr >= it.start && currentAddr < it.end }) {
+                val nextValid = targets.filter { it.start > currentAddr }.minByOrNull { it.start }?.start
+                if (nextValid != null) {
+                    currentAddr = nextValid
+                } else {
+                    break
+                }
+            }
+            pendingEdits[currentAddr] = b
+            currentAddr++
+        }
+        
+        val lastAddr = currentAddr - 1
+        if (targets.any { lastAddr >= it.start && lastAddr < it.end }) {
+            changeSelection(baseAddr, lastAddr)
+        }
+        hexInputBuffer = ""
     }
 }
 

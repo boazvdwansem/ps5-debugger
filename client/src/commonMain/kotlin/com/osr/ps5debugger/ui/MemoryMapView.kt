@@ -7,9 +7,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
+import com.osr.ps5debugger.ui.icons.PS5Icons
 import androidx.compose.material3.*
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -96,9 +96,9 @@ fun MemoryMapView(
                 val headerBytes = headerBytesResult.getOrThrow()
                 var hasElfHeader = headerBytes.size >= 64 &&
                     headerBytes[0] == 0x7F.toByte() &&
-                    headerBytes[1] == 'E'.toByte() &&
-                    headerBytes[2] == 'L'.toByte() &&
-                    headerBytes[3] == 'F'.toByte()
+                    headerBytes[1] == 'E'.code.toByte() &&
+                    headerBytes[2] == 'L'.code.toByte() &&
+                    headerBytes[3] == 'F'.code.toByte()
 
                 val parsedSegments = mutableListOf<ElfSegment>()
                 val parsedSections = mutableListOf<ElfSection>()
@@ -272,8 +272,8 @@ fun MemoryMapView(
         modifier = modifier
             .width(320.dp)
             .fillMaxHeight()
-            .background(PS5ThemeColors.SecondaryBg)
-            .padding(12.dp)
+            .background(PS5ThemeColors.DarkBg)
+            .padding(8.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -282,16 +282,16 @@ fun MemoryMapView(
         ) {
             Text(
                 text = "Memory Map",
+                style = MaterialTheme.typography.titleMedium,
                 color = PS5ThemeColors.TextMain,
-                fontSize = 15.sp,
                 fontWeight = FontWeight.Bold
             )
-            IconButton(onClick = onCollapse) {
+            IconButton(onClick = onCollapse, modifier = Modifier.size(24.dp)) {
                 Icon(
-                    imageVector = Icons.Default.Close,
+                    imageVector = PS5Icons.Close,
                     contentDescription = "Collapse",
                     tint = PS5ThemeColors.TextMuted,
-                    modifier = Modifier.size(18.dp)
+                    modifier = Modifier.size(16.dp)
                 )
             }
         }
@@ -315,7 +315,7 @@ fun MemoryMapView(
                     Text(
                         "SEGMENTS",
                         color = PS5ThemeColors.AccentCyan,
-                        fontSize = 11.sp,
+                        fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 1.sp
                     )
@@ -358,7 +358,11 @@ fun MemoryMapView(
                             )
                         }
                         Spacer(Modifier.height(4.dp))
-                        Divider(color = PS5ThemeColors.BorderColor.copy(alpha = 0.2f), thickness = 0.5.dp)
+                        HorizontalDivider(
+                            Modifier,
+                            thickness = 0.5.dp,
+                            color = PS5ThemeColors.BorderColor.copy(alpha = 0.2f)
+                        )
                     }
                 }
             }

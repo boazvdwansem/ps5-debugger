@@ -34,14 +34,9 @@ object DisasmFormatter {
     }
 
     fun getMnemonic(instr: Ps5DisasmInstr, bytes: ByteArray = byteArrayOf()): String {
-        if (instr.mnemonic != 0) {
-            val id = instr.mnemonic
-            if (id >= 0 && id < ZydisMnemonics.NAMES.size) {
-                return ZydisMnemonics.NAMES[id]
-            }
-            return "INVALID"
-        }
-        
+        if (instr.isDataString) return "ds"
+        if (instr.isDataRaw) return "?? "
+
         if (bytes.isNotEmpty()) {
             val off = getOpcodeOffset(bytes)
             val b0 = bytes.getOrNull(off)?.toInt()?.let { it and 0xFF } ?: 0
@@ -79,16 +74,94 @@ object DisasmFormatter {
                 }
             }
             
+            if (b0 == 0x80 || b0 == 0x81 || b0 == 0x83) {
+                return when ((b1 shr 3) and 0x07) {
+                    0 -> "ADD"
+                    1 -> "OR"
+                    4 -> "AND"
+                    5 -> "SUB"
+                    6 -> "XOR"
+                    7 -> "CMP"
+                    else -> "GRP1"
+                }
+            }
+            
+            if (b0 == 0xF6 || b0 == 0xF7) {
+                return when ((b1 shr 3) and 0x07) {
+                    0 -> "TEST"
+                    2 -> "NOT"
+                    3 -> "NEG"
+                    4 -> "MUL"
+                    5 -> "IMUL"
+                    6 -> "DIV"
+                    7 -> "IDIV"
+                    else -> "GRP3"
+                }
+            }
+            
+            if (b0 == 0xFE || b0 == 0xFF) {
+                val reg = (b1 shr 3) and 0x07
+                return if (b0 == 0xFE) {
+                    when (reg) {
+                        0 -> "INC"
+                        1 -> "DEC"
+                        else -> "GRP4"
+                    }
+                } else {
+                    when (reg) {
+                        0 -> "INC"
+                        1 -> "DEC"
+                        2, 3 -> "CALL"
+                        4, 5 -> "JMP"
+                        6 -> "PUSH"
+                        else -> "GRP5"
+                    }
+                }
+            }
+            
+            if (b0 == 0xD0 || b0 == 0xD1 || b0 == 0xD2 || b0 == 0xD3 || b0 == 0xC0 || b0 == 0xC1) {
+                return when ((b1 shr 3) and 0x07) {
+                    0 -> "ROL"
+                    1 -> "ROR"
+                    2 -> "RCL"
+                    3 -> "RCR"
+                    4 -> "SHL"
+                    5 -> "SHR"
+                    7 -> "SAR"
+                    else -> "GRP2"
+                }
+            }
+            
             when (b0) {
                 0x90 -> return "NOP"
                 in 0x50..0x57 -> return "PUSH"
                 in 0x58..0x5F -> return "POP"
+                0x8D -> return "LEA"
+                0x85, 0x84, 0xA8, 0xA9 -> return "TEST"
+                0x31, 0x33, 0x35 -> return "XOR"
+                0x29, 0x2B, 0x2D -> return "SUB"
+                0x01, 0x03, 0x05 -> return "ADD"
+                0x21, 0x23, 0x25 -> return "AND"
+                0x09, 0x0B, 0x0D -> return "OR"
+                0xC9 -> return "LEAVE"
+                0x88, 0x89, 0x8A, 0x8B, 0xC6, 0xC7, in 0xB0..0xBF -> return "MOV"
+                0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D -> return "CMP"
                 0x0F -> {
                     if (b1 == 0x05) return "SYSCALL"
                     if (b1 == 0xA2) return "CPUID"
+                    if (b1 == 0xAF) return "IMUL"
+                    if (b1 == 0xB6 || b1 == 0xB7) return "MOVZX"
+                    if (b1 == 0xBE || b1 == 0xBF) return "MOVSX"
                 }
-                0x8D -> return "LEA"
             }
+        }
+
+        if (instr.mnemonic != 0) {
+            val id = instr.mnemonic
+            if (id >= 0 && id < ZydisMnemonics.NAMES.size) {
+                return ZydisMnemonics.NAMES[id]
+            }
+            return "INVALID"
         }
         
         return when (instr.mnemonicLo) {
@@ -126,6 +199,17 @@ object DisasmFormatter {
     }
 
     fun formatOperands(instr: Ps5DisasmInstr, bytes: ByteArray = byteArrayOf()): String {
+        if (instr.isDataString) {
+            val str = bytes.map { it.toInt() and 0xFF }
+                .filter { it != 0 }
+                .map { it.toChar() }
+                .joinToString("")
+            return "\"$str\""
+        }
+        if (instr.isDataRaw) {
+            return bytes.joinToString(" ") { "%02Xh".format(it) }
+        }
+
         val ops = mutableListOf<String>()
         
         if (instr.hasMemOp) {
@@ -136,9 +220,12 @@ object DisasmFormatter {
             
             val memStr = StringBuilder("[")
             var hasPrev = false
+            var skipDisp = false
             if (instr.isRipRel) {
-                memStr.append("rip")
+                val absAddr = instr.addr + instr.length + disp
+                memStr.append(com.osr.ps5debugger.di.AppContainer.getSymbolNameForTarget(absAddr, false))
                 hasPrev = true
+                skipDisp = true
             } else if (base.isNotEmpty()) {
                 memStr.append(base)
                 hasPrev = true
@@ -151,7 +238,7 @@ object DisasmFormatter {
                 }
                 hasPrev = true
             }
-            if (disp != 0L) {
+            if (disp != 0L && !skipDisp) {
                 if (hasPrev) {
                     if (disp > 0) memStr.append(" + ") else memStr.append(" - ")
                     memStr.append("0x").append(kotlin.math.abs(disp).toString(16).uppercase())
@@ -289,6 +376,7 @@ object DisasmFormatter {
     }
 
     fun getInfoText(instr: Ps5DisasmInstr, bytes: ByteArray = byteArrayOf()): String {
+        if (instr.isDataString) return "Initial Elf program interpreter"
         val jumpTarget = if (bytes.isNotEmpty()) getJumpTarget(instr, bytes) else 0L
         return when {
             jumpTarget != 0L -> "target: " + com.osr.ps5debugger.di.AppContainer.getSymbolNameForTarget(jumpTarget, instr.isCall)

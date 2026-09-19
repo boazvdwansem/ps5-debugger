@@ -15,6 +15,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -38,16 +39,15 @@ import java.util.Locale
 @Composable
 fun LoggerConsole(
     modifier: Modifier = Modifier,
-    actionButton: @Composable (() -> Unit)? = null
+    actionButton: @Composable (() -> Unit)? = null,
+    onAddressClick: ((Long) -> Unit)? = null
 ) {
     val logs by AppContainer.debuggerUseCase.logs.collectAsState()
     var filterLevel by remember { mutableStateOf<com.osr.ps5debugger.domain.model.LogEntry.Level?>(null) }
     var filterText by remember { mutableStateOf("") }
     
     val dateFormat = remember { SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()) }
-    val scrollState = rememberScrollState()
-
-
+    val listState = rememberLazyListState()
 
     val filteredLogs = remember(logs, filterLevel, filterText) {
         logs.filter { entry ->
@@ -56,42 +56,11 @@ fun LoggerConsole(
         }
     }
 
-    // Build single formatted and styled AnnotatedString for the console logs
-    val logsText = remember(filteredLogs) {
-        buildAnnotatedString {
-            filteredLogs.forEachIndexed { index, entry ->
-                val color = when (entry.level) {
-                    com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR -> Color(0xFFE06C75) // red
-                    com.osr.ps5debugger.domain.model.LogEntry.Level.WARN -> Color(0xFFD19A66)  // orange
-                    com.osr.ps5debugger.domain.model.LogEntry.Level.INFO -> Color(0xFFABB2BF)  // white/gray
-                    com.osr.ps5debugger.domain.model.LogEntry.Level.DEBUG -> Color(0xFF5C6370) // gray
-                    com.osr.ps5debugger.domain.model.LogEntry.Level.PROTOCOL -> Color(0xFF98C379) // green
-                }
-                
-                withStyle(SpanStyle(color = Color.Gray)) {
-                    append("[${dateFormat.format(Date(entry.timestamp))}] ")
-                }
-                withStyle(SpanStyle(color = PS5ThemeColors.AccentCyan)) {
-                    append("[${entry.tag}] ")
-                }
-                withStyle(SpanStyle(color = color)) {
-                    append(entry.message)
-                }
-                if (index < filteredLogs.lastIndex) {
-                    append("\n")
-                }
-            }
+    // Auto scroll to bottom
+    LaunchedEffect(filteredLogs.size) {
+        if (filteredLogs.isNotEmpty()) {
+            listState.animateScrollToItem(filteredLogs.size - 1)
         }
-    }
-
-    var textFieldValue by remember { mutableStateOf(TextFieldValue()) }
-
-    // Sync textFieldValue content when logsText changes
-    LaunchedEffect(logsText) {
-        textFieldValue = textFieldValue.copy(annotatedString = logsText)
-        // Auto scroll to bottom
-        delay(50) // Brief delay to let text field layout update
-        scrollState.animateScrollTo(scrollState.maxValue)
     }
 
 
@@ -105,12 +74,10 @@ fun LoggerConsole(
         }
     }
     
-    val consoleHeight = if (isMobile) 320.dp else 220.dp
-
+    // Standard dynamic fill configuration
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .height(consoleHeight)
             .background(MaterialTheme.colorScheme.surface)
             .padding(8.dp)
     ) {
@@ -221,15 +188,68 @@ fun LoggerConsole(
                     .background(Color.Black.copy(alpha = 0.4f))
                     .padding(4.dp)
             ) {
-                BasicTextField(
-                    value = textFieldValue,
-                    onValueChange = { textFieldValue = it },
-                    readOnly = true,
-                    textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = PS5ThemeColors.TextMain),
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .verticalScroll(scrollState)
-                )
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    items(filteredLogs) { entry ->
+                        val color = when (entry.level) {
+                            com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR -> Color(0xFFE06C75)
+                            com.osr.ps5debugger.domain.model.LogEntry.Level.WARN -> Color(0xFFD19A66)
+                            com.osr.ps5debugger.domain.model.LogEntry.Level.INFO -> Color(0xFFABB2BF)
+                            com.osr.ps5debugger.domain.model.LogEntry.Level.DEBUG -> Color(0xFF5C6370)
+                            com.osr.ps5debugger.domain.model.LogEntry.Level.PROTOCOL -> Color(0xFF98C379)
+                        }
+
+                        val annotatedMessage = buildAnnotatedString {
+                            val msg = entry.message
+                            val regex = "0x[0-9A-Fa-f]+".toRegex()
+                            var lastMatchEnd = 0
+                            
+                            regex.findAll(msg).forEach { match ->
+                                append(msg.substring(lastMatchEnd, match.range.first))
+                                pushStringAnnotation(tag = "address", annotation = match.value)
+                                withStyle(SpanStyle(color = PS5ThemeColors.AccentCyan, textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline)) {
+                                    append(match.value)
+                                }
+                                pop()
+                                lastMatchEnd = match.range.last + 1
+                            }
+                            append(msg.substring(lastMatchEnd))
+                        }
+
+                        Row(verticalAlignment = Alignment.Top, modifier = Modifier.fillMaxWidth()) {
+                            Text(
+                                text = "[${dateFormat.format(Date(entry.timestamp))}] ",
+                                color = Color.Gray,
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
+                            Text(
+                                text = "[${entry.tag}] ",
+                                color = PS5ThemeColors.AccentCyan,
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.width(80.dp)
+                            )
+                            androidx.compose.foundation.text.ClickableText(
+                                text = annotatedMessage,
+                                style = TextStyle(color = color, fontSize = 11.sp, fontFamily = FontFamily.Monospace),
+                                onClick = { offset ->
+                                    annotatedMessage.getStringAnnotations(tag = "address", start = offset, end = offset)
+                                        .firstOrNull()?.let { annotation ->
+                                            val addr = annotation.item.removePrefix("0x").toLongOrNull(16)
+                                            if (addr != null) {
+                                                onAddressClick?.invoke(addr)
+                                            }
+                                        }
+                                }
+                            )
+                        }
+                    }
+                }
             }
         }
 }
