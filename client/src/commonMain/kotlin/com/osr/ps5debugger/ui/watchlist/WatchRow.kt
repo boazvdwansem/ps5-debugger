@@ -1,6 +1,7 @@
 package com.osr.ps5debugger.ui.watchlist
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
@@ -25,6 +26,7 @@ import androidx.compose.ui.unit.sp
 import com.osr.ps5debugger.PS5ThemeColors
 import com.osr.ps5debugger.di.AppContainer
 import com.osr.ps5debugger.domain.model.WatchItem
+import com.osr.ps5debugger.ui.icons.PS5Icons
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
@@ -120,13 +122,14 @@ fun WatchRow(
         DropdownMenu(
             expanded = showContextMenu,
             onDismissRequest = { showContextMenu = false },
-            offset = contextMenuOffset
+            offset = contextMenuOffset,
+            modifier = Modifier.background(PS5ThemeColors.Surface)
         ) {
             DropdownMenuItem(
-                text = { Text("Jump to Address in Memory Viewer", fontSize = 12.sp) },
+                text = { Text("Jump to Address in Memory Viewer", fontSize = 12.sp, color = PS5ThemeColors.TextMain) },
                 onClick = { onJumpToAddress(item.address); showContextMenu = false }
             )
-            HorizontalDivider()
+            HorizontalDivider(color = PS5ThemeColors.BorderColor)
             DropdownMenuItem(
                 text = { Text("Add to Cheats", fontSize = 12.sp, color = PS5ThemeColors.AccentCyan) },
                 onClick = {
@@ -147,7 +150,7 @@ fun WatchRow(
                     showContextMenu = false
                 }
             )
-            HorizontalDivider()
+            HorizontalDivider(color = PS5ThemeColors.BorderColor)
             DropdownMenuItem(
                 text = { Text("Delete", fontSize = 12.sp, color = PS5ThemeColors.StatusRed) },
                 onClick = { onDelete(); showContextMenu = false }
@@ -159,34 +162,42 @@ fun WatchRow(
     if (showEditDialog) {
         AlertDialog(
             onDismissRequest = { showEditDialog = false },
-            title = { Text("Edit Value — ${item.label}") },
+            containerColor = PS5ThemeColors.Surface,
+            titleContentColor = PS5ThemeColors.TextMain,
+            textContentColor = PS5ThemeColors.TextMain,
+            title = { Text("Edit Value - ${item.label}", color = PS5ThemeColors.TextMain) },
             text = {
                 OutlinedTextField(
                     value = editValueText,
                     onValueChange = { editValueText = it },
                     label = { Text("New Value (${item.type})") },
-                    singleLine = true
+                    singleLine = true,
+                    colors = watchRowTextFieldColors()
                 )
             },
             confirmButton = {
-                Button(onClick = {
-                    coroutineScope.launch {
-                        val bytes = valueToBytes(editValueText, item)
-                        if (bytes != null) {
-                            val result = AppContainer.debuggerUseCase.writeMemory(item.address, bytes)
-                            if (result.isSuccess && result.getOrDefault(false)) {
-                                if (item.isFrozen) {
-                                    AppContainer.debuggerUseCase.toggleFreezeWatchItem(item)
-                                    AppContainer.debuggerUseCase.toggleFreezeWatchItem(item)
+                Button(
+                    onClick = {
+                        coroutineScope.launch {
+                            val bytes = valueToBytes(editValueText, item)
+                            if (bytes != null) {
+                                val result = AppContainer.debuggerUseCase.writeMemory(item.address, bytes)
+                                if (result.isSuccess && result.getOrDefault(false)) {
+                                    if (item.isFrozen) {
+                                        AppContainer.debuggerUseCase.toggleFreezeWatchItem(item)
+                                        AppContainer.debuggerUseCase.toggleFreezeWatchItem(item)
+                                    }
                                 }
                             }
+                            showEditDialog = false
                         }
-                        showEditDialog = false
-                    }
-                }) { Text("Write") }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.AccentCyan),
+                    shape = RoundedCornerShape(4.dp)
+                ) { Text("Write", color = Color.Black, fontWeight = FontWeight.Bold) }
             },
             dismissButton = {
-                TextButton(onClick = { showEditDialog = false }) { Text("Cancel") }
+                TextButton(onClick = { showEditDialog = false }) { Text("Cancel", color = PS5ThemeColors.TextMuted) }
             }
         )
     }
@@ -210,9 +221,11 @@ private fun MobileWatchCard(
     onUpdateComment: (String) -> Unit,
     onEditValue: () -> Unit
 ) {
-    Card(
+    Surface(
         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+        color = PS5ThemeColors.Surface,
+        shape = RoundedCornerShape(8.dp),
+        border = BorderStroke(1.dp, if (item.isFrozen) PS5ThemeColors.AccentCyan.copy(alpha = 0.55f) else PS5ThemeColors.BorderColor)
     ) {
         Column(modifier = Modifier.padding(12.dp).fillMaxWidth()) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -222,7 +235,7 @@ private fun MobileWatchCard(
                         onValueChange = onLabelChange,
                         singleLine = true,
                         textStyle = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.Bold, color = PS5ThemeColors.TextMain),
-                        modifier = Modifier.weight(1f).background(PS5ThemeColors.SecondaryBg, RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 3.dp)
+                        modifier = Modifier.weight(1f).watchInlineEditor()
                             .onKeyEvent { e ->
                                 if (e.type == KeyEventType.KeyDown) when (e.key) {
                                     Key.Enter -> { onUpdateLabel(labelDraft); onLabelEditToggle(false); true }
@@ -232,26 +245,26 @@ private fun MobileWatchCard(
                             }
                     )
                 } else {
-                    Text(item.label, fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f).clickable { onLabelEditToggle(true) })
+                    Text(item.label.ifEmpty { "Unnamed watch" }, color = PS5ThemeColors.TextMain, fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f).clickable { onLabelEditToggle(true) })
                 }
-                Text(String.format("0x%X", item.address), fontFamily = FontFamily.Monospace, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
+                Text(String.format("0x%X", item.address), fontFamily = FontFamily.Monospace, fontSize = 12.sp, color = PS5ThemeColors.AccentCyan)
             }
 
             Spacer(Modifier.height(8.dp))
 
             Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Box(modifier = Modifier.weight(1.1f)) {
-                    Text(item.type, fontSize = 13.sp, color = PS5ThemeColors.AccentCyan, modifier = Modifier.clickable { onTypeDropdownToggle(true) })
-                    DropdownMenu(expanded = showTypeDropdown, onDismissRequest = { onTypeDropdownToggle(false) }) {
+                    WatchTypePill(item.type, modifier = Modifier.clickable { onTypeDropdownToggle(true) })
+                    DropdownMenu(expanded = showTypeDropdown, onDismissRequest = { onTypeDropdownToggle(false) }, modifier = Modifier.background(PS5ThemeColors.Surface)) {
                         typeOptions.forEach { t ->
-                            DropdownMenuItem(text = { Text(t, fontSize = 13.sp) }, onClick = { onUpdateType(t); onTypeDropdownToggle(false) })
+                            DropdownMenuItem(text = { Text(t, fontSize = 13.sp, color = PS5ThemeColors.TextMain) }, onClick = { onUpdateType(t); onTypeDropdownToggle(false) })
                         }
                     }
                 }
-                Text(text = item.valueStr, fontFamily = FontFamily.Monospace, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1.5f).clickable { onEditValue() })
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.End, modifier = Modifier.weight(1f)) {
-                    Text("Freeze", fontSize = 11.sp, modifier = Modifier.padding(end = 2.dp))
-                    Checkbox(checked = item.isFrozen, onCheckedChange = { AppContainer.debuggerUseCase.toggleFreezeWatchItem(item) })
+                Text(text = item.valueStr, fontFamily = FontFamily.Monospace, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = if (item.valueStr == "??") PS5ThemeColors.TextMuted else PS5ThemeColors.AccentCyan, modifier = Modifier.weight(1.5f).clickable { onEditValue() })
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.End, modifier = Modifier.weight(1f).clickable { AppContainer.debuggerUseCase.toggleFreezeWatchItem(item) }) {
+                    Text(if (item.isFrozen) "Frozen" else "Live", color = if (item.isFrozen) PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted, fontSize = 11.sp, modifier = Modifier.padding(end = 4.dp))
+                    Checkbox(checked = item.isFrozen, onCheckedChange = { AppContainer.debuggerUseCase.toggleFreezeWatchItem(item) }, colors = CheckboxDefaults.colors(checkedColor = PS5ThemeColors.AccentCyan))
                 }
             }
 
@@ -262,7 +275,7 @@ private fun MobileWatchCard(
                     onValueChange = onCommentChange,
                     singleLine = true,
                     textStyle = TextStyle(fontSize = 12.sp, color = PS5ThemeColors.TextMain),
-                    modifier = Modifier.fillMaxWidth().background(PS5ThemeColors.SecondaryBg, RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 3.dp)
+                    modifier = Modifier.fillMaxWidth().watchInlineEditor()
                         .onKeyEvent { e ->
                             if (e.type == KeyEventType.KeyDown) when (e.key) {
                                 Key.Enter -> { onUpdateComment(commentDraft); onCommentEditToggle(false); true }
@@ -273,7 +286,7 @@ private fun MobileWatchCard(
                 )
             } else {
                 Spacer(Modifier.height(4.dp))
-                Text(text = item.comment.ifEmpty { "Tap to add comment…" }, fontSize = 12.sp, color = if (item.comment.isEmpty()) PS5ThemeColors.TextMuted else PS5ThemeColors.TextMain, modifier = Modifier.fillMaxWidth().clickable { onCommentEditToggle(true) })
+                Text(text = item.comment.ifEmpty { "Tap to add comment..." }, fontSize = 12.sp, color = if (item.comment.isEmpty()) PS5ThemeColors.TextMuted else PS5ThemeColors.TextMain, modifier = Modifier.fillMaxWidth().clickable { onCommentEditToggle(true) })
             }
         }
     }
@@ -297,14 +310,20 @@ private fun DesktopWatchRow(
     onUpdateComment: (String) -> Unit,
     onEditValue: () -> Unit
 ) {
-    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = PS5ThemeColors.Surface.copy(alpha = 0.82f),
+        shape = RoundedCornerShape(4.dp),
+        border = BorderStroke(1.dp, if (item.isFrozen) PS5ThemeColors.AccentCyan.copy(alpha = 0.5f) else PS5ThemeColors.BorderColor.copy(alpha = 0.45f))
+    ) {
+    Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
         if (isEditingLabel) {
             BasicTextField(
                 value = labelDraft,
                 onValueChange = onLabelChange,
                 singleLine = true,
                 textStyle = TextStyle(fontSize = 13.sp, color = PS5ThemeColors.TextMain),
-                modifier = Modifier.weight(1.5f).padding(start = 8.dp, end = 4.dp).background(PS5ThemeColors.SecondaryBg, RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 3.dp)
+                modifier = Modifier.weight(1.5f).padding(end = 6.dp).watchInlineEditor()
                     .onKeyEvent { e ->
                         if (e.type == KeyEventType.KeyDown) when (e.key) {
                             Key.Enter -> { onUpdateLabel(labelDraft); onLabelEditToggle(false); true }
@@ -314,26 +333,28 @@ private fun DesktopWatchRow(
                     }
             )
         } else {
-            Text(item.label, fontSize = 13.sp, modifier = Modifier.weight(1.5f).padding(start = 8.dp).clickable { onLabelEditToggle(true) })
+            Text(item.label.ifEmpty { "Unnamed watch" }, color = PS5ThemeColors.TextMain, fontSize = 13.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1.5f).clickable { onLabelEditToggle(true) })
         }
-        Text(String.format("0x%X", item.address), fontFamily = FontFamily.Monospace, fontSize = 13.sp, modifier = Modifier.weight(1.5f))
+        Text(String.format("0x%X", item.address), color = PS5ThemeColors.AccentCyan, fontFamily = FontFamily.Monospace, fontSize = 12.sp, modifier = Modifier.weight(1.5f))
         Box(modifier = Modifier.weight(1f)) {
-            Text(item.type, fontSize = 13.sp, color = PS5ThemeColors.AccentCyan, modifier = Modifier.clickable { onTypeDropdownToggle(true) })
-            DropdownMenu(expanded = showTypeDropdown, onDismissRequest = { onTypeDropdownToggle(false) }) {
+            WatchTypePill(item.type, modifier = Modifier.clickable { onTypeDropdownToggle(true) })
+            DropdownMenu(expanded = showTypeDropdown, onDismissRequest = { onTypeDropdownToggle(false) }, modifier = Modifier.background(PS5ThemeColors.Surface)) {
                 typeOptions.forEach { t ->
-                    DropdownMenuItem(text = { Text(t, fontSize = 13.sp) }, onClick = { onUpdateType(t); onTypeDropdownToggle(false) })
+                    DropdownMenuItem(text = { Text(t, fontSize = 13.sp, color = PS5ThemeColors.TextMain) }, onClick = { onUpdateType(t); onTypeDropdownToggle(false) })
                 }
             }
         }
-        Text(text = item.valueStr, fontFamily = FontFamily.Monospace, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1.5f).clickable { onEditValue() })
-        Checkbox(checked = item.isFrozen, onCheckedChange = { AppContainer.debuggerUseCase.toggleFreezeWatchItem(item) }, modifier = Modifier.width(60.dp))
+        Text(text = item.valueStr, fontFamily = FontFamily.Monospace, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = if (item.valueStr == "??") PS5ThemeColors.TextMuted else PS5ThemeColors.AccentCyan, modifier = Modifier.weight(1.5f).clickable { onEditValue() })
+        Box(modifier = Modifier.width(60.dp), contentAlignment = Alignment.CenterStart) {
+            Checkbox(checked = item.isFrozen, onCheckedChange = { AppContainer.debuggerUseCase.toggleFreezeWatchItem(item) }, colors = CheckboxDefaults.colors(checkedColor = PS5ThemeColors.AccentCyan))
+        }
         if (isEditingComment) {
             BasicTextField(
                 value = commentDraft,
                 onValueChange = onCommentChange,
                 singleLine = true,
                 textStyle = TextStyle(fontSize = 13.sp, color = PS5ThemeColors.TextMain),
-                modifier = Modifier.weight(2f).background(PS5ThemeColors.SecondaryBg, RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 3.dp)
+                modifier = Modifier.weight(2f).watchInlineEditor()
                     .onKeyEvent { e ->
                         if (e.type == KeyEventType.KeyDown) when (e.key) {
                             Key.Enter -> { onUpdateComment(commentDraft); onCommentEditToggle(false); true }
@@ -343,7 +364,43 @@ private fun DesktopWatchRow(
                     }
             )
         } else {
-            Text(text = item.comment.ifEmpty { "click to add…" }, fontSize = 13.sp, color = if (item.comment.isEmpty()) PS5ThemeColors.TextMuted else PS5ThemeColors.TextMain, modifier = Modifier.weight(2f).clickable { onCommentEditToggle(true) })
+            Text(text = item.comment.ifEmpty { "click to add..." }, fontSize = 13.sp, color = if (item.comment.isEmpty()) PS5ThemeColors.TextMuted else PS5ThemeColors.TextMain, modifier = Modifier.weight(2f).clickable { onCommentEditToggle(true) })
         }
     }
+    }
 }
+
+private fun Modifier.watchInlineEditor(): Modifier =
+    this
+        .background(PS5ThemeColors.SecondaryBg, RoundedCornerShape(4.dp))
+        .padding(horizontal = 6.dp, vertical = 3.dp)
+
+@Composable
+private fun WatchTypePill(type: String, modifier: Modifier = Modifier) {
+    Surface(
+        color = PS5ThemeColors.AccentCyan.copy(alpha = 0.12f),
+        shape = RoundedCornerShape(4.dp),
+        border = BorderStroke(1.dp, PS5ThemeColors.AccentCyan.copy(alpha = 0.35f)),
+        modifier = modifier
+    ) {
+        Text(
+            type,
+            color = PS5ThemeColors.AccentCyan,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 11.sp,
+            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun watchRowTextFieldColors() = OutlinedTextFieldDefaults.colors(
+    focusedBorderColor = PS5ThemeColors.AccentCyan,
+    unfocusedBorderColor = PS5ThemeColors.BorderColor,
+    focusedLabelColor = PS5ThemeColors.AccentCyan,
+    unfocusedLabelColor = PS5ThemeColors.TextMuted,
+    focusedTextColor = PS5ThemeColors.TextMain,
+    unfocusedTextColor = PS5ThemeColors.TextMain,
+    cursorColor = PS5ThemeColors.AccentCyan
+)

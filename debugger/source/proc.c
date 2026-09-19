@@ -88,12 +88,22 @@ int find_contentid(const uint8_t *buf, size_t len, char *out, size_t out_size) {
 static void disasm_fill_entry(struct disasm_instr_entry *out,
                               uint64_t addr,
                               const ZydisDecodedInstruction *insn,
-                              const ZydisDecodedOperand *operands) {
+                              const ZydisDecodedOperand *operands,
+                              const ZydisFormatter *formatter) {
     memset(out, 0, sizeof(*out));
     out->addr = addr;
     out->length = insn->length;
     out->mnemonic = (uint16_t)insn->mnemonic;
     out->reserved = 0;
+    if (formatter) {
+        ZyanStatus fmt = ZydisFormatterFormatInstruction(formatter, insn, operands,
+                                                         insn->operand_count_visible,
+                                                         out->text, sizeof(out->text),
+                                                         addr, ZYAN_NULL);
+        if (!ZYAN_SUCCESS(fmt)) {
+            out->text[0] = '\0';
+        }
+    }
 
     switch (insn->meta.category) {
         case ZYDIS_CATEGORY_CALL:      out->kind |= 0x01; break;
@@ -127,6 +137,7 @@ static void disasm_fill_entry(struct disasm_instr_entry *out,
 typedef void (*disasm_emit_fn)(uint64_t addr,
                                const ZydisDecodedInstruction *insn,
                                const ZydisDecodedOperand *operands,
+                               const ZydisFormatter *formatter,
                                void *ctx);
 
 static uint64_t disasm_iterate(uint32_t pid, uint64_t start, uint64_t length,
@@ -136,6 +147,8 @@ static uint64_t disasm_iterate(uint32_t pid, uint64_t start, uint64_t length,
 
     ZydisDecoder decoder;
     ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
+    ZydisFormatter formatter;
+    ZydisFormatterInit(&formatter, ZYDIS_FORMATTER_STYLE_INTEL);
 
     ZydisDecodedInstruction insn;
     ZydisDecodedOperand     operands[ZYDIS_MAX_OPERAND_COUNT];
@@ -159,7 +172,7 @@ static uint64_t disasm_iterate(uint32_t pid, uint64_t start, uint64_t length,
                 pos++;
                 continue;
             }
-            emit(start + off + pos, &insn, operands, ctx);
+            emit(start + off + pos, &insn, operands, &formatter, ctx);
             emitted++;
             pos += insn.length;
 
@@ -184,6 +197,7 @@ struct disasm_ctx {
 static void disasm_emit_record(uint64_t addr,
                                const ZydisDecodedInstruction *insn,
                                const ZydisDecodedOperand *operands,
+                               const ZydisFormatter *formatter,
                                void *ctx_) {
     struct disasm_ctx *ctx = (struct disasm_ctx *)ctx_;
     if (ctx->out_used + DISASM_INSTR_ENTRY_SIZE > ctx->out_cap) {
@@ -191,7 +205,7 @@ static void disasm_emit_record(uint64_t addr,
         ctx->out_used = 0;
     }
     struct disasm_instr_entry *e = (struct disasm_instr_entry *)(ctx->out_buf + ctx->out_used);
-    disasm_fill_entry(e, addr, insn, operands);
+    disasm_fill_entry(e, addr, insn, operands, formatter);
     ctx->out_used += DISASM_INSTR_ENTRY_SIZE;
 }
 

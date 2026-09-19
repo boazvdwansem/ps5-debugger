@@ -376,7 +376,7 @@ object DisasmFormatter {
     }
 
     fun getInfoText(instr: Ps5DisasmInstr, bytes: ByteArray = byteArrayOf()): String {
-        if (instr.isDataString) return "Initial Elf program interpreter"
+        if (instr.isDataString) return "string data"
         val jumpTarget = if (bytes.isNotEmpty()) getJumpTarget(instr, bytes) else 0L
         return when {
             jumpTarget != 0L -> "target: " + com.osr.ps5debugger.di.AppContainer.getSymbolNameForTarget(jumpTarget, instr.isCall)

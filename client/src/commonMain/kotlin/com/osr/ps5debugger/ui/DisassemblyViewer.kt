@@ -8,6 +8,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -253,7 +254,6 @@ fun DisassemblyViewer(
     val coroutineScope = rememberCoroutineScope()
     val client = AppContainer.clientAdapter.client
     val activeProcess by AppContainer.debuggerUseCase.activeProcess.collectAsState()
-    val isConnected by AppContainer.debuggerUseCase.isConnected.collectAsState()
     
     var goToAddressText by remember { mutableStateOf("") }
     
@@ -296,166 +296,6 @@ fun DisassemblyViewer(
                     listState.animateScrollToItem(index)
                     targetToScroll = null // Mark as finished
                 } catch (_: Exception) {}
-            }
-        }
-    }
-    
-    val firstVisibleIndex by remember { derivedStateOf { listState.firstVisibleItemIndex } }
-    
-    // Background Warm-up (Greedy loading for LIVE memory only)
-    LaunchedEffect(activeMap, isConnected) {
-        val targetMap = activeMap ?: return@LaunchedEffect
-        // Local files are now handled fully upfront in loadInitialInstructions
-        if (targetMap.localData == null && isConnected) {
-            this.launch(kotlinx.coroutines.Dispatchers.Default) {
-                while (true) {
-                    val lastLine = instructions.lastOrNull() ?: break
-                    val nextStart = lastLine.instr.addr + lastLine.instr.length
-                    if (nextStart >= targetMap.end) break
-                    
-                    if (instructions.size > 50000 && (instructions.size - firstVisibleIndex) > 10000) {
-                        kotlinx.coroutines.delay(2000)
-                        continue
-                    }
-
-                    val nextLen = minOf(131072L, targetMap.end - nextStart).toInt()
-                    val pid = activeProcess?.pid ?: break
-                    val rawBytes = try { client.readMemory(pid, nextStart, nextLen) } catch(_: Exception) { ByteArray(0) }
-                    if (rawBytes.isEmpty()) break
-
-                    val syncAddrs = (AppContainer.discoveredFunctions.toSet() + AppContainer.symbolNames.keys.toSet() + AppContainer.discoveredJumpTargets.toSet())
-                    val newInstrs = client.disassembleRegion(pid, nextStart, nextLen, 2000)
-                    
-                    val newLines = newInstrs.map { instr ->
-                        val off = (instr.addr - nextStart).toInt()
-                        val instrBytes = if (off >= 0 && off + instr.length <= rawBytes.size) rawBytes.copyOfRange(off, off + instr.length) else ByteArray(0)
-                        DisasmLine(instr, instrBytes, targetMap)
-                    }
-                    
-                    val oldSize = instructions.size
-                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                        val existingAddrs = instructions.map { it.instr.addr }.toSet()
-                        val uniqueNewLines = newLines.filter { !existingAddrs.contains(it.instr.addr) }
-                        if (uniqueNewLines.isNotEmpty()) {
-                            instructions.addAll(uniqueNewLines)
-                        }
-                    }
-                    com.osr.ps5debugger.util.OrbisSymbolResolver.autoResolve(instructions, oldSize)
-                    onMetadataUpdateRequested?.invoke()
-                    kotlinx.coroutines.yield()
-                }
-            }
-        }
-    }
-    
-    LaunchedEffect(firstVisibleIndex, instructions.size, isLoading, isConnected) {
-        val pid = activeProcess?.pid
-        if (!isLoading && instructions.isNotEmpty()) {
-            if (firstVisibleIndex + 100 >= instructions.size) { // Trigger earlier (at 100 remaining)
-                val lastLine = instructions.last()
-                val nextStart = lastLine.instr.addr + lastLine.instr.length
-                val targetMap = if (activeMap != null && nextStart >= activeMap.start && nextStart < activeMap.end) activeMap
-                               else activeMaps.firstOrNull { nextStart >= it.start && nextStart < it.end }
-                
-                if (targetMap != null && nextStart < targetMap.end) {
-                    if (targetMap.localData == null && (pid == null || !isConnected)) return@LaunchedEffect
-                    val nextLen = minOf(65536L, targetMap.end - nextStart).toInt() // Load 64KB blocks
-                    if (nextLen > 0) {
-                        coroutineScope.launch(kotlinx.coroutines.Dispatchers.Default) {
-                            try {
-                                if ((targetMap.protections and 4) != 0 || targetMap.localData != null) {
-                                    val rawBytes = if (targetMap.localData != null) {
-                                        val offset = (nextStart - targetMap.start).toInt()
-                                        targetMap.localData.copyOfRange(offset, offset + nextLen)
-                                    } else {
-                                        client.readMemory(pid!!, nextStart, nextLen)
-                                    }
-                                    
-                                    val syncAddrs = (AppContainer.discoveredFunctions.toSet() + AppContainer.symbolNames.keys.toSet() + AppContainer.discoveredJumpTargets.toSet())
-                                    val newInstrs = if (targetMap.localData != null) {
-                                        com.osr.ps5debugger.util.LocalDisassembler.disassemble(rawBytes, nextStart, syncAddrs)
-                                    } else {
-                                        client.disassembleRegion(pid!!, nextStart, nextLen, 500)
-                                    }
-                                    
-                                    val newLines = newInstrs.map { instr ->
-                                        val off = (instr.addr - nextStart).toInt()
-                                        val instrBytes = if (off >= 0 && off + instr.length <= rawBytes.size) rawBytes.copyOfRange(off, off + instr.length) else ByteArray(0)
-                                        val lineRegion = targetMap.subRanges.firstOrNull { instr.addr >= it.start && instr.addr < it.end } ?: targetMap
-                                        DisasmLine(instr, instrBytes, lineRegion)
-                                    }
-                                    
-                                    val oldSize = instructions.size
-                                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                        val existingAddrs = instructions.map { it.instr.addr }.toSet()
-                                        val uniqueNewLines = newLines.filter { !existingAddrs.contains(it.instr.addr) }
-                                        if (uniqueNewLines.isNotEmpty()) {
-                                            instructions.addAll(uniqueNewLines)
-                                        }
-                                    }
-                                    
-                                    // Resolve ONLY the new items in background
-                                    com.osr.ps5debugger.util.OrbisSymbolResolver.autoResolve(instructions, oldSize)
-                                    onMetadataUpdateRequested?.invoke()
-                                }
-                            } catch (_: Exception) {}
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    LaunchedEffect(firstVisibleIndex, isLoading, isConnected) {
-        val pid = activeProcess?.pid
-        if (!isLoading && instructions.isNotEmpty()) {
-            if (firstVisibleIndex <= 20) { // Trigger earlier
-                val firstLine = instructions.first()
-                val targetMap = if (activeMap != null && firstLine.instr.addr > activeMap.start && firstLine.instr.addr <= activeMap.end) activeMap
-                               else activeMaps.firstOrNull { firstLine.instr.addr > it.start && firstLine.instr.addr <= it.end }
-                if (targetMap != null && firstLine.instr.addr > targetMap.start) {
-                    if (targetMap.localData == null && (pid == null || !isConnected)) return@LaunchedEffect
-                    val prevStart = maxOf(targetMap.start, firstLine.instr.addr - 65536L)
-                    val prevLen = (firstLine.instr.addr - prevStart).toInt()
-                    if (prevLen > 0) {
-                        coroutineScope.launch(kotlinx.coroutines.Dispatchers.Default) {
-                            try {
-                                if ((targetMap.protections and 4) != 0 || targetMap.localData != null) {
-                                    val rawBytes = if (targetMap.localData != null) {
-                                        val offset = (prevStart - targetMap.start).toInt()
-                                        targetMap.localData.copyOfRange(offset, offset + prevLen)
-                                    } else {
-                                        client.readMemory(pid!!, prevStart, prevLen)
-                                    }
-                                    val syncAddrs = (AppContainer.discoveredFunctions.toSet() + AppContainer.symbolNames.keys.toSet() + AppContainer.discoveredJumpTargets.toSet())
-                                    val newInstrs = if (targetMap.localData != null) {
-                                        com.osr.ps5debugger.util.LocalDisassembler.disassemble(rawBytes, prevStart, syncAddrs)
-                                    } else {
-                                        client.disassembleRegion(pid!!, prevStart, prevLen, 500)
-                                    }
-                                    val newLines = newInstrs.map { instr ->
-                                        val off = (instr.addr - prevStart).toInt()
-                                        val instrBytes = if (off >= 0 && off + instr.length <= rawBytes.size) rawBytes.copyOfRange(off, off + instr.length) else ByteArray(0)
-                                        val lineRegion = targetMap.subRanges.firstOrNull { instr.addr >= it.start && instr.addr < it.end } ?: targetMap
-                                        DisasmLine(instr, instrBytes, lineRegion)
-                                    }
-                                    if (newLines.isNotEmpty()) {
-                                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                            val existingAddrs = instructions.map { it.instr.addr }.toSet()
-                                            val uniqueNewLines = newLines.filter { !existingAddrs.contains(it.instr.addr) }
-                                            if (uniqueNewLines.isNotEmpty()) {
-                                                instructions.addAll(0, uniqueNewLines)
-                                                try { listState.scrollToItem(listState.firstVisibleItemIndex + uniqueNewLines.size, listState.firstVisibleItemScrollOffset) } catch (_: Exception) {}
-                                            }
-                                        }
-                                        com.osr.ps5debugger.util.OrbisSymbolResolver.autoResolve(instructions, 0)
-                                        onMetadataUpdateRequested?.invoke()
-                                    }
-                                }
-                            } catch (_: Exception) {}
-                        }
-                    }
-                }
             }
         }
     }
@@ -545,11 +385,24 @@ fun DisassemblyViewer(
                     Column(modifier = Modifier.fillMaxSize()) {
                         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                             Box(modifier = Modifier.fillMaxSize().then(if (isCompact) Modifier else Modifier.horizontalScroll(horizontalScrollState))) {
+                                Column(modifier = Modifier.width(if (isCompact) viewportWidth else 2000.dp).fillMaxHeight()) {
+                                Row(modifier = Modifier.fillMaxWidth().height(28.dp).background(PS5ThemeColors.SecondaryBg).border(1.dp, PS5ThemeColors.BorderColor).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Text("ADDRESS", modifier = Modifier.width(110.dp), color = PS5ThemeColors.TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                                    Text("BYTES", modifier = Modifier.width(220.dp).padding(horizontal = 12.dp), color = PS5ThemeColors.TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                                    Text("ASCII", modifier = Modifier.width(180.dp).padding(horizontal = 8.dp), color = PS5ThemeColors.TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                                    Text("MNEMONIC", modifier = Modifier.width(90.dp), color = PS5ThemeColors.TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                                    Text("OPERANDS", modifier = Modifier.width(420.dp), color = PS5ThemeColors.TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                                    Text("COMMENTS / XREFS", color = PS5ThemeColors.TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                                }
+                                val visibleJumpTracks = remember(jumpTracks) { jumpTracks.filterValues { it < 8 } }
+                                val visibleMaxTrack = visibleJumpTracks.values.maxOrNull() ?: -1
+                                val visibleCanvasWidth = if (visibleMaxTrack >= 0) (20 + (visibleMaxTrack + 1) * 8).dp.coerceAtMost(40.dp) else 0.dp
+                                SelectionContainer {
                                 LazyColumn(
                                     state = listState,
                                     modifier = Modifier
                                         .width(if (isCompact) viewportWidth else 2000.dp)
-                                        .fillMaxHeight()
+                                        .weight(1f)
                                         .background(PS5ThemeColors.Surface, RoundedCornerShape(4.dp))
                                         .border(1.dp, PS5ThemeColors.BorderColor, RoundedCornerShape(4.dp))
                                         .padding(vertical = 8.dp)
@@ -603,16 +456,49 @@ fun DisassemblyViewer(
                                             }
 
                                             if (isFunctionStart) {
-                                                Spacer(Modifier.height(20.dp))
-                                                Column(modifier = Modifier.fillMaxWidth().padding(start = 290.dp, top = 8.dp, bottom = 4.dp)) {
-                                                    Text("*************************************************************", color = Color.Gray, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-                                                    Text("*                           FUNCTION                          ", color = Color.Gray, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-                                                    Text("*************************************************************", color = Color.Gray, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                                                // Ghidra-style function plate: a named, selectable
+                                                // comment block anchored to the function entry.
+                                                val functionName = label ?: AppContainer.getSymbolName(line.instr.addr, true)
+                                                Column(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .padding(start = 290.dp, top = 14.dp, bottom = 4.dp)
+                                                        .clickable {
+                                                            onSelectionChanged?.invoke(line.instr.addr, line.instr.addr + line.instr.length - 1, DisasmField.COMMENT)
+                                                        }
+                                                ) {
+                                                    Text(
+                                                        "/******************************************************************************/",
+                                                        color = PS5ThemeColors.TextMuted,
+                                                        fontSize = 11.sp,
+                                                        fontFamily = FontFamily.Monospace
+                                                    )
+                                                    Text(
+                                                        "/* ${functionName ?: "FUNCTION"} @ 0x${line.instr.addr.toString(16).uppercase()} */",
+                                                        color = PS5ThemeColors.AccentCyan,
+                                                        fontSize = 11.sp,
+                                                        fontFamily = FontFamily.Monospace,
+                                                        fontWeight = FontWeight.Bold
+                                                    )
+                                                    Text(
+                                                        "/* Function entry point; click to select comment */",
+                                                        color = PS5ThemeColors.TextMuted,
+                                                        fontSize = 11.sp,
+                                                        fontFamily = FontFamily.Monospace
+                                                    )
+                                                    Text(
+                                                        "/******************************************************************************/",
+                                                        color = PS5ThemeColors.TextMuted,
+                                                        fontSize = 11.sp,
+                                                        fontFamily = FontFamily.Monospace
+                                                    )
                                                 }
                                             }
 
                                             if (label != null || line.xrefs.isNotEmpty()) {
-                                                Row(modifier = Modifier.fillMaxWidth().padding(start = 290.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                Row(modifier = Modifier.fillMaxWidth().padding(start = 290.dp, top = 4.dp).clickable {
+                                                    onSelectionChanged?.invoke(line.instr.addr, line.instr.addr + line.instr.length - 1, DisasmField.COMMENT)
+                                                }, verticalAlignment = Alignment.CenterVertically) {
                                                     if (label != null) {
                                                         Text(text = label, color = if (isFunctionStart) Color(0xFF64FFDA) else Color(0xFF90A4AE), fontSize = 12.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, modifier = Modifier.width(300.dp))
                                                     } else {
@@ -631,14 +517,11 @@ fun DisassemblyViewer(
                                                     Spacer(Modifier.width(12.dp))
                                                 }
 
-                                                val renderedJumpTracks = jumpTracks.filterValues { it < 8 }
-                                                val maxTrack = renderedJumpTracks.values.maxOrNull() ?: -1
-                                                val canvasWidth = if (maxTrack >= 0) (20 + (maxTrack + 1) * 8).dp.coerceAtMost(40.dp) else 0.dp
-                                                if (canvasWidth > 0.dp) {
-                                                    Canvas(modifier = Modifier.width(canvasWidth).height(20.dp).padding(end = 8.dp)) {
+                                                if (visibleCanvasWidth > 0.dp) {
+                                                    Canvas(modifier = Modifier.width(visibleCanvasWidth).height(20.dp).padding(end = 8.dp)) {
                                                         val density = this.density
                                                         val addr = line.instr.addr
-                                                        for ((jump, track) in renderedJumpTracks) {
+                                                        for ((jump, track) in visibleJumpTracks) {
                                                             val color = (jumpColors[jump] ?: Color.Gray).copy(alpha = if (selectedJump == jump) 1f else 0.2f)
                                                             val src = jump.first
                                                             val target = jump.second
@@ -758,6 +641,8 @@ fun DisassemblyViewer(
                                             }
                                         }
                                     }
+                                }
+                                }
                                 }
                             }
 
@@ -895,6 +780,7 @@ fun DisasmRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .background(if (isSelected) PS5ThemeColors.AccentCyan.copy(alpha = 0.10f) else Color.Transparent)
             .pointerInput(instr.addr, isSelected) {
                 awaitPointerEventScope {
                     var touchStartPos: Offset? = null
@@ -919,7 +805,7 @@ fun DisasmRow(
                                     val dy = change.position.y - start.y
                                     if (kotlin.math.sqrt(dx * dx + dy * dy) > 10f) { 
                                         isDragging = true
-                                        if (kotlin.math.abs(dx) > kotlin.math.abs(dy) * 1.5f && !change.isConsumed) onDragSelection?.invoke((change.position.y / (22f * this.density)).toInt()) 
+                                        if (kotlin.math.abs(dy) > kotlin.math.abs(dx) * 0.5f && !change.isConsumed) onDragSelection?.invoke((dy / (22f * this.density)).toInt())
                                     } 
                                 } 
                             }
@@ -941,10 +827,22 @@ fun DisasmRow(
         }
         
         // 2. Hex Bytes
-        Box(Modifier.width(180.dp).padding(horizontal = 12.dp)
+        Box(Modifier.width(220.dp).padding(horizontal = 12.dp)
             .background(if (isSelected && (selectionField == DisasmField.BYTES || isMultiLineSelection)) selBg else Color.Transparent)
             .pointerInput(instr.addr) { detectTapGestures { onAddressClicked(instr.addr, instr.length, DisasmField.BYTES, isShift) } }) { 
             Text(text = formattedData.bytesStr, fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = byteColor, maxLines = 1, softWrap = false) 
+        }
+
+        // Ghidra keeps the byte view paired with a printable representation. Keep this
+        // selectable as its own column so strings can be copied without selecting the opcode.
+        Box(Modifier.width(180.dp).padding(horizontal = 8.dp)
+            .background(if (isSelected && (selectionField == DisasmField.BYTES || isMultiLineSelection)) selBg else Color.Transparent)
+            .pointerInput(instr.addr) { detectTapGestures { onAddressClicked(instr.addr, instr.length, DisasmField.BYTES, isShift) } }) {
+            val ascii = line.bytes.joinToString("") { byte ->
+                val value = byte.toInt() and 0xFF
+                if (value in 0x20..0x7E) value.toChar().toString() else "."
+            }
+            Text(text = "|$ascii|", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = commentColor, maxLines = 1, softWrap = false)
         }
 
         // 3. Mnemonic

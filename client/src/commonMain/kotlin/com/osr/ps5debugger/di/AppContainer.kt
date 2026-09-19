@@ -26,6 +26,7 @@ object AppContainer {
     var elfEntryPoint: Long? = null
 
     val instructionsCache = mutableMapOf<String, androidx.compose.runtime.snapshots.SnapshotStateList<com.osr.ps5debugger.ui.DisasmLine>>()
+    val disassemblyProgressCache = mutableStateMapOf<String, Float>()
     val hexCache = mutableMapOf<String, androidx.compose.runtime.snapshots.SnapshotStateMap<Long, ByteArray>>()
     
     sealed class IconState {
@@ -60,6 +61,7 @@ object AppContainer {
 
     fun clearCache(mapKey: String) {
         instructionsCache.remove(mapKey)
+        disassemblyProgressCache.remove(mapKey)
         hexCache.remove(mapKey)
     }
 

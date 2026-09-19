@@ -4,6 +4,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import com.osr.ps5debugger.ui.icons.PS5Icons
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -15,6 +17,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.window.Dialog
 import com.osr.ps5debugger.PS5ThemeColors
 import com.osr.ps5debugger.di.AppContainer
 import com.osr.ps5debugger.domain.model.MemoryRange
@@ -57,7 +60,10 @@ fun MemoryViewerLayout(
     ).distinct().sorted()
 
     // PERSISTENT VIEW STATES (Hoisted to remember block to outlive tab switch)
-    val disasmState = remember(state.activeMap, state.activeMaps.size) {
+    // Function discovery completes with disassembly. Include the function snapshot in the
+    // remembered state key so the listing's function plates update in the same composition as
+    // the 100% progress state.
+    val disasmState = remember(state.activeMap, state.activeMaps.size, functions) {
         com.osr.ps5debugger.ui.disasm.DisassemblyState(
             activeMap = state.activeMap,
             activeMaps = state.activeMaps,
@@ -303,6 +309,23 @@ private fun StatusBar(
         
         // Right side: Progress Bar
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (parentState.isLoading) {
+                Text(
+                    "${parentState.disassemblyProgressLabel} ${(parentState.disassemblyProgress * 100).toInt()}%",
+                    fontSize = 10.sp,
+                    color = PS5ThemeColors.AccentCyan,
+                    fontFamily = FontFamily.Monospace
+                )
+                Box(modifier = Modifier.width(100.dp).height(4.dp)) {
+                    LinearProgressIndicator(
+                        progress = { parentState.disassemblyProgress },
+                        modifier = Modifier.fillMaxSize(),
+                        color = PS5ThemeColors.AccentCyan,
+                        trackColor = Color.Gray.copy(alpha = 0.3f),
+                        strokeCap = androidx.compose.ui.graphics.StrokeCap.Round
+                    )
+                }
+            }
             if (hexState.loadingProgress > 0f && hexState.loadingProgress < 1f) {
                 Text(
                     "Processing: ${(hexState.loadingProgress * 100).toInt()}%",
@@ -515,26 +538,37 @@ private fun ViewModeToolbar(
                     }
                 }
                 
-                DropdownMenu(
-                    expanded = funcExpanded, 
-                    onDismissRequest = { funcExpanded = false }, 
-                    modifier = Modifier
-                        .background(PS5ThemeColors.SecondaryBg)
-                        .border(1.dp, PS5ThemeColors.BorderColor)
-                        .width(280.dp)
-                        .heightIn(max = 480.dp)
-                ) {
-                    functions.forEach { addr ->
-                        val label = AppContainer.getSymbolName(addr, true)
-                                   
-                        DropdownMenuItem(
-                            text = { Text(label, fontSize = 11.sp, color = PS5ThemeColors.TextMain, fontFamily = FontFamily.Monospace) },
-                            onClick = { 
-                                onFunctionSelected(addr)
-                                state.currentJumpAddress = addr
-                                funcExpanded = false 
+                if (funcExpanded) {
+                    Dialog(onDismissRequest = { funcExpanded = false }) {
+                        Surface(
+                            modifier = Modifier.width(420.dp).height(520.dp),
+                            color = PS5ThemeColors.SecondaryBg,
+                            shape = RoundedCornerShape(6.dp),
+                            tonalElevation = 6.dp
+                        ) {
+                            Column(modifier = Modifier.padding(vertical = 8.dp)) {
+                                Text(
+                                    "Select function (${functions.size})",
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                                    color = PS5ThemeColors.TextMain,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                LazyColumn(modifier = Modifier.fillMaxSize()) {
+                                    items(functions, key = { it }) { addr ->
+                                        val label = remember(addr) { AppContainer.getSymbolName(addr, true) }
+                                        DropdownMenuItem(
+                                            text = { Text(label, fontSize = 11.sp, color = PS5ThemeColors.TextMain, fontFamily = FontFamily.Monospace) },
+                                            onClick = {
+                                                onFunctionSelected(addr)
+                                                state.currentJumpAddress = addr
+                                                funcExpanded = false
+                                            }
+                                        )
+                                    }
+                                }
                             }
-                        )
+                        }
                     }
                 }
             }

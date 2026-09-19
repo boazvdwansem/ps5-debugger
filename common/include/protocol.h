@@ -426,8 +426,9 @@ struct disasm_instr_entry {
     uint8_t  mem_scale;
     uint16_t mnemonic;
     uint8_t  reserved;
+    char     text[128];
 } __attribute__((packed));
-#define DISASM_INSTR_ENTRY_SIZE 32
+#define DISASM_INSTR_ENTRY_SIZE 160
 
 #define CMD_PROC_AUTH_MAGIC        0xBB40E64Du
 #define CMD_PROC_AUTH_MAGIC_BSWAP  0x7780D98Eu
