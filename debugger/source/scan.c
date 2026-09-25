@@ -666,13 +666,19 @@ int proc_scan_count_handle(int fd, struct cmd_packet *packet) {
             const uint8_t *prev_value_ptr = includes_prev ? (chunk_buf + off + 4) : between_hi;
             uint64_t addr = cp->base_address + entry_offset;
 
-            if (addr >= window_end) {
-
-                uint64_t span = (last_entry_addr >= addr)
-                              ? (last_entry_addr + value_length) - addr
-                              : value_length;
-                uint32_t read_size = (span > 0x100000ULL) ? 0x100000u : (uint32_t)span;
-
+            if (addr >= window_end || addr < window_start) {
+                uint64_t covered_end = addr + value_length;
+                for (uint64_t next_off = off + entry_size; next_off + entry_size <= chunk_len; next_off += entry_size) {
+                    uint32_t next_offset;
+                    memcpy(&next_offset, chunk_buf + next_off, 4);
+                    uint64_t next_addr = cp->base_address + next_offset;
+                    if (next_addr < covered_end) continue;
+                    uint64_t gap = next_addr - covered_end;
+                    if (gap > 0x8000ULL) break;
+                    if ((next_addr + value_length) - addr > 0x100000ULL) break;
+                    covered_end = next_addr + value_length;
+                }
+                uint32_t read_size = (uint32_t)(covered_end - addr);
                 memset(mem_buf, 0, read_size);
                 proc_read_mem(cp->pid, addr, (uint64_t)read_size, mem_buf);
                 window_start = addr;

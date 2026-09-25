@@ -44,71 +44,10 @@ fun MemoryViewerLayout(
     onCopySelection: (() -> Unit)? = null,
     activeBreakpoints: MutableMap<Int, Long> = remember { mutableStateOf(mutableStateMapOf<Int, Long>()).value },
     activeWatchpoints: MutableMap<Int, Long> = remember { mutableStateOf(mutableStateMapOf<Int, Long>()).value },
-    onShowXrefs: ((Long) -> Unit)? = null
+    onShowXrefs: ((Long) -> Unit)? = null,
+    sidebarsWrapper: @Composable (@Composable () -> Unit) -> Unit = { it() }
 ) {
     val activeProcess by AppContainer.debuggerUseCase.activeProcess.collectAsState()
-
-    if (activeProcess == null) {
-        Box(
-            modifier = modifier.fillMaxSize().background(PS5ThemeColors.DarkBg),
-            contentAlignment = Alignment.Center
-        ) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Icon(
-                    imageVector = PS5Icons.MemoryMap,
-                    contentDescription = null,
-                    tint = PS5ThemeColors.TextMuted.copy(alpha = 0.5f),
-                    modifier = Modifier.size(48.dp)
-                )
-                Text(
-                    text = "No Process Selected",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = PS5ThemeColors.TextMain
-                )
-                Text(
-                    text = "Select a process from the Process Manager to view and inspect memory.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = PS5ThemeColors.TextMuted
-                )
-            }
-        }
-        return
-    }
-
-    if (activeMap == null && activeMaps.isEmpty()) {
-        Box(
-            modifier = modifier.fillMaxSize().background(PS5ThemeColors.DarkBg),
-            contentAlignment = Alignment.Center
-        ) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Icon(
-                    imageVector = PS5Icons.MemoryMap,
-                    contentDescription = null,
-                    tint = PS5ThemeColors.TextMuted.copy(alpha = 0.5f),
-                    modifier = Modifier.size(48.dp)
-                )
-                Text(
-                    text = "No Memory Region Selected",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = PS5ThemeColors.TextMain
-                )
-                Text(
-                    text = "Select a memory region from the sidebar to inspect memory.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = PS5ThemeColors.TextMuted
-                )
-            }
-        }
-        return
-    }
 
     val state = rememberMemoryViewerState(
         activeMap, activeMaps, jumpToAddress, viewModeParam, onViewModeChanged,
@@ -282,119 +221,182 @@ fun MemoryViewerLayout(
             HorizontalDivider(color = PS5ThemeColors.BorderColor)
             
             Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
-                when (state.viewMode) {
-                    0 -> DisassemblyView(
-                        disasmState = disasmState,
-                        parentState = state,
-                        isMobile = isMobile,
-                        onJumpToGraph = onJumpToGraph,
-                        onShowXrefs = onShowXrefs
-                    )
-                    1 -> GraphViewer(
-                        instructions = state.instructions,
-                        isLoading = state.isLoading,
-                        vmMaps = (AppContainer.debuggerUseCase.vmMaps.collectAsState().value + mapRanges).distinctBy { it.start },
-                        filterFunctionAddr = selectedGraphFunction,
-                        jumpToAddress = state.currentJumpAddress,
-                        modifier = Modifier.fillMaxSize(),
-                        selectionStart = state.selectionStart,
-                        selectionEnd = state.selectionEnd,
-                        onSelectionChanged = { start, end -> state.updateSelection(start, end) },
-                        onAddressClicked = { addr ->
-                            state.currentJumpAddress = addr
-                            state.setViewMode(0)
-                        },
-                        onJumpToHex = { addr ->
-                            state.currentJumpAddress = addr
-                            state.setViewMode(2)
-                        },
-                        onJumpToGraph = onJumpToGraph,
-                        onShowXrefs = onShowXrefs,
-                        isAttached = isAttached,
-                        activeBreakpoints = activeBreakpoints,
-                        activeWatchpoints = activeWatchpoints,
-                        onSetBreakpoint = { addr ->
-                            coroutineScope.launch {
-                                try {
-                                    val activeBpIndex = activeBreakpoints.entries.firstOrNull { it.value == addr }?.key
-                                    if (activeBpIndex != null) {
-                                        if (!client.setBreakpoint(activeBpIndex, false, addr)) {
-                                            throw IllegalStateException("PS5 rejected breakpoint removal at 0x${addr.toString(16)}")
-                                        }
-                                        activeBreakpoints.remove(activeBpIndex)
-                                    } else {
-                                        val freeSlot = (0..29).firstOrNull { !activeBreakpoints.containsKey(it) }
-                                        if (freeSlot == null) {
-                                            throw IllegalStateException("No software breakpoint slots are available")
-                                        }
-                                        if (!client.setBreakpoint(freeSlot, true, addr)) {
-                                            throw IllegalStateException("PS5 rejected breakpoint at 0x${addr.toString(16)}")
-                                        }
-                                        activeBreakpoints[freeSlot] = addr
-                                    }
-                                } catch (e: Exception) {
-                                    AppContainer.debuggerUseCase.log(
-                                        "DEBUGGER",
-                                        "Breakpoint operation failed: ${e.message}",
-                                        com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR
-                                    )
-                                }
-                            }
-                        },
-                        onSetWatchpoint = { addr ->
-                            coroutineScope.launch {
-                                try {
-                                    val activeWpSlot = activeWatchpoints.entries.firstOrNull { it.value == addr }?.key
-                                    if (activeWpSlot != null) {
-                                        if (!client.setWatchpoint(activeWpSlot, false, 1, 1, addr)) {
-                                            throw IllegalStateException("PS5 rejected watchpoint removal at 0x${addr.toString(16)}")
-                                        }
-                                        activeWatchpoints.remove(activeWpSlot)
-                                    } else {
-                                        val freeSlot = (0..3).firstOrNull { !activeWatchpoints.containsKey(it) }
-                                        if (freeSlot == null) {
-                                            throw IllegalStateException("No hardware watchpoint slots are available")
-                                        }
-                                        if (!client.setWatchpoint(freeSlot, true, 1, 1, addr)) {
-                                            throw IllegalStateException("PS5 rejected watchpoint at 0x${addr.toString(16)}")
-                                        }
-                                        activeWatchpoints[freeSlot] = addr
-                                    }
-                                } catch (e: Exception) {
-                                    AppContainer.debuggerUseCase.log(
-                                        "DEBUGGER",
-                                        "Watchpoint operation failed: ${e.message}",
-                                        com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR
-                                    )
-                                }
+                sidebarsWrapper {
+                    if (activeProcess == null) {
+                        Box(
+                            modifier = Modifier.fillMaxSize().background(PS5ThemeColors.DarkBg),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Icon(
+                                    imageVector = PS5Icons.MemoryMap,
+                                    contentDescription = null,
+                                    tint = PS5ThemeColors.TextMuted.copy(alpha = 0.5f),
+                                    modifier = Modifier.size(48.dp)
+                                )
+                                Text(
+                                    text = "No Process Selected",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = PS5ThemeColors.TextMain
+                                )
+                                Text(
+                                    text = "Select a process from the Process Manager to view and inspect memory.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = PS5ThemeColors.TextMuted
+                                )
                             }
                         }
-                    )
-                    2 -> HexViewer(
-                        state = hexState,
-                        columns = hexColumns,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                    3 -> StringsView(
-                        activeMap = state.activeMap,
-                        activeMaps = state.activeMaps,
-                        instructions = state.instructions,
-                        onJumpToAddress = { addr ->
-                            state.currentJumpAddress = addr
-                            state.setViewMode(0)
-                        },
-                        onJumpToHex = { addr ->
-                            state.currentJumpAddress = addr
-                            state.setViewMode(2)
-                        },
-                        modifier = Modifier.fillMaxSize()
-                    )
+                    } else if (activeMap == null && activeMaps.isEmpty()) {
+                        Box(
+                            modifier = Modifier.fillMaxSize().background(PS5ThemeColors.DarkBg),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Icon(
+                                    imageVector = PS5Icons.MemoryMap,
+                                    contentDescription = null,
+                                    tint = PS5ThemeColors.TextMuted.copy(alpha = 0.5f),
+                                    modifier = Modifier.size(48.dp)
+                                )
+                                Text(
+                                    text = "No Memory Region Selected",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = PS5ThemeColors.TextMain
+                                )
+                                Text(
+                                    text = "Select a memory region from the sidebar to inspect memory.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = PS5ThemeColors.TextMuted
+                                )
+                            }
+                        }
+                    } else {
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                                when (state.viewMode) {
+                                    0 -> DisassemblyView(
+                                        disasmState = disasmState,
+                                        parentState = state,
+                                        isMobile = isMobile,
+                                        onJumpToGraph = onJumpToGraph,
+                                        onShowXrefs = onShowXrefs
+                                    )
+                                    1 -> GraphViewer(
+                                        instructions = state.instructions,
+                                        isLoading = state.isLoading,
+                                        vmMaps = (AppContainer.debuggerUseCase.vmMaps.collectAsState().value + mapRanges).distinctBy { it.start },
+                                        filterFunctionAddr = selectedGraphFunction,
+                                        jumpToAddress = state.currentJumpAddress,
+                                        modifier = Modifier.fillMaxSize(),
+                                        selectionStart = state.selectionStart,
+                                        selectionEnd = state.selectionEnd,
+                                        onSelectionChanged = { start, end -> state.updateSelection(start, end) },
+                                        onAddressClicked = { addr ->
+                                            state.currentJumpAddress = addr
+                                            state.setViewMode(0)
+                                        },
+                                        onJumpToHex = { addr ->
+                                            state.currentJumpAddress = addr
+                                            state.setViewMode(2)
+                                        },
+                                        onJumpToGraph = onJumpToGraph,
+                                        onShowXrefs = onShowXrefs,
+                                        isAttached = isAttached,
+                                        activeBreakpoints = activeBreakpoints,
+                                        activeWatchpoints = activeWatchpoints,
+                                        onSetBreakpoint = { addr ->
+                                            coroutineScope.launch {
+                                                try {
+                                                    val activeBpIndex = activeBreakpoints.entries.firstOrNull { it.value == addr }?.key
+                                                    if (activeBpIndex != null) {
+                                                        if (!client.setBreakpoint(activeBpIndex, false, addr)) {
+                                                            throw IllegalStateException("PS5 rejected breakpoint removal at 0x${addr.toString(16)}")
+                                                        }
+                                                        activeBreakpoints.remove(activeBpIndex)
+                                                    } else {
+                                                        val freeSlot = (0..29).firstOrNull { !activeBreakpoints.containsKey(it) }
+                                                        if (freeSlot == null) {
+                                                            throw IllegalStateException("No software breakpoint slots are available")
+                                                        }
+                                                        if (!client.setBreakpoint(freeSlot, true, addr)) {
+                                                            throw IllegalStateException("PS5 rejected breakpoint at 0x${addr.toString(16)}")
+                                                        }
+                                                        activeBreakpoints[freeSlot] = addr
+                                                    }
+                                                } catch (e: Exception) {
+                                                    AppContainer.debuggerUseCase.log(
+                                                        "DEBUGGER",
+                                                        "Breakpoint operation failed: ${e.message}",
+                                                        com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR
+                                                    )
+                                                }
+                                            }
+                                        },
+                                        onSetWatchpoint = { addr ->
+                                            coroutineScope.launch {
+                                                try {
+                                                    val activeWpSlot = activeWatchpoints.entries.firstOrNull { it.value == addr }?.key
+                                                    if (activeWpSlot != null) {
+                                                        if (!client.setWatchpoint(activeWpSlot, false, 1, 1, addr)) {
+                                                            throw IllegalStateException("PS5 rejected watchpoint removal at 0x${addr.toString(16)}")
+                                                        }
+                                                        activeWatchpoints.remove(activeWpSlot)
+                                                    } else {
+                                                        val freeSlot = (0..3).firstOrNull { !activeWatchpoints.containsKey(it) }
+                                                        if (freeSlot == null) {
+                                                            throw IllegalStateException("No hardware watchpoint slots are available")
+                                                        }
+                                                        if (!client.setWatchpoint(freeSlot, true, 1, 1, addr)) {
+                                                            throw IllegalStateException("PS5 rejected watchpoint at 0x${addr.toString(16)}")
+                                                        }
+                                                        activeWatchpoints[freeSlot] = addr
+                                                    }
+                                                } catch (e: Exception) {
+                                                    AppContainer.debuggerUseCase.log(
+                                                        "DEBUGGER",
+                                                        "Watchpoint operation failed: ${e.message}",
+                                                        com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    )
+                                    2 -> HexViewer(
+                                        state = hexState,
+                                        columns = hexColumns,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                    3 -> StringsView(
+                                        activeMap = state.activeMap,
+                                        activeMaps = state.activeMaps,
+                                        instructions = state.instructions,
+                                        onJumpToAddress = { addr ->
+                                            state.currentJumpAddress = addr
+                                            state.setViewMode(0)
+                                        },
+                                        onJumpToHex = { addr ->
+                                            state.currentJumpAddress = addr
+                                            state.setViewMode(2)
+                                        },
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                }
+                            }
+                            HorizontalDivider(color = PS5ThemeColors.BorderColor)
+                            // Memory Viewer Status Bar
+                            StatusBar(state, hexState)
+                        }
+                    }
                 }
             }
-
-            HorizontalDivider(color = PS5ThemeColors.BorderColor)
-            // Memory Viewer Status Bar
-            StatusBar(state, hexState)
         }
     }
 }

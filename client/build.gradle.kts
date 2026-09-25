@@ -103,7 +103,7 @@ android {
 compose.desktop {
     application {
         mainClass = "com.osr.ps5debugger.MainKt"
-        jvmArgs += listOf("--enable-native-access=ALL-UNNAMED")
+        jvmArgs += listOf("--enable-native-access=ALL-UNNAMED", "-Xmx4g", "-XX:+UseG1GC")
         nativeDistributions {
             targetFormats(
                 org.jetbrains.compose.desktop.application.dsl.TargetFormat.Dmg,

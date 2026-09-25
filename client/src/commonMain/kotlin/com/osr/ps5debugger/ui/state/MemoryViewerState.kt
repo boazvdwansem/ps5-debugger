@@ -48,8 +48,9 @@ private fun findZeroDataRanges(bytes: ByteArray): List<PrintableRange> {
         val isZero = index < bytes.size && bytes[index].toInt() == 0
         if (isZero && start < 0) start = index
         if (!isZero && start >= 0) {
-            if (index - start >= 2) {
-                for (offset in start until index) ranges += PrintableRange(offset, 1)
+            val length = index - start
+            if (length >= 2) {
+                ranges += PrintableRange(start, length)
             }
             start = -1
         }
@@ -236,6 +237,7 @@ class MemoryViewerState(
         val focusChunkIdxForMapKey = ((focusAddrForMapKey - currentTarget.start) / (64 * 1024L)).toInt()
         val mapKey = "${currentTarget.start}_${currentTarget.end}_${currentTarget.name}_$focusChunkIdxForMapKey"
         val cachedProgress = AppContainer.disassemblyProgressCache[mapKey]
+            ?: AppContainer.disassemblyProgressCache["${currentTarget.start}_${currentTarget.end}_${currentTarget.name}"]
         if (cachedProgress != null) {
             withContext(Dispatchers.Main) {
                 disassemblyProgress = cachedProgress
@@ -298,12 +300,12 @@ class MemoryViewerState(
                         // large map does not turn into an ever-growing queue of console requests.
                         val chunkSize = 64 * 1024L
                         val totalRegionChunks = ((map.end - map.start + chunkSize - 1) / chunkSize).toInt().coerceAtLeast(1)
-                        // For large remote regions (>16MB / >256 chunks, e.g. 1GB+), restrict disassembly
+                        // For large regions (>32 chunks / >2MB), restrict disassembly
                         // to a localized window (~2MB / 32 chunks) around the focus address rather than
-                        // sequentially disassembling gigabytes over socket.
-                        val isLargeRemote = map.localData == null && (map.end - map.start > 16 * 1024 * 1024L || totalRegionChunks > 256)
+                        // sequentially disassembling megabytes or gigabytes over socket / in memory.
+                        val isLargeRegion = totalRegionChunks > 32
 
-                        val prioritizedRequests = if (isLargeRemote) {
+                        val prioritizedRequests = if (isLargeRegion) {
                             val focusAddr = (currentJumpAddress ?: jumpToAddress ?: map.start).coerceIn(map.start, maxOf(map.start, map.end - 1))
                             val focusChunkIdx = ((focusAddr - map.start) / chunkSize).toInt().coerceIn(0, totalRegionChunks - 1)
                             val windowRadius = 16 // 32 chunks = 2MB window
@@ -341,8 +343,8 @@ class MemoryViewerState(
                                     } catch (_: Exception) { ByteArray(0) }
                                     if (rawBytes.isEmpty()) return@withPermit emptyList<DisasmLine>()
 
+                                    val syncAddrs = (AppContainer.discoveredFunctions.toSet() + AppContainer.symbolNames.keys.toSet() + AppContainer.discoveredJumpTargets.toSet())
                                     val rawInstrs = try {
-                                        val syncAddrs = (AppContainer.discoveredFunctions.toSet() + AppContainer.symbolNames.keys.toSet() + AppContainer.discoveredJumpTargets.toSet())
                                         if (map.localData != null) {
                                             com.osr.ps5debugger.util.LocalDisassembler.disassemble(rawBytes, chunkStart, syncAddrs)
                                         } else {
@@ -353,52 +355,90 @@ class MemoryViewerState(
                                         }
                                     } catch (_: Exception) { emptyList() }
 
-                                    // The remote decoder may interpret embedded strings as
-                                    // instructions. Replace decoded rows covered by strong
-                                    // printable-data runs with one DATA_STRING record.
-                                    val stringRanges = findPrintableRanges(rawBytes)
-                                    val zeroRanges = findZeroDataRanges(rawBytes)
-                                    val stringInstrs = stringRanges.map { range ->
-                                        Ps5DisasmInstr(
-                                            addr = chunkStart + range.offset,
-                                            ripRelTarget = 0,
-                                            memDisp = 0,
-                                            length = range.length,
-                                            kind = 0x100,
-                                            memBaseReg = 0,
-                                            memIndexReg = 0,
-                                            memScale = 0,
-                                            mnemonic = 0,
-                                            mnemonicLo = 0
-                                        )
-                                    }
-                                    val zeroInstrs = zeroRanges.map { range ->
-                                        Ps5DisasmInstr(
-                                            addr = chunkStart + range.offset,
-                                            ripRelTarget = 0,
-                                            memDisp = 0,
-                                            length = 1,
-                                            kind = 0x200,
-                                            memBaseReg = 0,
-                                            memIndexReg = 0,
-                                            memScale = 0,
-                                            mnemonic = 0,
-                                            mnemonicLo = 0
-                                        )
-                                    }
-                                    val dataRanges = stringRanges + zeroRanges
-                                    val filteredInstrs = rawInstrs.filterNot { instr ->
-                                        dataRanges.any { range ->
-                                            val start = chunkStart + range.offset
-                                            val end = start + range.length
-                                            instr.addr < end && instr.addr + instr.length > start
+                                    if (map.localData != null) {
+                                        // Local disassembler already decodes strings and groups data/zeroes cleanly
+                                        rawInstrs.map { instr ->
+                                            val offset = (instr.addr - chunkStart).toInt()
+                                            val instrBytes = if (offset >= 0 && offset + instr.length <= rawBytes.size) rawBytes.copyOfRange(offset, offset + instr.length) else ByteArray(0)
+                                            val lineRegion = map.subRanges.firstOrNull { instr.addr >= it.start && instr.addr < it.end } ?: map
+                                            DisasmLine(instr, instrBytes, lineRegion, AppContainer.symbolNames[instr.addr])
                                         }
-                                    }
-                                    (filteredInstrs + stringInstrs + zeroInstrs).distinctBy { it.addr }.sortedBy { it.addr }.map { instr ->
-                                        val offset = (instr.addr - chunkStart).toInt()
-                                        val instrBytes = if (offset >= 0 && offset + instr.length <= rawBytes.size) rawBytes.copyOfRange(offset, offset + instr.length) else ByteArray(0)
-                                        val lineRegion = map.subRanges.firstOrNull { instr.addr >= it.start && instr.addr < it.end } ?: map
-                                        DisasmLine(instr, instrBytes, lineRegion, AppContainer.symbolNames[instr.addr])
+                                    } else {
+                                        // The remote decoder may interpret embedded strings and padding zeroes as
+                                        // instructions. Replace decoded rows covered by strong printable-data runs
+                                        // with DATA_STRING records and zero padding with bounded DATA_RAW records.
+                                        val stringRanges = findPrintableRanges(rawBytes)
+                                        val zeroRanges = findZeroDataRanges(rawBytes)
+                                        val stringInstrs = stringRanges.map { range ->
+                                            Ps5DisasmInstr(
+                                                addr = chunkStart + range.offset,
+                                                ripRelTarget = 0,
+                                                memDisp = 0,
+                                                length = range.length,
+                                                kind = 0x100,
+                                                memBaseReg = 0,
+                                                memIndexReg = 0,
+                                                memScale = 0,
+                                                mnemonic = 0,
+                                                mnemonicLo = 0
+                                            )
+                                        }
+                                        val zeroInstrs = mutableListOf<Ps5DisasmInstr>()
+                                        for (range in zeroRanges) {
+                                            var offset = range.offset
+                                            val endOffset = range.offset + range.length
+                                            val maxEmitBytes = 64
+                                            var emittedBytes = 0
+                                            while (offset < endOffset) {
+                                                val addr = chunkStart + offset
+                                                val hasSync = syncAddrs.contains(addr)
+                                                if (emittedBytes >= maxEmitBytes && !hasSync) {
+                                                    val nextSync = syncAddrs.filter { it > addr && it < chunkStart + endOffset }.minOrNull()
+                                                    if (nextSync != null) {
+                                                        offset = (nextSync - chunkStart).toInt()
+                                                        emittedBytes = 0
+                                                        continue
+                                                    } else {
+                                                        break
+                                                    }
+                                                }
+                                                val instrLen = minOf(16, endOffset - offset)
+                                                zeroInstrs.add(
+                                                    Ps5DisasmInstr(
+                                                        addr = addr,
+                                                        ripRelTarget = 0,
+                                                        memDisp = 0,
+                                                        length = instrLen,
+                                                        kind = 0x200,
+                                                        memBaseReg = 0,
+                                                        memIndexReg = 0,
+                                                        memScale = 0,
+                                                        mnemonic = 0,
+                                                        mnemonicLo = 0
+                                                    )
+                                                )
+                                                offset += instrLen
+                                                emittedBytes += instrLen
+                                            }
+                                        }
+                                        val dataRanges = stringRanges + zeroRanges
+                                        val filteredInstrs = if (dataRanges.isEmpty()) {
+                                            rawInstrs
+                                        } else {
+                                            rawInstrs.filterNot { instr ->
+                                                val instrStart = instr.addr - chunkStart
+                                                val instrEnd = instrStart + instr.length
+                                                dataRanges.any { range ->
+                                                    instrStart < (range.offset + range.length) && instrEnd > range.offset
+                                                }
+                                            }
+                                        }
+                                        (filteredInstrs + stringInstrs + zeroInstrs).distinctBy { it.addr }.sortedBy { it.addr }.map { instr ->
+                                            val offset = (instr.addr - chunkStart).toInt()
+                                            val instrBytes = if (offset >= 0 && offset + instr.length <= rawBytes.size) rawBytes.copyOfRange(offset, offset + instr.length) else ByteArray(0)
+                                            val lineRegion = map.subRanges.firstOrNull { instr.addr >= it.start && instr.addr < it.end } ?: map
+                                            DisasmLine(instr, instrBytes, lineRegion, AppContainer.symbolNames[instr.addr])
+                                        }
                                     }
                                 }
                             chunkLines.addAll(result)

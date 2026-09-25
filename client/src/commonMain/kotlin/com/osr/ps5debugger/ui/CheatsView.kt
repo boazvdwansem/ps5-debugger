@@ -33,7 +33,7 @@ import com.osr.ps5debugger.util.DefaultIpHelper
 import kotlinx.coroutines.launch
 
 @Composable
-fun CheatsView() {
+fun CheatsView(sidebarsWrapper: @Composable (@Composable () -> Unit) -> Unit = { it() }) {
     var viewMode by remember { mutableIntStateOf(0) } // 0 = Grid, 1 = List
     var selectedProfile by remember { mutableStateOf<GameCheatProfile?>(null) }
     val profiles by AppContainer.debuggerUseCase.gameCheatProfiles.collectAsState()
@@ -55,33 +55,41 @@ fun CheatsView() {
             CheatsToolbar(viewMode) { viewMode = it }
             HorizontalDivider(color = PS5ThemeColors.BorderColor)
             
-            if (profiles.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("No cheats added yet. Right click in Memory Viewer to add one.", color = PS5ThemeColors.TextMuted)
-                }
-            } else {
-                if (viewMode == 0) {
-                    LazyVerticalGrid(
-                        columns = GridCells.Adaptive(minSize = 160.dp),
-                        modifier = Modifier.fillMaxSize().padding(16.dp),
-                        contentPadding = PaddingValues(8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(16.dp)
-                    ) {
-                        items(profiles, key = { "${it.titleId}_${it.version}" }) { profile ->
-                            GameProfileTile(profile) { selectedProfile = profile }
+            Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                sidebarsWrapper {
+                    if (profiles.isEmpty()) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("No cheats added yet. Right click in Memory Viewer to add one.", color = PS5ThemeColors.TextMuted)
                         }
-                    }
-                } else {
-                    LazyColumn(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(profiles, key = { "${it.titleId}_${it.version}" }) { profile ->
-                            GameProfileRow(profile) { selectedProfile = profile }
+                    } else {
+                        if (viewMode == 0) {
+                            LazyVerticalGrid(
+                                columns = GridCells.Adaptive(minSize = 160.dp),
+                                modifier = Modifier.fillMaxSize().padding(16.dp),
+                                contentPadding = PaddingValues(8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(16.dp)
+                            ) {
+                                items(profiles, key = { "${it.titleId}_${it.version}" }) { profile ->
+                                    GameProfileTile(profile) { selectedProfile = profile }
+                                }
+                            }
+                        } else {
+                            LazyColumn(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                items(profiles, key = { "${it.titleId}_${it.version}" }) { profile ->
+                                    GameProfileRow(profile) { selectedProfile = profile }
+                                }
+                            }
                         }
                     }
                 }
             }
         } else {
-            GameCheatsDetailView(selectedProfile!!) { selectedProfile = null }
+            Box(modifier = Modifier.fillMaxSize()) {
+                sidebarsWrapper {
+                    GameCheatsDetailView(selectedProfile!!) { selectedProfile = null }
+                }
+            }
         }
     }
 }

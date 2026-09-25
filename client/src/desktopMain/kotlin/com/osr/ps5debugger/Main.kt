@@ -196,7 +196,7 @@ fun main() {
             title = "PlayStation 5 Debugger NG Client",
             state = windowState,
             visible = true,
-            undecorated = false,
+            undecorated = true,
             icon = painterResource("logo.png")
         ) {
             val window = this.window
@@ -862,8 +862,7 @@ private fun TitleDragArea(
 
                             val positionChange = change.positionChange()
                             if (!isDragging) {
-                                val touchSlop = viewConfiguration.touchSlop
-                                if (positionChange.getDistance() > touchSlop) {
+                                if (positionChange.x != 0f || positionChange.y != 0f) {
                                     isDragging = true
                                     onStartTitleDrag()
                                     change.consume()

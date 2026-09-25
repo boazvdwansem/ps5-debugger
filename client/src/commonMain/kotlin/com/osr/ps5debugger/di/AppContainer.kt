@@ -18,7 +18,7 @@ object AppContainer {
     var debugMockEnabled by androidx.compose.runtime.mutableStateOf(
         try { com.osr.ps5debugger.util.DefaultIpHelper.isMockEnabled() } catch (_: Exception) { false }
     )
-    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     val symbolNames = mutableStateMapOf<Long, String>()
     val discoveredFunctions = mutableStateListOf<Long>()
@@ -304,8 +304,9 @@ object AppContainer {
         val chunkSize = 64 * 1024L
         val focusAddr = (jumpToAddress ?: map.start).coerceIn(map.start, maxOf(map.start, map.end - 1))
         val focusChunkIdx = ((focusAddr - map.start) / chunkSize).toInt()
+        val key = "${map.start}_${map.end}_${map.name}"
         val disasmKey = "${map.start}_${map.end}_${map.name}_$focusChunkIdx"
-        val hexKey = "${map.start}_${map.end}_${map.name}"
+        val hexKey = key
 
         // 1. Preload Hex Page 0 if not already in cache
         val pageSize = 65536
@@ -328,13 +329,23 @@ object AppContainer {
         }
 
         // 2. Preload Disassembly Window if not already in cache
+        val mainList = getInstructions(key)
         val disasmList = getInstructions(disasmKey)
-        if (disasmList.isNotEmpty()) return
+        if (mainList.isNotEmpty() || disasmList.isNotEmpty()) return
+
+        // Non-executable remote regions don't need disassembly
+        if ((map.protections and 4) == 0 && map.localData == null) {
+            withContext(Dispatchers.Main) {
+                disassemblyProgressCache[key] = 1.0f
+                disassemblyProgressCache[disasmKey] = 1.0f
+            }
+            return
+        }
 
         val totalRegionChunks = ((map.end - map.start + chunkSize - 1) / chunkSize).toInt().coerceAtLeast(1)
-        val isLargeRemote = map.localData == null && (map.end - map.start > 16 * 1024 * 1024L || totalRegionChunks > 256)
+        val isLargeRegion = totalRegionChunks > 32
 
-        val targetRequests = if (isLargeRemote) {
+        val targetRequests = if (isLargeRegion) {
             val windowRadius = 16 // 32 chunks = 2MB window
             val startIdx = maxOf(0, focusChunkIdx - windowRadius)
             val endIdx = minOf(totalRegionChunks, focusChunkIdx + windowRadius + 1)
@@ -372,10 +383,109 @@ object AppContainer {
                         client.disassembleRegion(pid, chunkStart, len, 4000)
                     } else emptyList()
 
-                    val lines = rawInstrs.map { instr ->
-                        val offset = (instr.addr - chunkStart).toInt()
-                        val instrBytes = if (offset >= 0 && offset + instr.length <= rawBytes.size) rawBytes.copyOfRange(offset, offset + instr.length) else ByteArray(0)
-                        com.osr.ps5debugger.ui.DisasmLine(instr, instrBytes, map, symbolNames[instr.addr])
+                    val lines = if (map.localData != null) {
+                        rawInstrs.map { instr ->
+                            val offset = (instr.addr - chunkStart).toInt()
+                            val instrBytes = if (offset >= 0 && offset + instr.length <= rawBytes.size) rawBytes.copyOfRange(offset, offset + instr.length) else ByteArray(0)
+                            com.osr.ps5debugger.ui.DisasmLine(instr, instrBytes, map, symbolNames[instr.addr])
+                        }
+                    } else {
+                        val stringRanges = mutableListOf<Pair<Int, Int>>()
+                        var strStart = -1
+                        for (i in rawBytes.indices) {
+                            val v = rawBytes[i].toInt() and 0xFF
+                            if (v in 0x20..0x7E || v == 0x09) {
+                                if (strStart < 0) strStart = i
+                            } else {
+                                if (strStart >= 0) {
+                                    val slen = i - strStart
+                                    if (slen >= 8 || (v == 0 && slen >= 4)) {
+                                        stringRanges.add(strStart to if (v == 0) slen + 1 else slen)
+                                    }
+                                    strStart = -1
+                                }
+                            }
+                        }
+                        if (strStart >= 0 && rawBytes.size - strStart >= 8) stringRanges.add(strStart to (rawBytes.size - strStart))
+
+                        val zeroRanges = mutableListOf<Pair<Int, Int>>()
+                        var zStart = -1
+                        for (i in 0..rawBytes.size) {
+                            val isZero = i < rawBytes.size && rawBytes[i].toInt() == 0
+                            if (isZero && zStart < 0) zStart = i
+                            if (!isZero && zStart >= 0) {
+                                val zlen = i - zStart
+                                if (zlen >= 2) zeroRanges.add(zStart to zlen)
+                                zStart = -1
+                            }
+                        }
+
+                        val stringInstrs = stringRanges.map { (off, slen) ->
+                            com.osr.ps5debugger.protocol.Ps5DisasmInstr(
+                                addr = chunkStart + off,
+                                ripRelTarget = 0,
+                                memDisp = 0,
+                                length = slen,
+                                kind = 0x100,
+                                memBaseReg = 0,
+                                memIndexReg = 0,
+                                memScale = 0,
+                                mnemonic = 0,
+                                mnemonicLo = 0
+                            )
+                        }
+
+                        val zeroInstrs = mutableListOf<com.osr.ps5debugger.protocol.Ps5DisasmInstr>()
+                        for ((off, zlen) in zeroRanges) {
+                            var curOff = off
+                            val endOff = off + zlen
+                            val maxEmit = 64
+                            var emitted = 0
+                            while (curOff < endOff) {
+                                val addr = chunkStart + curOff
+                                val hasSync = syncAddrs.contains(addr)
+                                if (emitted >= maxEmit && !hasSync) {
+                                    val nextSync = syncAddrs.filter { it > addr && it < chunkStart + endOff }.minOrNull()
+                                    if (nextSync != null) {
+                                        curOff = (nextSync - chunkStart).toInt()
+                                        emitted = 0
+                                        continue
+                                    } else break
+                                }
+                                val ilen = minOf(16, endOff - curOff)
+                                zeroInstrs.add(
+                                    com.osr.ps5debugger.protocol.Ps5DisasmInstr(
+                                        addr = addr,
+                                        ripRelTarget = 0,
+                                        memDisp = 0,
+                                        length = ilen,
+                                        kind = 0x200,
+                                        memBaseReg = 0,
+                                        memIndexReg = 0,
+                                        memScale = 0,
+                                        mnemonic = 0,
+                                        mnemonicLo = 0
+                                    )
+                                )
+                                curOff += ilen
+                                emitted += ilen
+                            }
+                        }
+
+                        val dataRanges = stringRanges + zeroRanges
+                        val filtered = if (dataRanges.isEmpty()) rawInstrs else {
+                            rawInstrs.filterNot { instr ->
+                                val iStart = instr.addr - chunkStart
+                                val iEnd = iStart + instr.length
+                                dataRanges.any { (dOff, dLen) -> iStart < (dOff + dLen) && iEnd > dOff }
+                            }
+                        }
+
+                        (filtered + stringInstrs + zeroInstrs).distinctBy { it.addr }.sortedBy { it.addr }.map { instr ->
+                            val offset = (instr.addr - chunkStart).toInt()
+                            val instrBytes = if (offset >= 0 && offset + instr.length <= rawBytes.size) rawBytes.copyOfRange(offset, offset + instr.length) else ByteArray(0)
+                            com.osr.ps5debugger.ui.DisasmLine(instr, instrBytes, map, symbolNames[instr.addr])
+                        }
                     }
                     chunkLines.addAll(lines)
                 }
@@ -392,10 +502,29 @@ object AppContainer {
             }
         }
 
+        val extractedFunctions = mutableSetOf<Long>()
+        if (finalLines.isNotEmpty()) {
+            extractedFunctions.add(finalLines.first().instr.addr)
+            for (i in finalLines.indices) {
+                val line = finalLines[i]
+                if (line.instr.isRet && i + 1 < finalLines.size) extractedFunctions.add(finalLines[i + 1].instr.addr)
+                val target = com.osr.ps5debugger.ui.disasm.DisasmFormatter.getJumpTarget(line.instr, line.bytes)
+                if (line.instr.isCall && target != 0L) extractedFunctions.add(target)
+            }
+        }
+
         withContext(Dispatchers.Main) {
+            mainList.clear()
+            mainList.addAll(finalLines)
             disasmList.clear()
             disasmList.addAll(finalLines)
+            disassemblyProgressCache[key] = 1.0f
             disassemblyProgressCache[disasmKey] = 1.0f
+            if (extractedFunctions.isNotEmpty()) {
+                val merged = (discoveredFunctions + extractedFunctions).distinct().sortedBy { it.toULong() }
+                discoveredFunctions.clear()
+                discoveredFunctions.addAll(merged)
+            }
         }
     }
 }

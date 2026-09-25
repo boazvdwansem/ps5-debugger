@@ -370,9 +370,9 @@ class HexState(
         val totalBytes = targets.sumOf { it.end - it.start }
         val allLocal = targets.all { it.localData != null }
 
-        // For large remote regions (>32MB, e.g. 1GB+), skip full-region greedy downloading.
+        // For large regions (>32MB, e.g. 1GB+), skip full-region greedy downloading.
         // HexViewer is virtualized and loads visible pages on demand via loadMemory().
-        if (!allLocal && totalBytes > 32 * 1024 * 1024L) {
+        if (totalBytes > 32 * 1024 * 1024L) {
             totalPagesCount = 0
             loadedPagesCount = 0
             return

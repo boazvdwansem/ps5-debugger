@@ -65,6 +65,9 @@ class CompactScanResults(initialCapacity: Int = 10000) {
 
     fun add(offset: Long, value: ByteArray) {
         synchronized(lock) {
+            if (size > 0 && offsets[size - 1] == offset) {
+                return
+            }
             val vLen = value.size
             if (size == 0) {
                 uniformLen = vLen
@@ -102,11 +105,27 @@ class CompactScanResults(initialCapacity: Int = 10000) {
         }
     }
 
+    fun replaceWith(other: CompactScanResults) {
+        synchronized(lock) {
+            synchronized(other.lock) {
+                size = other.size
+                uniformLen = other.uniformLen
+                offsets = other.offsets.copyOf(other.size)
+                valueBytes = other.valueBytes.copyOf(other.totalBytesStored)
+                totalBytesStored = other.totalBytesStored
+                valueOffsets = if (other.uniformLen <= 0 && other.valueOffsets.isNotEmpty()) other.valueOffsets.copyOf(other.size) else IntArray(0)
+                valueLengths = if (other.uniformLen <= 0 && other.valueLengths.isNotEmpty()) other.valueLengths.copyOf(other.size) else IntArray(0)
+            }
+        }
+    }
+
     fun addAll(other: CompactScanResults) {
-        synchronized(other.lock) {
-            val otherSize = other.size
-            for (i in 0 until otherSize) {
-                add(other.getOffset(i), other.getValueBytes(i))
+        synchronized(lock) {
+            synchronized(other.lock) {
+                val otherSize = other.size
+                for (i in 0 until otherSize) {
+                    add(other.getOffset(i), other.getValueBytes(i))
+                }
             }
         }
     }
@@ -171,6 +190,79 @@ object MemoryScannerState {
     val scanBaseAddressState = mutableStateOf(0L)
 }
 
+fun mergeMemoryRanges(ranges: List<MemoryRange>): List<MemoryRange> {
+    if (ranges.isEmpty()) return emptyList()
+    val valid = ranges.filter { it.end > it.start }.sortedBy { it.start }
+    if (valid.isEmpty()) return emptyList()
+
+    val merged = ArrayList<MemoryRange>()
+    var current = valid[0]
+    for (i in 1 until valid.size) {
+        val next = valid[i]
+        if (next.start <= current.end) {
+            current = current.copy(
+                end = maxOf(current.end, next.end),
+                protections = current.protections or next.protections
+            )
+        } else {
+            merged.add(current)
+            current = next
+        }
+    }
+    merged.add(current)
+    return merged
+}
+
+fun resolveTargetRanges(
+    useCustomRange: Boolean,
+    customRangeStart: String,
+    customRangeEnd: String,
+    activeMap: MemoryRange?,
+    activeMaps: List<MemoryRange>,
+    allVmMaps: List<MemoryRange>
+): List<MemoryRange> {
+    if (useCustomRange) {
+        val s = parseHexAddress(customRangeStart) ?: 0L
+        val e = parseHexAddress(customRangeEnd) ?: 0L
+        if (e <= s) return emptyList()
+        val rawRanges = if (allVmMaps.isNotEmpty()) {
+            allVmMaps.filter { (it.protections and 1) != 0 && it.end > it.start }.mapNotNull { map ->
+                val sliceS = maxOf(map.start, s)
+                val sliceE = minOf(map.end, e)
+                if (sliceE > sliceS) MemoryRange(name = map.name, start = sliceS, end = sliceE, offset = 0L, protections = map.protections) else null
+            }
+        } else {
+            listOf(MemoryRange(name = "Custom Range", start = s, end = e, offset = 0L, protections = 3))
+        }
+        return mergeMemoryRanges(rawRanges)
+    }
+
+    val openTargets = if (activeMaps.isNotEmpty()) activeMaps else listOfNotNull(activeMap)
+    if (openTargets.isEmpty()) return emptyList()
+
+    val rawRanges = openTargets.flatMap { target ->
+        if (target.subRanges.isNotEmpty()) {
+            target.subRanges.filter { (it.protections and 1) != 0 && it.end > it.start }
+        } else if (allVmMaps.isNotEmpty()) {
+            val overlapping = allVmMaps.filter {
+                (it.protections and 1) != 0 && it.end > it.start && it.end > target.start && it.start < target.end
+            }
+            if (overlapping.isNotEmpty()) {
+                overlapping.mapNotNull { map ->
+                    val sliceS = maxOf(map.start, target.start)
+                    val sliceE = minOf(map.end, target.end)
+                    if (sliceE > sliceS) MemoryRange(name = map.name, start = sliceS, end = sliceE, offset = 0L, protections = map.protections) else null
+                }
+            } else {
+                if ((target.protections and 1) != 0 && target.end > target.start) listOf(target) else emptyList()
+            }
+        } else {
+            if ((target.protections and 1) != 0 && target.end > target.start) listOf(target) else emptyList()
+        }
+    }
+    return mergeMemoryRanges(rawRanges)
+}
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun MemoryScannerView(
@@ -185,7 +277,6 @@ fun MemoryScannerView(
             .background(PS5ThemeColors.DarkBg)
     ) {
         val isMobile = maxWidth < 800.dp
-        val coroutineScope = rememberCoroutineScope()
         val client = AppContainer.clientAdapter.client
         val pid = AppContainer.debuggerUseCase.activeProcess.value?.pid
         val isConnected by AppContainer.debuggerUseCase.isConnected.collectAsState()
@@ -225,19 +316,20 @@ fun MemoryScannerView(
         )
 
         val performScan: () -> Unit = {
-            val startAddr: Long
-            val endAddr: Long
+            val allVmMaps = AppContainer.debuggerUseCase.vmMaps.value
+            val targetRanges = resolveTargetRanges(
+                useCustomRange = useCustomRange,
+                customRangeStart = customRangeStart,
+                customRangeEnd = customRangeEnd,
+                activeMap = activeMap,
+                activeMaps = activeMaps,
+                allVmMaps = allVmMaps
+            )
+            val totalScanBytes = targetRanges.sumOf { maxOf(0L, it.end - it.start) }
 
-            if (useCustomRange) {
-                startAddr = customRangeStart.replace("0x", "", ignoreCase = true).toLongOrNull(16) ?: 0L
-                endAddr = customRangeEnd.replace("0x", "", ignoreCase = true).toLongOrNull(16) ?: 0L
-            } else {
-                startAddr = activeMap?.start ?: 0L
-                endAddr = activeMap?.end ?: 0L
-            }
-
-            if (pid != null && endAddr > startAddr) {
-                coroutineScope.launch {
+            val canStart = pid != null && (isRescanMode || (targetRanges.isNotEmpty() && totalScanBytes > 0L))
+            if (canStart) {
+                AppContainer.appScope.launch {
                     isScanning = true
                     progress = 0f
                     timeRemainingText = "Starting scan..."
@@ -281,11 +373,7 @@ fun MemoryScannerView(
                         else -> 0
                     }
 
-                    val noValueNeeded = scanCompareType == "UnknownInitial" ||
-                            scanCompareType == "ValueChanged" ||
-                            scanCompareType == "ValueUnchanged" ||
-                            scanCompareType == "BiggerThanLast" ||
-                            scanCompareType == "SmallerThanLast"
+                    val needsScanValue = ctVal in listOf(0, 1, 2, 3, 4, 6, 8, 12)
 
                     var maskBytes: ByteArray? = null
                     val typeSize = when {
@@ -298,7 +386,8 @@ fun MemoryScannerView(
                         scanValueType.contains("Double") -> 8
                         else -> 4
                     }
-                    val bytes = if (noValueNeeded) {
+                    val extraBytes = if (scanCompareType == "Between") scanValueToBytes(scanValueExtra, scanValueType) else null
+                    val bytes = if (!needsScanValue) {
                         ByteArray(typeSize)
                     } else if (scanValueType == "ASCII String") {
                         val pattern = scanValue.encodeToByteArray()
@@ -310,28 +399,23 @@ fun MemoryScannerView(
                             maskBytes = pair.second
                             pair.first
                         } else null
-                    } else if (scanCompareType == "Between") {
-                        val b1 = scanValueToBytes(scanValue, scanValueType)
-                        val b2 = scanValueToBytes(scanValueExtra, scanValueType)
-                        if (b1 == null || b2 == null) null else b1 + b2
                     } else {
                         scanValueToBytes(scanValue, scanValueType)
                     }
 
-                    if (bytes == null) {
+                    if (bytes == null || (scanCompareType == "Between" && extraBytes == null)) {
                         AppContainer.debuggerUseCase.log("SCAN", "Invalid value format", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
                         isScanning = false
                         return@launch
                     }
 
-                    val totalRegionBytes = endAddr - startAddr
                     val scanStartTime = System.currentTimeMillis()
                     val progressJob = launch {
                         val estSpeedBytesPerSec = 200 * 1024 * 1024L // 200 MB/s
                         val estTotalSec = if (isRescanMode) {
                             (previousCandidates.size * typeSize).toDouble() / estSpeedBytesPerSec
                         } else {
-                            totalRegionBytes.toDouble() / estSpeedBytesPerSec
+                            totalScanBytes.toDouble() / estSpeedBytesPerSec
                         }
                         while (isScanning) {
                             val elapsed = (System.currentTimeMillis() - scanStartTime) / 1000.0
@@ -347,168 +431,144 @@ fun MemoryScannerView(
 
                     withContext(Dispatchers.IO) {
                         try {
+                            val entryLen = if (scanValueType == "ASCII String" || scanValueType.contains("Hex Mask")) bytes.size else typeSize
                             if (isRescanMode && previousCandidates.size > 0) {
-                                // --- RESCAN: CMD_PROC_SCAN_COUNT ---
-                                val baseAddr = MemoryScannerState.scanBaseAddressState.value
-                                AppContainer.debuggerUseCase.log("SCAN", "Rescan: vtVal=$vtVal, ctVal=$ctVal, ${previousCandidates.size} candidates, base=0x${baseAddr.toString(16)}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                                // --- RESCAN: Streaming CMD_PROC_SCAN_GET with in-memory matching ---
+                                AppContainer.debuggerUseCase.log("SCAN", "Rescan: vtVal=$vtVal, ctVal=$ctVal, ${previousCandidates.size} candidates", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
 
-                                // Compare types 5-10 need previous values sent alongside offsets
-                                val needsPrevious = ctVal in 5..10
-                                val valSize = if (noValueNeeded && !needsPrevious) typeSize else bytes.size
+                                val survivorResults = CompactScanResults(previousCandidates.size)
+                                val batchSize = 10000
+                                val prevTotal = previousCandidates.size
+                                var processed = 0
 
-                                val countPayload = BinaryBuffer(18).apply {
-                                    writeInt(pid)
-                                    writeLong(baseAddr)
-                                    writeByte(vtVal.toByte())
-                                    writeByte(ctVal.toByte())
-                                    writeInt(bytes.size)
-                                }.bytes
+                                while (processed < prevTotal) {
+                                    val currentBatch = minOf(batchSize, prevTotal - processed)
+                                    val getPayload = BinaryBuffer(8).apply {
+                                        writeInt(pid)
+                                        writeInt(currentBatch)
+                                    }.bytes
 
-                                client.connection.execute(readTimeoutMs = ScanReadTimeoutMs) { inStr, outStr ->
-                                    client.connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_SCAN_COUNT, countPayload)
-                                    var status = client.connection.receiveStatus(inStr)
-                                    if (status != ProtocolConstants.CMD_SUCCESS) {
-                                        throw java.io.IOException("Scan count failed status: 0x${status.toString(16)}")
-                                    }
-
-                                    // Send value/mask
-                                    outStr.write(bytes)
-                                    maskBytes?.let { outStr.write(it) }
-                                    outStr.flush()
-
-                                    // Send candidate chunks
-                                    val entrySize = if (needsPrevious) 4 + typeSize else 4
-                                    val maxChunkDataSize = 0x3FFF0 // ~256KB chunks
-                                    val entriesPerChunk = maxChunkDataSize / entrySize
-
-                                    val survivorResults = CompactScanResults(previousCandidates.size)
-                                    var idx = 0
-                                    val prevTotal = previousCandidates.size
-
-                                    while (idx < prevTotal) {
-                                        val batchEnd = minOf(idx + entriesPerChunk, prevTotal)
-                                        val batchSize = batchEnd - idx
-                                        val chunkDataSize = batchSize * entrySize
-
-                                        // Write chunk_len (uint32)
-                                        val chunkLenBuf = BinaryBuffer(4).apply { writeInt(chunkDataSize) }.bytes
-                                        outStr.write(chunkLenBuf)
-
-                                        // Write entries
-                                        val chunkBuf = BinaryBuffer(chunkDataSize)
-                                        for (i in idx until batchEnd) {
-                                            val candidateOffset = previousCandidates.getOffset(i)
-                                            chunkBuf.writeInt(candidateOffset.toInt())
-                                            if (needsPrevious) {
-                                                val prevVal = previousCandidates.getValueBytes(i)
-                                                if (prevVal.size >= typeSize) {
-                                                    chunkBuf.writeBytes(prevVal.copyOf(typeSize))
-                                                } else {
-                                                    chunkBuf.writeBytes(prevVal)
-                                                    chunkBuf.writeBytes(ByteArray(typeSize - prevVal.size))
-                                                }
-                                            }
+                                    client.connection.execute(readTimeoutMs = ScanReadTimeoutMs) { inStr, outStr ->
+                                        client.connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_SCAN_GET, getPayload)
+                                        val status = client.connection.receiveStatus(inStr)
+                                        if (status != ProtocolConstants.CMD_SUCCESS) {
+                                            throw java.io.IOException("Scan get failed status: 0x${status.toString(16)}")
                                         }
-                                        outStr.write(chunkBuf.bytes)
+
+                                        // Send (addr: Long, length: Int) entries
+                                        val entriesBuf = BinaryBuffer(currentBatch * 12)
+                                        for (k in processed until processed + currentBatch) {
+                                            val addr = previousCandidates.getOffset(k)
+                                            entriesBuf.writeLong(addr)
+                                            entriesBuf.writeInt(entryLen)
+                                        }
+                                        outStr.write(entriesBuf.bytes)
                                         outStr.flush()
 
-                                        // Read survivors for this chunk
-                                        while (true) {
-                                            val lenBytes = client.connection.readExactly(inStr, 8)
-                                            val blockLen = BinaryBuffer(lenBytes).readLong()
-                                            if (blockLen == -1L) break // per-chunk sentinel
+                                        // Read candidate values streamed back
+                                        val rawData = client.connection.readExactly(inStr, currentBatch * entryLen)
 
-                                            val blockBytes = client.connection.readExactly(inStr, blockLen.toInt())
-                                            val blockBuf = BinaryBuffer(blockBytes)
-                                            while (blockBuf.hasRemaining()) {
-                                                val offset = blockBuf.readInt().toLong()
-                                                val valBytes = blockBuf.readBytes(typeSize)
-                                                survivorResults.add(offset, valBytes)
-                                            }
+                                        // Read 8-byte sentinel (0xFFFFFFFFFFFFFFFF)
+                                        val sentinelBytes = client.connection.readExactly(inStr, 8)
+                                        val sentinel = BinaryBuffer(sentinelBytes).readLong()
+                                        if (sentinel != -1L) {
+                                            throw java.io.IOException("Scan get invalid sentinel: 0x${sentinel.toString(16)}")
                                         }
 
-                                        idx = batchEnd
-                                        if (prevTotal > 0) {
-                                            progress = idx.toFloat() / prevTotal.toFloat()
+                                        // Match each candidate in memory
+                                        for (k in 0 until currentBatch) {
+                                            val candIndex = processed + k
+                                            val candAddr = previousCandidates.getOffset(candIndex)
+                                            val prevVal = previousCandidates.getValueBytes(candIndex)
+                                            val memVal = rawData.copyOfRange(k * entryLen, (k + 1) * entryLen)
+
+                                            if (evaluateCandidateMatch(ctVal, vtVal, memVal, prevVal, bytes, extraBytes, maskBytes)) {
+                                                survivorResults.add(candAddr, memVal)
+                                            }
                                         }
                                     }
 
-                                    // Send end-of-chunks sentinel (0xFFFFFFFF)
-                                    val sentinelBuf = BinaryBuffer(4).apply { writeInt(-1) }.bytes
-                                    outStr.write(sentinelBuf)
-                                    outStr.flush()
-
-                                    MemoryScannerState.allCandidates.clear()
-                                    MemoryScannerState.allCandidates.addAll(survivorResults)
-                                    totalMatchesCount = MemoryScannerState.allCandidates.size.toLong()
-
-                                    // Final CMD_SUCCESS from server
-                                    client.connection.receiveStatus(inStr)
+                                    processed += currentBatch
+                                    if (prevTotal > 0) {
+                                        progress = processed.toFloat() / prevTotal.toFloat()
+                                    }
                                 }
-                            } else {
-                                // --- FIRST SCAN: CMD_PROC_SCAN_START ---
-                                AppContainer.debuggerUseCase.log("SCAN", "Starting scan: vtVal=$vtVal, ctVal=$ctVal, alignment=$alignment, range=0x${startAddr.toString(16)}-0x${endAddr.toString(16)}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
 
-                                MemoryScannerState.scanBaseAddressState.value = startAddr
+                                MemoryScannerState.allCandidates.replaceWith(survivorResults)
+                                totalMatchesCount = MemoryScannerState.allCandidates.size.toLong()
+                            } else {
+                                // --- FIRST SCAN: Multi-range CMD_PROC_SCAN_START ---
+                                AppContainer.debuggerUseCase.log("SCAN", "Starting scan: vtVal=$vtVal, ctVal=$ctVal, alignment=$alignment, ${targetRanges.size} ranges, total=${totalScanBytes}B", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+
+                                MemoryScannerState.scanBaseAddressState.value = targetRanges.firstOrNull()?.start ?: 0L
                                 MemoryScannerState.allCandidates.clear()
 
-                                val scanLength = (endAddr - startAddr).coerceIn(0L, 0xFFFFFFFFL)
-                                val startPayload = BinaryBuffer(23).apply {
-                                    writeInt(pid)
-                                    writeLong(startAddr)
-                                    writeInt(scanLength.toInt())
-                                    writeByte(vtVal.toByte())
-                                    writeByte(ctVal.toByte())
-                                    writeByte(alignment.toByte())
-                                    writeInt(bytes.size)
-                                }.bytes
+                                val startPayloadBytes = if (scanCompareType == "Between" && extraBytes != null) bytes + extraBytes else bytes
+                                val newCandidates = CompactScanResults(10000)
+                                var scannedBytesSoFar = 0L
 
-                                client.connection.execute(readTimeoutMs = ScanReadTimeoutMs) { inStr, outStr ->
-                                    client.connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_SCAN_START, startPayload)
-                                    var status = client.connection.receiveStatus(inStr)
-                                    if (status != ProtocolConstants.CMD_SUCCESS) {
-                                        throw java.io.IOException("Scan start failed status: 0x${status.toString(16)}")
-                                    }
+                                for (range in targetRanges) {
+                                    var rangeOffset = range.start
+                                    while (rangeOffset < range.end) {
+                                        val sliceLen = minOf(range.end - rangeOffset, 0x7FFF0000L) // <= 2GB per command
+                                        val sliceStart = rangeOffset
+                                        rangeOffset += sliceLen
 
-                                    outStr.write(bytes)
-                                    maskBytes?.let { outStr.write(it) }
-                                    outStr.flush()
+                                        val startPayload = BinaryBuffer(23).apply {
+                                            writeInt(pid)
+                                            writeLong(sliceStart)
+                                            writeInt(sliceLen.toInt())
+                                            writeByte(vtVal.toByte())
+                                            writeByte(ctVal.toByte())
+                                            writeByte(alignment.toByte())
+                                            writeInt(if (needsScanValue) startPayloadBytes.size else 0)
+                                        }.bytes
 
-                                    status = client.connection.receiveStatus(inStr)
-                                    if (status != ProtocolConstants.CMD_SUCCESS) {
-                                        throw java.io.IOException("Scan start ack failed")
-                                    }
+                                        client.connection.execute(readTimeoutMs = ScanReadTimeoutMs) { inStr, outStr ->
+                                            client.connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_SCAN_START, startPayload)
+                                            var status = client.connection.receiveStatus(inStr)
+                                            if (status != ProtocolConstants.CMD_SUCCESS) {
+                                                throw java.io.IOException("Scan start failed status: 0x${status.toString(16)}")
+                                            }
 
-                                    val valSize = bytes.size
-                                    val newCandidates = CompactScanResults(10000)
+                                            if (needsScanValue && startPayloadBytes.isNotEmpty()) {
+                                                outStr.write(startPayloadBytes)
+                                            }
+                                            maskBytes?.let { outStr.write(it) }
+                                            outStr.flush()
 
-                                    while (true) {
-                                        val lenBytes = client.connection.readExactly(inStr, 8)
-                                        val blockLen = BinaryBuffer(lenBytes).readLong()
-                                        if (blockLen == -1L) break
+                                            status = client.connection.receiveStatus(inStr)
+                                            if (status != ProtocolConstants.CMD_SUCCESS) {
+                                                throw java.io.IOException("Scan start ack failed")
+                                            }
 
-                                        val blockBytes = client.connection.readExactly(inStr, blockLen.toInt())
-                                        val blockBuf = BinaryBuffer(blockBytes)
-                                        while (blockBuf.hasRemaining()) {
-                                            val offset = blockBuf.readInt().toLong()
-                                            val valBytes = blockBuf.readBytes(valSize)
-                                            newCandidates.add(offset, valBytes)
+                                            while (true) {
+                                                val lenBytes = client.connection.readExactly(inStr, 8)
+                                                val blockLen = BinaryBuffer(lenBytes).readLong()
+                                                if (blockLen == -1L) break
 
-                                            if (totalRegionBytes > 0) {
-                                                val prog = (offset.toFloat() / totalRegionBytes.toFloat()).coerceIn(0f, 1f)
-                                                if (prog > progress) {
-                                                    progress = prog
+                                                val blockBytes = client.connection.readExactly(inStr, blockLen.toInt())
+                                                val blockBuf = BinaryBuffer(blockBytes)
+                                                while (blockBuf.hasRemaining()) {
+                                                    val offset = blockBuf.readUInt()
+                                                    val valBytes = blockBuf.readBytes(entryLen)
+                                                    val absAddr = sliceStart + offset
+                                                    newCandidates.add(absAddr, valBytes)
                                                 }
                                             }
+
+                                            client.connection.receiveStatus(inStr)
+                                        }
+
+                                        scannedBytesSoFar += sliceLen
+                                        if (totalScanBytes > 0) {
+                                            progress = (scannedBytesSoFar.toFloat() / totalScanBytes.toFloat()).coerceIn(0f, 1f)
                                         }
                                     }
-
-                                    MemoryScannerState.allCandidates.clear()
-                                    MemoryScannerState.allCandidates.addAll(newCandidates)
-                                    totalMatchesCount = MemoryScannerState.allCandidates.size.toLong()
-
-                                    client.connection.receiveStatus(inStr)
                                 }
+
+                                MemoryScannerState.allCandidates.replaceWith(newCandidates)
+                                totalMatchesCount = MemoryScannerState.allCandidates.size.toLong()
                             }
                             isRescanMode = true
                         } catch (e: Exception) {
@@ -603,6 +663,7 @@ fun MemoryScannerView(
                         useCustomRange = useCustomRange,
                         customRangeStart = customRangeStart,
                         activeMap = activeMap,
+                        activeMaps = activeMaps,
                         scanValueType = scanValueType,
                         isRescanMode = isRescanMode,
                         onJumpToAddress = onJumpToAddress
@@ -660,6 +721,7 @@ fun MemoryScannerView(
                     useCustomRange = useCustomRange,
                     customRangeStart = customRangeStart,
                     activeMap = activeMap,
+                    activeMaps = activeMaps,
                     scanValueType = scanValueType,
                     isRescanMode = isRescanMode,
                     onJumpToAddress = onJumpToAddress
@@ -699,19 +761,33 @@ fun ScannerSettings(
     valueTypes: List<String>,
     compareTypes: List<String>
 ) {
+    val allVmMaps by AppContainer.debuggerUseCase.vmMaps.collectAsState()
+    val resolvedRanges = remember(useCustomRange, customRangeStart, customRangeEnd, activeMap, activeMaps, allVmMaps) {
+        resolveTargetRanges(
+            useCustomRange = useCustomRange,
+            customRangeStart = customRangeStart,
+            customRangeEnd = customRangeEnd,
+            activeMap = activeMap,
+            activeMaps = activeMaps,
+            allVmMaps = allVmMaps
+        )
+    }
     val currentStart = activeMap?.start ?: 0L
     val currentEnd = activeMap?.end ?: 0L
-    val openTargets = if (activeMaps.isNotEmpty()) activeMaps else listOfNotNull(activeMap)
-    val openMinStart = openTargets.minOfOrNull { it.start } ?: currentStart
-    val openMaxEnd = openTargets.maxOfOrNull { it.end } ?: currentEnd
+    val openMinStart = resolvedRanges.minOfOrNull { it.start } ?: currentStart
+    val openMaxEnd = resolvedRanges.maxOfOrNull { it.end } ?: currentEnd
 
     val customStart = parseHexAddress(customRangeStart)
     val customEnd = parseHexAddress(customRangeEnd)
-    val selectedStart = if (useCustomRange) customStart else activeMap?.start
-    val selectedEnd = if (useCustomRange) customEnd else activeMap?.end
-    val selectedSize = if (selectedStart != null && selectedEnd != null && selectedEnd > selectedStart) selectedEnd - selectedStart else 0L
+    val selectedStart = if (useCustomRange) customStart else resolvedRanges.minOfOrNull { it.start }
+    val selectedEnd = if (useCustomRange) customEnd else resolvedRanges.maxOfOrNull { it.end }
+    val selectedSize = if (useCustomRange) {
+        if (customStart != null && customEnd != null && customEnd > customStart) customEnd - customStart else 0L
+    } else {
+        resolvedRanges.sumOf { (it.end - it.start).coerceAtLeast(0L) }
+    }
     val rangeIsValid = selectedSize > 0
-    val canScan = isConnected && rangeIsValid && !isScanning
+    val canScan = isConnected && (isRescanMode || rangeIsValid) && !isScanning
 
     Column(
         modifier = modifier
@@ -834,8 +910,13 @@ fun ScannerSettings(
                 FilterChip(
                     selected = !useCustomRange,
                     onClick = { onUseCustomRangeChange(false) },
-                    enabled = activeMap != null,
-                    label = { Text("Active region", fontSize = 11.sp) },
+                    enabled = resolvedRanges.isNotEmpty(),
+                    label = {
+                        Text(
+                            if (resolvedRanges.size > 1) "Selected (${resolvedRanges.size})" else "Active region",
+                            fontSize = 11.sp
+                        )
+                    },
                     colors = scannerChipColors(),
                     border = scannerChipBorder(!useCustomRange),
                     modifier = Modifier.weight(1f)
@@ -850,35 +931,34 @@ fun ScannerSettings(
                 )
             }
 
-            Button(
-                onClick = {
-                    if (openTargets.isNotEmpty()) {
-                        onUseCustomRangeChange(true)
-                        onCustomRangeStartChange(hexAddress(openMinStart))
-                        onCustomRangeEndChange(hexAddress(openMaxEnd))
+            if (resolvedRanges.size > 1) {
+                Button(
+                    onClick = {
+                        onUseCustomRangeChange(false)
+                    },
+                    enabled = !isScanning,
+                    modifier = Modifier.fillMaxWidth().height(32.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (!useCustomRange) PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else PS5ThemeColors.Surface
+                    ),
+                    shape = RoundedCornerShape(4.dp),
+                    border = BorderStroke(1.dp, if (!useCustomRange) PS5ThemeColors.AccentCyan.copy(alpha = 0.6f) else PS5ThemeColors.BorderColor),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Icon(
+                            imageVector = PS5Icons.MemoryMap,
+                            contentDescription = null,
+                            tint = PS5ThemeColors.AccentCyan,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Text(
+                            "Scan All ${resolvedRanges.size} Selected Segments",
+                            fontSize = 11.sp,
+                            color = PS5ThemeColors.TextMain,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
-                },
-                enabled = openTargets.isNotEmpty(),
-                modifier = Modifier.fillMaxWidth().height(32.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.Surface),
-                shape = RoundedCornerShape(4.dp),
-                border = BorderStroke(1.dp, PS5ThemeColors.BorderColor),
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Icon(
-                        imageVector = PS5Icons.MemoryMap,
-                        contentDescription = null,
-                        tint = PS5ThemeColors.AccentCyan,
-                        modifier = Modifier.size(14.dp)
-                    )
-                    val countStr = if (openTargets.size > 1) " (${openTargets.size} regions)" else ""
-                    Text(
-                        "Search All Opened Regions$countStr",
-                        fontSize = 11.sp,
-                        color = PS5ThemeColors.TextMain,
-                        fontWeight = FontWeight.Bold
-                    )
                 }
             }
 
@@ -890,17 +970,27 @@ fun ScannerSettings(
             ) {
                 Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(
-                        if (useCustomRange) "Custom Address Scope" else (activeMap?.name?.ifEmpty { "unnamed region" } ?: "No active region selected"),
-                        color = if (useCustomRange) PS5ThemeColors.AccentCyan else if (activeMap != null) PS5ThemeColors.AccentAmber else PS5ThemeColors.TextMuted,
+                        if (useCustomRange) "Custom Address Scope"
+                        else if (resolvedRanges.size > 1) "${resolvedRanges.size} Selected Segments"
+                        else (resolvedRanges.firstOrNull()?.name?.ifEmpty { "unnamed region" } ?: activeMap?.name?.ifEmpty { "unnamed region" } ?: "No active region selected"),
+                        color = if (useCustomRange) PS5ThemeColors.AccentCyan else if (resolvedRanges.isNotEmpty()) PS5ThemeColors.AccentAmber else PS5ThemeColors.TextMuted,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        selectedStart?.let { start ->
-                            selectedEnd?.let { end -> "0x${start.toString(16).uppercase()} - 0x${end.toString(16).uppercase()}" }
-                        } ?: "Choose a region or enter a range",
+                        if (useCustomRange) {
+                            selectedStart?.let { start ->
+                                selectedEnd?.let { end -> "0x${start.toString(16).uppercase()} - 0x${end.toString(16).uppercase()}" }
+                            } ?: "Enter custom range"
+                        } else if (resolvedRanges.size > 1) {
+                            "${resolvedRanges.size} readable segments across address space"
+                        } else {
+                            selectedStart?.let { start ->
+                                selectedEnd?.let { end -> "0x${start.toString(16).uppercase()} - 0x${end.toString(16).uppercase()}" }
+                            } ?: "Choose a region or enter a range"
+                        },
                         color = PS5ThemeColors.TextMain,
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = if (!useCustomRange && resolvedRanges.size > 1) FontFamily.Default else FontFamily.Monospace,
                         fontSize = 11.sp
                     )
                     Text(
@@ -932,7 +1022,7 @@ fun ScannerSettings(
                 }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-                    if (openTargets.size > 1) {
+                    if (resolvedRanges.size > 1) {
                         SmallRangeButton("All Opened") {
                             onCustomRangeStartChange(hexAddress(openMinStart))
                             onCustomRangeEndChange(hexAddress(openMaxEnd))
@@ -997,17 +1087,38 @@ fun ScannerResults(
     useCustomRange: Boolean,
     customRangeStart: String,
     activeMap: MemoryRange?,
+    activeMaps: List<MemoryRange> = emptyList(),
     scanValueType: String,
     isRescanMode: Boolean,
     onJumpToAddress: ((Long) -> Unit)?
 ) {
+    val allVmMaps by AppContainer.debuggerUseCase.vmMaps.collectAsState()
+    val resolvedRanges = remember(useCustomRange, customRangeStart, activeMap, activeMaps, allVmMaps) {
+        resolveTargetRanges(
+            useCustomRange = useCustomRange,
+            customRangeStart = customRangeStart,
+            customRangeEnd = "",
+            activeMap = activeMap,
+            activeMaps = activeMaps,
+            allVmMaps = allVmMaps
+        )
+    }
+    val openTargets = if (activeMaps.isNotEmpty()) activeMaps else listOfNotNull(activeMap)
     val baseAddress = if (useCustomRange) {
         parseHexAddress(customRangeStart) ?: 0L
     } else {
-        activeMap?.start ?: 0L
+        resolvedRanges.firstOrNull()?.start ?: openTargets.firstOrNull()?.start ?: 0L
     }
     val allCandidates = MemoryScannerState.allCandidates
     val totalHits = allCandidates.size
+
+    val baseLabel = if (useCustomRange) {
+        hexAddress(baseAddress)
+    } else if (resolvedRanges.size > 1) {
+        "${resolvedRanges.size} segments"
+    } else {
+        hexAddress(baseAddress)
+    }
 
     Column(
         modifier = modifier
@@ -1061,7 +1172,7 @@ fun ScannerResults(
                 )
 
                 Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-                    ScannerStat("Base", hexAddress(baseAddress), Modifier.weight(1f))
+                    ScannerStat("Base", baseLabel, Modifier.weight(1f))
                     ScannerStat("Value type", scanValueType, Modifier.weight(1f))
                     ScannerStat("Hits Kept", totalHits.toString(), Modifier.weight(1f))
                 }
@@ -1086,13 +1197,16 @@ fun ScannerResults(
                 modifier = Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
-                items(totalHits, key = { idx -> allCandidates.getOffset(idx) }) { idx ->
-                    val offset = allCandidates.getOffset(idx)
+                items(totalHits) { idx ->
+                    val absAddr = allCandidates.getOffset(idx)
                     val valueBytes = allCandidates.getValueBytes(idx)
-                    val absAddr = baseAddress + offset
+                    val containingMap = allVmMaps.firstOrNull { absAddr >= it.start && absAddr < it.end }
+                        ?: resolvedRanges.firstOrNull { absAddr >= it.start && absAddr < it.end }
+                        ?: openTargets.firstOrNull { absAddr >= it.start && absAddr < it.end }
+                    val relOffset = if (containingMap != null) absAddr - containingMap.start else if (useCustomRange) (absAddr - baseAddress) else absAddr
                     ScanResultRow(
                         absAddr = absAddr,
-                        offset = offset,
+                        offset = relOffset,
                         value = parseValueBytes(valueBytes, scanValueType),
                         onJump = { onJumpToAddress?.invoke(absAddr) },
                         onAddWatch = {
@@ -1428,5 +1542,313 @@ private fun formatBytes(value: Long): String {
         "${amount.toInt()} ${units[unitIndex]}"
     } else {
         "${(amount * 10).toInt() / 10.0} ${units[unitIndex]}"
+    }
+}
+
+private fun fuzzyDoubleCompare(scanV: Double, memV: Double, tolerance: Double): Boolean {
+    if (scanV == memV) return true
+    val diff = kotlin.math.abs(scanV - memV)
+    val absScan = kotlin.math.abs(scanV)
+    val absMem = kotlin.math.abs(memV)
+    val dblMin = Double.MIN_VALUE
+    if (scanV == 0.0 || memV == 0.0) {
+        return (dblMin * tolerance) > diff
+    }
+    val sum = absScan + absMem
+    if (dblMin > sum) {
+        return (dblMin * tolerance) > diff
+    }
+    return tolerance > (diff / sum)
+}
+
+private fun fuzzyFloatCompare(scanV: Float, memV: Float, tolerance: Float): Boolean {
+    if (scanV == memV) return true
+    val diff = kotlin.math.abs(scanV - memV)
+    val absScan = kotlin.math.abs(scanV)
+    val absMem = kotlin.math.abs(memV)
+    val fltMin = Float.MIN_VALUE
+    if (scanV == 0.0f || memV == 0.0f) {
+        return (fltMin * tolerance) > diff
+    }
+    val sum = absScan + absMem
+    if (fltMin > sum) {
+        return (fltMin * tolerance) > diff
+    }
+    return tolerance > (diff / sum)
+}
+
+private fun compareBinary(memVal: ByteArray, otherVal: ByteArray, vtVal: Int, op: (Int) -> Boolean): Boolean {
+    if (memVal.isEmpty() || otherVal.isEmpty()) return false
+    val cmp = when (vtVal) {
+        0 -> { // UInt8
+            val m = memVal[0].toInt() and 0xFF
+            val o = otherVal[0].toInt() and 0xFF
+            m.compareTo(o)
+        }
+        1 -> { // Int8
+            memVal[0].compareTo(otherVal[0])
+        }
+        2 -> { // UInt16
+            val m = BinaryBuffer(memVal).readUShort()
+            val o = BinaryBuffer(otherVal).readUShort()
+            m.compareTo(o)
+        }
+        3 -> { // Int16
+            val m = BinaryBuffer(memVal).readShort()
+            val o = BinaryBuffer(otherVal).readShort()
+            m.compareTo(o)
+        }
+        4 -> { // UInt32
+            val m = BinaryBuffer(memVal).readUInt()
+            val o = BinaryBuffer(otherVal).readUInt()
+            m.compareTo(o)
+        }
+        5 -> { // Int32
+            val m = BinaryBuffer(memVal).readInt()
+            val o = BinaryBuffer(otherVal).readInt()
+            m.compareTo(o)
+        }
+        6 -> { // UInt64
+            val m = BinaryBuffer(memVal).readLong()
+            val o = BinaryBuffer(otherVal).readLong()
+            java.lang.Long.compareUnsigned(m, o)
+        }
+        7 -> { // Int64
+            val m = BinaryBuffer(memVal).readLong()
+            val o = BinaryBuffer(otherVal).readLong()
+            m.compareTo(o)
+        }
+        8 -> { // Float
+            val m = BinaryBuffer(memVal).readFloat()
+            val o = BinaryBuffer(otherVal).readFloat()
+            m.compareTo(o)
+        }
+        9 -> { // Double
+            val m = BinaryBuffer(memVal).readDouble()
+            val o = BinaryBuffer(otherVal).readDouble()
+            m.compareTo(o)
+        }
+        else -> return false
+    }
+    return op(cmp)
+}
+
+private fun checkBetween(memVal: ByteArray, lowVal: ByteArray, highVal: ByteArray, vtVal: Int): Boolean {
+    if (memVal.isEmpty() || lowVal.isEmpty() || highVal.isEmpty()) return false
+    return when (vtVal) {
+        0 -> {
+            val mv = memVal[0].toInt() and 0xFF
+            val sv = lowVal[0].toInt() and 0xFF
+            val ev = highVal[0].toInt() and 0xFF
+            if (ev > sv) mv in sv..ev else mv in ev..sv
+        }
+        1 -> {
+            val mv = memVal[0].toInt()
+            val sv = lowVal[0].toInt()
+            val ev = highVal[0].toInt()
+            if (ev > sv) mv in sv..ev else mv in ev..sv
+        }
+        2 -> {
+            val mv = BinaryBuffer(memVal).readUShort()
+            val sv = BinaryBuffer(lowVal).readUShort()
+            val ev = BinaryBuffer(highVal).readUShort()
+            if (ev > sv) mv in sv..ev else mv in ev..sv
+        }
+        3 -> {
+            val mv = BinaryBuffer(memVal).readShort().toInt()
+            val sv = BinaryBuffer(lowVal).readShort().toInt()
+            val ev = BinaryBuffer(highVal).readShort().toInt()
+            if (ev > sv) mv in sv..ev else mv in ev..sv
+        }
+        4 -> {
+            val mv = BinaryBuffer(memVal).readUInt()
+            val sv = BinaryBuffer(lowVal).readUInt()
+            val ev = BinaryBuffer(highVal).readUInt()
+            if (ev > sv) mv in sv..ev else mv in ev..sv
+        }
+        5 -> {
+            val mv = BinaryBuffer(memVal).readInt()
+            val sv = BinaryBuffer(lowVal).readInt()
+            val ev = BinaryBuffer(highVal).readInt()
+            if (ev > sv) mv in sv..ev else mv in ev..sv
+        }
+        6 -> {
+            val mv = BinaryBuffer(memVal).readLong()
+            val sv = BinaryBuffer(lowVal).readLong()
+            val ev = BinaryBuffer(highVal).readLong()
+            if (java.lang.Long.compareUnsigned(ev, sv) > 0) {
+                java.lang.Long.compareUnsigned(mv, sv) >= 0 && java.lang.Long.compareUnsigned(mv, ev) <= 0
+            } else {
+                java.lang.Long.compareUnsigned(mv, ev) >= 0 && java.lang.Long.compareUnsigned(mv, sv) <= 0
+            }
+        }
+        7 -> {
+            val mv = BinaryBuffer(memVal).readLong()
+            val sv = BinaryBuffer(lowVal).readLong()
+            val ev = BinaryBuffer(highVal).readLong()
+            if (ev > sv) mv in sv..ev else mv in ev..sv
+        }
+        8 -> {
+            val mv = BinaryBuffer(memVal).readFloat()
+            val sv = BinaryBuffer(lowVal).readFloat()
+            val ev = BinaryBuffer(highVal).readFloat()
+            if (ev > sv) mv in sv..ev else mv in ev..sv
+        }
+        9 -> {
+            val mv = BinaryBuffer(memVal).readDouble()
+            val sv = BinaryBuffer(lowVal).readDouble()
+            val ev = BinaryBuffer(highVal).readDouble()
+            if (ev > sv) mv in sv..ev else mv in ev..sv
+        }
+        else -> false
+    }
+}
+
+private fun checkDelta(memVal: ByteArray, prevVal: ByteArray, deltaVal: ByteArray, vtVal: Int, isAdd: Boolean): Boolean {
+    if (memVal.isEmpty() || prevVal.isEmpty() || deltaVal.isEmpty()) return false
+    return when (vtVal) {
+        0 -> {
+            val m = memVal[0].toInt() and 0xFF
+            val p = prevVal[0].toInt() and 0xFF
+            val d = deltaVal[0].toInt() and 0xFF
+            val expected = if (isAdd) (p + d) and 0xFF else (p - d) and 0xFF
+            m == expected
+        }
+        1 -> {
+            val m = memVal[0]
+            val p = prevVal[0]
+            val d = deltaVal[0]
+            val expected = if (isAdd) (p + d).toByte() else (p - d).toByte()
+            m == expected
+        }
+        2 -> {
+            val m = BinaryBuffer(memVal).readUShort()
+            val p = BinaryBuffer(prevVal).readUShort()
+            val d = BinaryBuffer(deltaVal).readUShort()
+            val expected = if (isAdd) (p + d) and 0xFFFF else (p - d) and 0xFFFF
+            m == expected
+        }
+        3 -> {
+            val m = BinaryBuffer(memVal).readShort()
+            val p = BinaryBuffer(prevVal).readShort()
+            val d = BinaryBuffer(deltaVal).readShort()
+            val expected = if (isAdd) (p + d).toShort() else (p - d).toShort()
+            m == expected
+        }
+        4 -> {
+            val m = BinaryBuffer(memVal).readUInt()
+            val p = BinaryBuffer(prevVal).readUInt()
+            val d = BinaryBuffer(deltaVal).readUInt()
+            val expected = if (isAdd) (p + d) and 0xFFFFFFFFL else (p - d) and 0xFFFFFFFFL
+            m == expected
+        }
+        5 -> {
+            val m = BinaryBuffer(memVal).readInt()
+            val p = BinaryBuffer(prevVal).readInt()
+            val d = BinaryBuffer(deltaVal).readInt()
+            val expected = if (isAdd) p + d else p - d
+            m == expected
+        }
+        6 -> {
+            val m = BinaryBuffer(memVal).readLong()
+            val p = BinaryBuffer(prevVal).readLong()
+            val d = BinaryBuffer(deltaVal).readLong()
+            val expected = if (isAdd) p + d else p - d
+            m == expected
+        }
+        7 -> {
+            val m = BinaryBuffer(memVal).readLong()
+            val p = BinaryBuffer(prevVal).readLong()
+            val d = BinaryBuffer(deltaVal).readLong()
+            val expected = if (isAdd) p + d else p - d
+            m == expected
+        }
+        8 -> {
+            val m = BinaryBuffer(memVal).readFloat()
+            val p = BinaryBuffer(prevVal).readFloat()
+            val d = BinaryBuffer(deltaVal).readFloat()
+            val expected = if (isAdd) p + d else p - d
+            fuzzyFloatCompare(expected, m, 1e-6f)
+        }
+        9 -> {
+            val m = BinaryBuffer(memVal).readDouble()
+            val p = BinaryBuffer(prevVal).readDouble()
+            val d = if (deltaVal.size >= 8) BinaryBuffer(deltaVal).readDouble() else if (deltaVal.size >= 4) BinaryBuffer(deltaVal).readFloat().toDouble() else 0.0
+            val expected = if (isAdd) p + d else p - d
+            fuzzyDoubleCompare(expected, m, 1e-6)
+        }
+        else -> false
+    }
+}
+
+private fun evaluateCandidateMatch(
+    ctVal: Int,
+    vtVal: Int,
+    memVal: ByteArray,
+    prevVal: ByteArray,
+    scanVal: ByteArray,
+    extraVal: ByteArray?,
+    maskVal: ByteArray?
+): Boolean {
+    return try {
+        when (ctVal) {
+            0 -> { // ExactValue
+                if (vtVal == 10) { // String / Hex Mask
+                    if (scanVal.isEmpty()) return true
+                    val checkLen = minOf(memVal.size, scanVal.size)
+                    for (j in 0 until checkLen) {
+                        if (scanVal[j] != memVal[j]) {
+                            if (maskVal == null || (j < maskVal.size && maskVal[j] == 1.toByte())) return false
+                        }
+                    }
+                    true
+                } else if (vtVal == 8) { // Float
+                    val sBits = BinaryBuffer(scanVal).readInt()
+                    val mBits = BinaryBuffer(memVal).readInt()
+                    if (sBits == 0) mBits == 0
+                    else fuzzyFloatCompare(Float.fromBits(sBits), Float.fromBits(mBits), 1e-6f)
+                } else if (vtVal == 9) { // Double
+                    val sBits = BinaryBuffer(scanVal).readLong()
+                    val mBits = BinaryBuffer(memVal).readLong()
+                    if (sBits == 0L) mBits == 0L
+                    else fuzzyDoubleCompare(Double.fromBits(sBits), Double.fromBits(mBits), 1e-6)
+                } else {
+                    val len = minOf(memVal.size, scanVal.size)
+                    for (j in 0 until len) {
+                        if (memVal[j] != scanVal[j]) return false
+                    }
+                    true
+                }
+            }
+            1 -> { // Fuzzy
+                if (vtVal == 8) {
+                    val diff = BinaryBuffer(scanVal).readFloat() - BinaryBuffer(memVal).readFloat()
+                    diff < 1.0f && diff > -1.0f
+                } else if (vtVal == 9) {
+                    val diff = BinaryBuffer(scanVal).readDouble() - BinaryBuffer(memVal).readDouble()
+                    diff < 1.0 && diff > -1.0
+                } else false
+            }
+            2 -> compareBinary(memVal, scanVal, vtVal) { it > 0 } // BiggerThan
+            3 -> compareBinary(memVal, scanVal, vtVal) { it < 0 } // SmallerThan
+            4 -> { // Between
+                if (extraVal == null) false
+                else checkBetween(memVal, scanVal, extraVal, vtVal)
+            }
+            5 -> compareBinary(memVal, prevVal, vtVal) { it > 0 } // BiggerThanLast
+            6 -> checkDelta(memVal, prevVal, scanVal, vtVal, isAdd = true) // IncreasedBy
+            7 -> compareBinary(memVal, prevVal, vtVal) { it < 0 } // SmallerThanLast
+            8 -> checkDelta(memVal, prevVal, scanVal, vtVal, isAdd = false) // DecreasedBy
+            9 -> !memVal.contentEquals(prevVal) // ValueChanged
+            10 -> memVal.contentEquals(prevVal) // ValueUnchanged
+            11 -> memVal.any { it != 0.toByte() } // UnknownInitial
+            12 -> { // UnknownInitialMax
+                if (memVal.all { it == 0.toByte() }) false
+                else compareBinary(memVal, scanVal, vtVal) { it <= 0 }
+            }
+            else -> false
+        }
+    } catch (_: Exception) {
+        false
     }
 }

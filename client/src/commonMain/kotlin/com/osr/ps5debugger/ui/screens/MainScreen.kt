@@ -43,6 +43,7 @@ import com.osr.ps5debugger.ui.components.TabItem
 import com.osr.ps5debugger.ui.components.TopMenuBar
 import com.osr.ps5debugger.ui.state.MainState
 import com.osr.ps5debugger.ui.state.rememberMainState
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import com.osr.ps5debugger.util.DefaultIpHelper
 import com.osr.ps5debugger.util.ShortcutManager
@@ -147,27 +148,40 @@ private fun MainLayout(state: MainState) {
     }
 
     val isConnected by AppContainer.debuggerUseCase.isConnected.collectAsState()
+    val vmMaps by AppContainer.debuggerUseCase.vmMaps.collectAsState()
     val activeMapsSnapshot = state.activeMaps.toList()
     val allOpenMaps = remember(state.activeMap, activeMapsSnapshot) {
         (listOfNotNull(state.activeMap) + activeMapsSnapshot).distinctBy { it.start }
     }
 
-    // Continuous background processing for ALL open tabs/regions regardless of view or tab
-    LaunchedEffect(allOpenMaps, isConnected, activeProcess, state.jumpToAddress) {
-        if (allOpenMaps.isEmpty()) return@LaunchedEffect
-        val hasLocal = allOpenMaps.any { it.localData != null }
-        val hasRemote = allOpenMaps.any { it.localData == null }
+    // Continuous background processing for open regions AND all remaining memory regions
+    LaunchedEffect(allOpenMaps, vmMaps, isConnected, activeProcess, state.jumpToAddress) {
+        val hasLocal = allOpenMaps.any { it.localData != null } || vmMaps.any { it.localData != null }
+        val hasRemote = allOpenMaps.any { it.localData == null } || vmMaps.any { it.localData == null }
         if (!hasLocal && (!hasRemote || !isConnected || activeProcess == null)) return@LaunchedEffect
 
         val pid = activeProcess?.pid
         val jumpAddr = state.jumpToAddress
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-            kotlinx.coroutines.coroutineScope {
-                allOpenMaps.forEach { map ->
-                    launch {
-                        AppContainer.preloadRegionInBackground(map, pid, jumpAddr)
-                    }
-                }
+            // 1. High priority: Preload all currently open/selected maps first
+            for (map in allOpenMaps) {
+                if (!isActive) return@withContext
+                AppContainer.preloadRegionInBackground(map, pid, jumpAddr)
+            }
+
+            // 2. Background scanner: Continue scanning all other memory regions in the background
+            val otherMaps = vmMaps
+                .filterNot { vm -> allOpenMaps.any { it.start == vm.start } }
+                .filter { (it.protections and 1) != 0 || it.localData != null }
+                .sortedWith(
+                    compareByDescending<com.osr.ps5debugger.domain.model.MemoryRange> { (it.protections and 4) != 0 || it.localData != null }
+                        .thenBy { it.start }
+                )
+
+            for (map in otherMaps) {
+                if (!isActive) break
+                AppContainer.preloadRegionInBackground(map, pid, null)
+                kotlinx.coroutines.yield()
             }
         }
     }
@@ -210,329 +224,15 @@ private fun MainLayout(state: MainState) {
             }
             .focusable()
     ) {
-        Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
-            Row(modifier = Modifier.fillMaxSize()) {
-                // LEFT SIDEBAR (ICONS)
-                Column(
-                    modifier = Modifier
-                        .fillMaxHeight()
-                        .width(48.dp)
-                        .background(PS5ThemeColors.SecondaryBg)
-                        .padding(vertical = 12.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    Tooltip("Connections / Processes") {
-                        IconButton(
-                            onClick = { activeLeftTab = if (activeLeftTab == "connections") null else "connections" },
-                            modifier = Modifier
-                                .size(38.dp)
-                                .background(
-                                    if (activeLeftTab == "connections") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
-                                    RoundedCornerShape(6.dp)
-                                )
-                        ) {
-                            Icon(
-                                imageVector = PS5Icons.Connections,
-                                contentDescription = "Connections",
-                                tint = if (activeLeftTab == "connections") PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                    }
-
-                    Tooltip(if (isProcessSelected) "Memory Map" else "Memory Map (Select a process first)") {
-                        IconButton(
-                            onClick = { if (isProcessSelected) activeLeftTab = if (activeLeftTab == "map") null else "map" },
-                            enabled = isProcessSelected,
-                            modifier = Modifier
-                                .size(38.dp)
-                                .background(
-                                    if (activeLeftTab == "map") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
-                                    RoundedCornerShape(6.dp)
-                                )
-                        ) {
-                            Icon(
-                                imageVector = PS5Icons.MemoryMap,
-                                contentDescription = "Memory Map",
-                                tint = when {
-                                    !isProcessSelected -> PS5ThemeColors.TextMuted.copy(alpha = 0.3f)
-                                    activeLeftTab == "map" -> PS5ThemeColors.AccentCyan
-                                    else -> PS5ThemeColors.TextMuted
-                                },
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                    }
-
-                    Tooltip(if (isProcessSelected) "Symbols" else "Symbols (Select a process first)") {
-                        IconButton(
-                            onClick = { if (isProcessSelected) activeLeftTab = if (activeLeftTab == "symbols") null else "symbols" },
-                            enabled = isProcessSelected,
-                            modifier = Modifier
-                                .size(38.dp)
-                                .background(
-                                    if (activeLeftTab == "symbols") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
-                                    RoundedCornerShape(6.dp)
-                                )
-                        ) {
-                            Icon(
-                                imageVector = PS5Icons.Symbols,
-                                contentDescription = "Symbols",
-                                tint = when {
-                                    !isProcessSelected -> PS5ThemeColors.TextMuted.copy(alpha = 0.3f)
-                                    activeLeftTab == "symbols" -> PS5ThemeColors.AccentCyan
-                                    else -> PS5ThemeColors.TextMuted
-                                },
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.weight(1f))
-
-                    // Console Toggle
-                    Tooltip("Console Logs") {
-                        IconButton(
-                            onClick = { state.isConsoleVisible = !state.isConsoleVisible },
-                            modifier = Modifier
-                                .padding(bottom = 12.dp)
-                                .size(38.dp)
-                                .background(
-                                    if (state.isConsoleVisible) PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
-                                    RoundedCornerShape(6.dp)
-                                )
-                        ) {
-                            val tint = if (state.isConsoleVisible) PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted
-                            Canvas(modifier = Modifier.size(width = 16.dp, height = 12.dp)) {
-                                drawRoundRect(
-                                    color = tint,
-                                    style = Stroke(width = 2f),
-                                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(3f, 3f)
-                                )
-                                drawLine(
-                                    color = tint,
-                                    start = androidx.compose.ui.geometry.Offset(4f, 4.5f),
-                                    end = androidx.compose.ui.geometry.Offset(7f, 6.5f),
-                                    strokeWidth = 2f
-                                )
-                                drawLine(
-                                    color = tint,
-                                    start = androidx.compose.ui.geometry.Offset(7f, 6.5f),
-                                    end = androidx.compose.ui.geometry.Offset(4f, 8.5f),
-                                    strokeWidth = 2f
-                                )
-                                drawLine(
-                                    color = tint,
-                                    start = androidx.compose.ui.geometry.Offset(9.5f, 8.5f),
-                                    end = androidx.compose.ui.geometry.Offset(13f, 8.5f),
-                                    strokeWidth = 2f
-                                )
-                            }
-                        }
-                    }
-                }
-                VerticalDivider(modifier = Modifier.fillMaxHeight().width(1.dp), color = PS5ThemeColors.BorderColor)
-
-                // LEFT PANEL (EXPANDED CONTAINER)
-                AnimatedVisibility(
-                    visible = activeLeftTab != null,
-                    enter = slideInHorizontally(initialOffsetX = { -it }, animationSpec = tween(200)) + fadeIn(tween(200)),
-                    exit = slideOutHorizontally(targetOffsetX = { -it }, animationSpec = tween(200)) + fadeOut(tween(200))
-                ) {
-                    Row(modifier = Modifier.fillMaxHeight()) {
-                        when (activeLeftTab) {
-                            "connections" -> ProcessManager(
-                                onMapSelected = {
-                                    state.activeMap = it
-                                    state.selectedTab = 0
-                                },
-                                onMapsSelected = { maps ->
-                                    state.activeMaps.clear()
-                                    state.activeMaps.addAll(maps)
-                                    if (state.activeMap == null || !maps.any { it.start == state.activeMap?.start }) {
-                                        state.activeMap = maps.firstOrNull()
-                                    }
-                                    state.selectedTab = 0
-                                },
-                                activeMap = state.activeMap,
-                                activeMaps = state.activeMaps
-                            )
-                            "map" -> MemoryMapView(
-                                onJumpToAddress = { addr ->
-                                    val map = AppContainer.debuggerUseCase.vmMaps.value.firstOrNull { addr >= it.start && addr < it.end }
-                                    if (map != null) {
-                                        state.activeMap = map
-                                        state.jumpToAddress = addr
-                                        state.selectedTab = 0
-                                    }
-                                },
-                                onCollapse = { activeLeftTab = null }
-                            )
-                            "symbols" -> SymbolsView(
-                                onJumpToAddress = { addr ->
-                                    state.jumpToAddress = addr
-                                    state.selectedTab = 0
-                                },
-                                onCollapse = { activeLeftTab = null }
-                            )
-                        }
-                        VerticalDivider(modifier = Modifier.fillMaxHeight().width(1.dp), color = PS5ThemeColors.BorderColor)
-                    }
-                }
-
-                // MAIN CONTENT
-                Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
-                    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-                        val isMobileToolbar = maxWidth < 800.dp
-                        TopBar(state, isMobile = isMobileToolbar, onSettingsClick = { state.isSettingsOpen = true })
-                    }
-                    HorizontalDivider(color = PS5ThemeColors.BorderColor)
-                    MainArea(state, modifier = Modifier.weight(1f).fillMaxWidth())
-                }
-
-                // RIGHT PANEL (EXPANDED CONTAINER)
-                AnimatedVisibility(
-                    visible = state.activeRightTab != null,
-                    enter = slideInHorizontally(initialOffsetX = { it }, animationSpec = tween(200)) + fadeIn(tween(200)),
-                    exit = slideOutHorizontally(targetOffsetX = { it }, animationSpec = tween(200)) + fadeOut(tween(200))
-                ) {
-                    Row(modifier = Modifier.fillMaxHeight()) {
-                        VerticalDivider(modifier = Modifier.fillMaxHeight().width(1.dp), color = PS5ThemeColors.BorderColor)
-                        when (state.activeRightTab) {
-                            "debugger" -> DebugSidebar(state = state, onCollapse = { state.activeRightTab = null })
-                            "breakpoints" -> BreakpointsSidebar(state = state, onCollapse = { state.activeRightTab = null })
-                            "references" -> ReferencesSidebar(state = state, targetAddress = state.xrefTargetAddress, onCollapse = { state.activeRightTab = null })
-                            "cheats" -> CheatsSidebar(state = state, profiles = activeGameProfiles, onCollapse = { state.activeRightTab = null })
-                        }
-                    }
-                }
-
-                VerticalDivider(modifier = Modifier.fillMaxHeight().width(1.dp), color = PS5ThemeColors.BorderColor)
-
-                // RIGHT SIDEBAR (ICONS)
-                Column(
-                    modifier = Modifier
-                        .fillMaxHeight()
-                        .width(48.dp)
-                        .background(PS5ThemeColors.SecondaryBg)
-                        .padding(vertical = 12.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    Tooltip("Debugger Control") {
-                        IconButton(
-                            onClick = {
-                                state.activeRightTab = if (state.activeRightTab == "debugger") null else "debugger"
-                            },
-                            modifier = Modifier
-                                .size(38.dp)
-                                .background(
-                                    if (state.activeRightTab == "debugger") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
-                                    RoundedCornerShape(6.dp)
-                                )
-                        ) {
-                            Icon(
-                                imageVector = PS5Icons.DebuggerControl,
-                                contentDescription = "Debugger",
-                                tint = if (state.activeRightTab == "debugger") PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                    }
-                    // Breakpoints Icon Tab
-                    Tooltip("Breakpoints") {
-                        IconButton(
-                            onClick = {
-                                state.activeRightTab = if (state.activeRightTab == "breakpoints") null else "breakpoints"
-                            },
-                            modifier = Modifier
-                                .size(38.dp)
-                                .background(
-                                    if (state.activeRightTab == "breakpoints") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
-                                    RoundedCornerShape(6.dp)
-                                )
-                        ) {
-                            Icon(
-                                imageVector = PS5Icons.Breakpoints,
-                                contentDescription = "Breakpoints",
-                                tint = if (state.activeRightTab == "breakpoints") PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                    }
-                    // References Icon Tab
-                    Tooltip("References") {
-                        IconButton(
-                            onClick = {
-                                state.activeRightTab = if (state.activeRightTab == "references") null else "references"
-                            },
-                            modifier = Modifier
-                                .size(38.dp)
-                                .background(
-                                    if (state.activeRightTab == "references") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
-                                    RoundedCornerShape(6.dp)
-                                )
-                        ) {
-                            Icon(
-                                imageVector = PS5Icons.References,
-                                contentDescription = "References",
-                                tint = if (state.activeRightTab == "references") PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                    }
-
-                    // Cheats Icon Tab (only shown when a process has been selected for which cheats exist)
-                    if (hasActiveCheats) {
-                        Tooltip("Active Process Cheats") {
-                            IconButton(
-                                onClick = {
-                                    state.activeRightTab = if (state.activeRightTab == "cheats") null else "cheats"
-                                },
-                                modifier = Modifier
-                                    .size(38.dp)
-                                    .background(
-                                        if (state.activeRightTab == "cheats") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
-                                        RoundedCornerShape(6.dp)
-                                    )
-                            ) {
-                                Icon(
-                                    imageVector = PS5Icons.Cheats,
-                                    contentDescription = "Active Cheats",
-                                    tint = if (state.activeRightTab == "cheats") PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                        }
-                    }
-                }
-            }
+        // TOP BAR (File Edit View, CONNECTED, Settings) - Full width
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            val isMobileToolbar = maxWidth < 800.dp
+            TopBar(state, isMobile = isMobileToolbar, onSettingsClick = { state.isSettingsOpen = true })
         }
+        HorizontalDivider(color = PS5ThemeColors.BorderColor)
 
-        ConsolePanel(state)
-
-        if (state.showAddCheatDialog) {
-            val procInfo by AppContainer.debuggerUseCase.activeProcessInfo.collectAsState()
-            AddCheatDialog(
-                titleId = procInfo?.titleId ?: "Unknown",
-                version = "1.00",
-                gameName = procInfo?.name ?: "Unknown",
-                existingCheat = state.pendingCheatToCreate,
-                onDismiss = { 
-                    state.showAddCheatDialog = false
-                    state.pendingCheatToCreate = null
-                }
-            )
-        }
-    }
-}
-
-@Composable
-private fun MainArea(state: MainState, modifier: Modifier = Modifier) {
-    val tabs = listOf("Memory Viewer", "Memory Search", "Watch List", "Memory Dumper", "Cheats", "File Browser")
-    
-    Column(modifier = modifier) {
+        // MAIN TABS (Memory Viewer, Memory Search, ...) - Full width
+        val tabs = listOf("Memory Viewer", "Memory Search", "Watch List", "Memory Dumper", "Cheats", "File Browser")
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -566,14 +266,328 @@ private fun MainArea(state: MainState, modifier: Modifier = Modifier) {
             HorizontalDivider(color = PS5ThemeColors.BorderColor)
         }
 
+        // MAIN WORKSPACE (Below the full-width bars)
         Box(modifier = Modifier.fillMaxWidth().weight(1f).background(MaterialTheme.colorScheme.surface.copy(alpha = 0.5f))) {
-            TabContent(state)
+            TabContent(
+                state = state,
+                sidebarsWrapper = { centerContent ->
+                    Row(modifier = Modifier.fillMaxSize()) {
+                        // LEFT SIDEBAR (ICONS)
+                        Column(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .width(48.dp)
+                                .background(PS5ThemeColors.SecondaryBg)
+                                .padding(vertical = 12.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            Tooltip("Connections / Processes") {
+                                IconButton(
+                                    onClick = { activeLeftTab = if (activeLeftTab == "connections") null else "connections" },
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .background(
+                                            if (activeLeftTab == "connections") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
+                                            RoundedCornerShape(6.dp)
+                                        )
+                                ) {
+                                    Icon(
+                                        imageVector = PS5Icons.Connections,
+                                        contentDescription = "Connections",
+                                        tint = if (activeLeftTab == "connections") PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+
+                            Tooltip(if (isProcessSelected) "Memory Map" else "Memory Map (Select a process first)") {
+                                IconButton(
+                                    onClick = { if (isProcessSelected) activeLeftTab = if (activeLeftTab == "map") null else "map" },
+                                    enabled = isProcessSelected,
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .background(
+                                            if (activeLeftTab == "map") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
+                                            RoundedCornerShape(6.dp)
+                                        )
+                                ) {
+                                    Icon(
+                                        imageVector = PS5Icons.MemoryMap,
+                                        contentDescription = "Memory Map",
+                                        tint = when {
+                                            !isProcessSelected -> PS5ThemeColors.TextMuted.copy(alpha = 0.3f)
+                                            activeLeftTab == "map" -> PS5ThemeColors.AccentCyan
+                                            else -> PS5ThemeColors.TextMuted
+                                        },
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+
+                            Tooltip(if (isProcessSelected) "Symbols" else "Symbols (Select a process first)") {
+                                IconButton(
+                                    onClick = { if (isProcessSelected) activeLeftTab = if (activeLeftTab == "symbols") null else "symbols" },
+                                    enabled = isProcessSelected,
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .background(
+                                            if (activeLeftTab == "symbols") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
+                                            RoundedCornerShape(6.dp)
+                                        )
+                                ) {
+                                    Icon(
+                                        imageVector = PS5Icons.Symbols,
+                                        contentDescription = "Symbols",
+                                        tint = when {
+                                            !isProcessSelected -> PS5ThemeColors.TextMuted.copy(alpha = 0.3f)
+                                            activeLeftTab == "symbols" -> PS5ThemeColors.AccentCyan
+                                            else -> PS5ThemeColors.TextMuted
+                                        },
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.weight(1f))
+
+                            // Console Toggle
+                            Tooltip("Console Logs") {
+                                IconButton(
+                                    onClick = { state.isConsoleVisible = !state.isConsoleVisible },
+                                    modifier = Modifier
+                                        .padding(bottom = 12.dp)
+                                        .size(38.dp)
+                                        .background(
+                                            if (state.isConsoleVisible) PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
+                                            RoundedCornerShape(6.dp)
+                                        )
+                                ) {
+                                    val tint = if (state.isConsoleVisible) PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted
+                                    Canvas(modifier = Modifier.size(width = 16.dp, height = 12.dp)) {
+                                        drawRoundRect(
+                                            color = tint,
+                                            style = Stroke(width = 2f),
+                                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(3f, 3f)
+                                        )
+                                        drawLine(
+                                            color = tint,
+                                            start = androidx.compose.ui.geometry.Offset(4f, 4.5f),
+                                            end = androidx.compose.ui.geometry.Offset(7f, 6.5f),
+                                            strokeWidth = 2f
+                                        )
+                                        drawLine(
+                                            color = tint,
+                                            start = androidx.compose.ui.geometry.Offset(7f, 6.5f),
+                                            end = androidx.compose.ui.geometry.Offset(4f, 8.5f),
+                                            strokeWidth = 2f
+                                        )
+                                        drawLine(
+                                            color = tint,
+                                            start = androidx.compose.ui.geometry.Offset(9.5f, 8.5f),
+                                            end = androidx.compose.ui.geometry.Offset(13f, 8.5f),
+                                            strokeWidth = 2f
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        VerticalDivider(modifier = Modifier.fillMaxHeight().width(1.dp), color = PS5ThemeColors.BorderColor)
+
+                        // LEFT PANEL (EXPANDED CONTAINER)
+                        AnimatedVisibility(
+                            visible = activeLeftTab != null,
+                            enter = slideInHorizontally(initialOffsetX = { -it }, animationSpec = tween(200)) + fadeIn(tween(200)),
+                            exit = slideOutHorizontally(targetOffsetX = { -it }, animationSpec = tween(200)) + fadeOut(tween(200))
+                        ) {
+                            Row(modifier = Modifier.fillMaxHeight()) {
+                                when (activeLeftTab) {
+                                    "connections" -> ProcessManager(
+                                        onMapSelected = {
+                                            state.activeMap = it
+                                        },
+                                        onMapsSelected = { maps ->
+                                            state.activeMaps.clear()
+                                            state.activeMaps.addAll(maps)
+                                            if (state.activeMap == null || !maps.any { it.start == state.activeMap?.start }) {
+                                                state.activeMap = maps.firstOrNull()
+                                            }
+                                        },
+                                        activeMap = state.activeMap,
+                                        activeMaps = state.activeMaps
+                                    )
+                                    "map" -> MemoryMapView(
+                                        onJumpToAddress = { addr ->
+                                            val map = AppContainer.debuggerUseCase.vmMaps.value.firstOrNull { addr >= it.start && addr < it.end }
+                                            if (map != null) {
+                                                state.activeMap = map
+                                                state.jumpToAddress = addr
+                                                state.selectedTab = 0
+                                            }
+                                        },
+                                        onCollapse = { activeLeftTab = null }
+                                    )
+                                    "symbols" -> SymbolsView(
+                                        onJumpToAddress = { addr ->
+                                            state.jumpToAddress = addr
+                                            state.selectedTab = 0
+                                        },
+                                        onCollapse = { activeLeftTab = null }
+                                    )
+                                }
+                                VerticalDivider(modifier = Modifier.fillMaxHeight().width(1.dp), color = PS5ThemeColors.BorderColor)
+                            }
+                        }
+
+                        // CENTER CONTENT
+                        Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                            centerContent()
+                        }
+
+                        // RIGHT PANEL (EXPANDED CONTAINER)
+                        AnimatedVisibility(
+                            visible = state.activeRightTab != null,
+                            enter = slideInHorizontally(initialOffsetX = { it }, animationSpec = tween(200)) + fadeIn(tween(200)),
+                            exit = slideOutHorizontally(targetOffsetX = { it }, animationSpec = tween(200)) + fadeOut(tween(200))
+                        ) {
+                            Row(modifier = Modifier.fillMaxHeight()) {
+                                VerticalDivider(modifier = Modifier.fillMaxHeight().width(1.dp), color = PS5ThemeColors.BorderColor)
+                                when (state.activeRightTab) {
+                                    "debugger" -> DebugSidebar(state = state, onCollapse = { state.activeRightTab = null })
+                                    "breakpoints" -> BreakpointsSidebar(state = state, onCollapse = { state.activeRightTab = null })
+                                    "references" -> ReferencesSidebar(state = state, targetAddress = state.xrefTargetAddress, onCollapse = { state.activeRightTab = null })
+                                    "cheats" -> CheatsSidebar(state = state, profiles = activeGameProfiles, onCollapse = { state.activeRightTab = null })
+                                }
+                            }
+                        }
+
+                        VerticalDivider(modifier = Modifier.fillMaxHeight().width(1.dp), color = PS5ThemeColors.BorderColor)
+
+                        // RIGHT SIDEBAR (ICONS)
+                        Column(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .width(48.dp)
+                                .background(PS5ThemeColors.SecondaryBg)
+                                .padding(vertical = 12.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            Tooltip("Debugger Control") {
+                                IconButton(
+                                    onClick = {
+                                        state.activeRightTab = if (state.activeRightTab == "debugger") null else "debugger"
+                                    },
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .background(
+                                            if (state.activeRightTab == "debugger") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
+                                            RoundedCornerShape(6.dp)
+                                        )
+                                ) {
+                                    Icon(
+                                        imageVector = PS5Icons.DebuggerControl,
+                                        contentDescription = "Debugger",
+                                        tint = if (state.activeRightTab == "debugger") PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+                            // Breakpoints Icon Tab
+                            Tooltip("Breakpoints") {
+                                IconButton(
+                                    onClick = {
+                                        state.activeRightTab = if (state.activeRightTab == "breakpoints") null else "breakpoints"
+                                    },
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .background(
+                                            if (state.activeRightTab == "breakpoints") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
+                                            RoundedCornerShape(6.dp)
+                                        )
+                                ) {
+                                    Icon(
+                                        imageVector = PS5Icons.Breakpoints,
+                                        contentDescription = "Breakpoints",
+                                        tint = if (state.activeRightTab == "breakpoints") PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+                            // References Icon Tab
+                            Tooltip("References") {
+                                IconButton(
+                                    onClick = {
+                                        state.activeRightTab = if (state.activeRightTab == "references") null else "references"
+                                    },
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .background(
+                                            if (state.activeRightTab == "references") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
+                                            RoundedCornerShape(6.dp)
+                                        )
+                                ) {
+                                    Icon(
+                                        imageVector = PS5Icons.References,
+                                        contentDescription = "References",
+                                        tint = if (state.activeRightTab == "references") PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+
+                            // Cheats Icon Tab (only shown when a process has been selected for which cheats exist)
+                            if (hasActiveCheats) {
+                                Tooltip("Active Process Cheats") {
+                                    IconButton(
+                                        onClick = {
+                                            state.activeRightTab = if (state.activeRightTab == "cheats") null else "cheats"
+                                        },
+                                        modifier = Modifier
+                                            .size(38.dp)
+                                            .background(
+                                                if (state.activeRightTab == "cheats") PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else Color.Transparent,
+                                                RoundedCornerShape(6.dp)
+                                            )
+                                    ) {
+                                        Icon(
+                                            imageVector = PS5Icons.Cheats,
+                                            contentDescription = "Active Cheats",
+                                            tint = if (state.activeRightTab == "cheats") PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            )
+        }
+
+        ConsolePanel(state)
+
+        if (state.showAddCheatDialog) {
+            val procInfo by AppContainer.debuggerUseCase.activeProcessInfo.collectAsState()
+            AddCheatDialog(
+                titleId = procInfo?.titleId ?: "Unknown",
+                version = "1.00",
+                gameName = procInfo?.name ?: "Unknown",
+                existingCheat = state.pendingCheatToCreate,
+                onDismiss = { 
+                    state.showAddCheatDialog = false
+                    state.pendingCheatToCreate = null
+                }
+            )
         }
     }
 }
 
 @Composable
-private fun TabContent(state: MainState) {
+private fun TabContent(
+    state: MainState,
+    sidebarsWrapper: @Composable (@Composable () -> Unit) -> Unit
+) {
     when (state.selectedTab) {
         0 -> MemoryViewerLayout(
             activeMap = state.activeMap,
@@ -594,31 +608,36 @@ private fun TabContent(state: MainState) {
             onShowXrefs = { address ->
                 state.xrefTargetAddress = address
                 state.activeRightTab = "references"
-            }
+            },
+            sidebarsWrapper = sidebarsWrapper
         )
-        1 -> MemoryScannerView(
-            activeMap = state.activeMap,
-            activeMaps = state.activeMaps,
-            onJumpToAddress = { addr ->
+        1 -> sidebarsWrapper {
+            MemoryScannerView(
+                activeMap = state.activeMap,
+                activeMaps = state.activeMaps,
+                onJumpToAddress = { addr ->
+                    val map = AppContainer.debuggerUseCase.vmMaps.value.firstOrNull { addr >= it.start && addr < it.end }
+                    if (map != null) {
+                        state.activeMap = map
+                        state.jumpToAddress = addr
+                        state.selectedTab = 0
+                    }
+                }
+            )
+        }
+        2 -> sidebarsWrapper {
+            WatchList(onJumpToAddress = { addr ->
                 val map = AppContainer.debuggerUseCase.vmMaps.value.firstOrNull { addr >= it.start && addr < it.end }
                 if (map != null) {
                     state.activeMap = map
                     state.jumpToAddress = addr
                     state.selectedTab = 0
                 }
-            }
-        )
-        2 -> WatchList(onJumpToAddress = { addr ->
-            val map = AppContainer.debuggerUseCase.vmMaps.value.firstOrNull { addr >= it.start && addr < it.end }
-            if (map != null) {
-                state.activeMap = map
-                state.jumpToAddress = addr
-                state.selectedTab = 0
-            }
-        })
-        3 -> MemoryDumperView()
-        4 -> CheatsView()
-        5 -> FileBrowserView()
+            })
+        }
+        3 -> sidebarsWrapper { MemoryDumperView() }
+        4 -> CheatsView(sidebarsWrapper = sidebarsWrapper)
+        5 -> sidebarsWrapper { FileBrowserView() }
     }
 }
 
@@ -750,7 +769,7 @@ private fun TopBar(state: MainState, isMobile: Boolean, onSettingsClick: () -> U
             )
         } else {
             IconButton(onClick = { /* Open mobile menu */ }) {
-                Icon(PS5Icons.FileBrowser, null)
+                Icon(PS5Icons.FileBrowser, null, tint = PS5ThemeColors.TextMain)
             }
         }
 

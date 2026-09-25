@@ -72,7 +72,8 @@ fun ProcessManager(
             Text(
                 text = if (activeTab == 0) "Processes" else "Memory Regions",
                 style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
+                fontWeight = FontWeight.Bold,
+                color = PS5ThemeColors.TextMain
             )
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = {
@@ -87,7 +88,7 @@ fun ProcessManager(
                         }
                     }
                 }) {
-                    Icon(PS5Icons.Refresh, contentDescription = "Refresh")
+                    Icon(PS5Icons.Refresh, contentDescription = "Refresh", tint = PS5ThemeColors.TextMain)
                 }
                 if (onCollapse != null) {
                     IconButton(onClick = onCollapse, modifier = Modifier.size(24.dp)) {
