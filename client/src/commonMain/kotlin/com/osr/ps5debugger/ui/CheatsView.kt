@@ -62,6 +62,12 @@ fun CheatsView(sidebarsWrapper: @Composable (@Composable () -> Unit) -> Unit = {
                             Text("No cheats added yet. Right click in Memory Viewer to add one.", color = PS5ThemeColors.TextMuted)
                         }
                     } else {
+                        val dedupedProfiles = remember(profiles) {
+                            profiles.groupBy { "${it.titleId}_${it.version}" }.map { (_, group) ->
+                                if (group.size == 1) group.first()
+                                else group.first().copy(cheats = group.flatMap { it.cheats }.distinctBy { it.id })
+                            }
+                        }
                         if (viewMode == 0) {
                             LazyVerticalGrid(
                                 columns = GridCells.Adaptive(minSize = 160.dp),
@@ -70,13 +76,13 @@ fun CheatsView(sidebarsWrapper: @Composable (@Composable () -> Unit) -> Unit = {
                                 horizontalArrangement = Arrangement.spacedBy(16.dp),
                                 verticalArrangement = Arrangement.spacedBy(16.dp)
                             ) {
-                                items(profiles, key = { "${it.titleId}_${it.version}" }) { profile ->
+                                items(dedupedProfiles, key = { "${it.titleId}_${it.version}" }) { profile ->
                                     GameProfileTile(profile) { selectedProfile = profile }
                                 }
                             }
                         } else {
                             LazyColumn(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                items(profiles, key = { "${it.titleId}_${it.version}" }) { profile ->
+                                items(dedupedProfiles, key = { "${it.titleId}_${it.version}" }) { profile ->
                                     GameProfileRow(profile) { selectedProfile = profile }
                                 }
                             }

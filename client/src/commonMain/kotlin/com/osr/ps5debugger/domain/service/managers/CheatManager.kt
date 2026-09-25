@@ -102,7 +102,11 @@ class CheatManager(
 
     fun addCheat(titleId: String, version: String, cheat: Cheat, gameName: String = "Unknown") {
         val currentProfiles = _gameProfiles.value.toMutableList()
-        val profileIdx = currentProfiles.indexOfFirst { it.titleId == titleId && it.version == version }
+        // Try exact match first, then fall back to titleId-only match to avoid creating duplicate profiles
+        var profileIdx = currentProfiles.indexOfFirst { it.titleId == titleId && it.version == version }
+        if (profileIdx == -1) {
+            profileIdx = currentProfiles.indexOfFirst { it.titleId == titleId }
+        }
         
         val iconPath = "/user/appmeta/$titleId/icon0.png"
         val platform = com.osr.ps5debugger.di.AppContainer.titleIdToPlatform[titleId]

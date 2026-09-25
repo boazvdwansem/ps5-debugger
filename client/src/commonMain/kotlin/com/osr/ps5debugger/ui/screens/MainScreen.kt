@@ -569,9 +569,11 @@ private fun MainLayout(state: MainState) {
 
         if (state.showAddCheatDialog) {
             val procInfo by AppContainer.debuggerUseCase.activeProcessInfo.collectAsState()
+            val titleId = procInfo?.titleId ?: "Unknown"
+            val resolvedVersion = AppContainer.titleIdToVersion[titleId] ?: "1.00"
             AddCheatDialog(
-                titleId = procInfo?.titleId ?: "Unknown",
-                version = "1.00",
+                titleId = titleId,
+                version = resolvedVersion,
                 gameName = procInfo?.name ?: "Unknown",
                 existingCheat = state.pendingCheatToCreate,
                 onDismiss = { 
