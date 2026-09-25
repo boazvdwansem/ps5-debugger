@@ -409,27 +409,48 @@ fun DisassemblyViewer(
                                         .focusRequester(focusRequester)
                                         .focusable()
                                         .onKeyEvent { event ->
-                                            if (event.type == KeyEventType.KeyDown) {
-                                                val currentAddr = selectionEnd ?: selectionStart
-                                                val currentIndex = if (currentAddr != null) instructions.indexOfFirst { it.instr.addr == currentAddr } else -1
-                                                val targetIndex = when (event.key) {
-                                                    Key.DirectionUp -> if (currentIndex > 0) currentIndex - 1 else -1
-                                                    Key.DirectionDown -> if (currentIndex < instructions.size - 1) currentIndex + 1 else -1
-                                                    else -> -1
-                                                }
-                                                if (targetIndex != -1) {
-                                                    val targetInstr = instructions[targetIndex].instr
-                                                    val targetAddr = targetInstr.addr
-                                                    if (event.isShiftPressed) {
-                                                        val start = selectionStart ?: targetAddr
-                                                        onSelectionChanged?.invoke(start, targetAddr + targetInstr.length - 1, null)
-                                                    } else {
-                                                        selectionAnchor = targetAddr
-                                                        onSelectionChanged?.invoke(targetAddr, targetAddr + targetInstr.length - 1, null)
+                                            if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
+                                            
+                                            val shortcuts = com.osr.ps5debugger.util.DefaultIpHelper.getShortcuts()
+                                            if (com.osr.ps5debugger.util.ShortcutManager.isMatch(event, shortcuts["copy"])) {
+                                                val s = selectionStart
+                                                val e = selectionEnd
+                                                if (s != null && e != null) {
+                                                    val lo = minOf(s, e)
+                                                    val hi = maxOf(s, e)
+                                                    val selectedLines = instructions.filter { it.instr.addr in lo..hi }
+                                                    if (selectedLines.isNotEmpty()) {
+                                                        val textToCopy = selectedLines.joinToString("\n") { l ->
+                                                            val hex = l.bytes.joinToString("") { "%02X".format(it) }.padEnd(20)
+                                                            val mnemonic = com.osr.ps5debugger.ui.disasm.DisasmFormatter.getMnemonic(l.instr, l.bytes)
+                                                            val operands = com.osr.ps5debugger.ui.disasm.DisasmFormatter.formatOperands(l.instr, l.bytes)
+                                                            String.format("0x%012X  %s  %-10s %-30s", l.instr.addr, hex, mnemonic, operands).trimEnd()
+                                                        }
+                                                        com.osr.ps5debugger.util.copyToClipboard(textToCopy)
                                                     }
-                                                    coroutineScope.launch { listState.animateScrollToItem(targetIndex) }
-                                                    true
-                                                } else false
+                                                }
+                                                return@onKeyEvent true
+                                            }
+
+                                            val currentAddr = selectionEnd ?: selectionStart
+                                            val currentIndex = if (currentAddr != null) instructions.indexOfFirst { it.instr.addr == currentAddr } else -1
+                                            val targetIndex = when (event.key) {
+                                                Key.DirectionUp -> if (currentIndex > 0) currentIndex - 1 else -1
+                                                Key.DirectionDown -> if (currentIndex < instructions.size - 1) currentIndex + 1 else -1
+                                                else -> -1
+                                            }
+                                            if (targetIndex != -1) {
+                                                val targetInstr = instructions[targetIndex].instr
+                                                val targetAddr = targetInstr.addr
+                                                if (event.isShiftPressed) {
+                                                    val start = selectionStart ?: targetAddr
+                                                    onSelectionChanged?.invoke(start, targetAddr + targetInstr.length - 1, null)
+                                                } else {
+                                                    selectionAnchor = targetAddr
+                                                    onSelectionChanged?.invoke(targetAddr, targetAddr + targetInstr.length - 1, null)
+                                                }
+                                                coroutineScope.launch { listState.animateScrollToItem(targetIndex) }
+                                                true
                                             } else false
                                         }
                                 ) {

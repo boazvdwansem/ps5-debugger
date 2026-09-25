@@ -3,8 +3,12 @@ package com.osr.ps5debugger
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.foundation.window.WindowDraggableArea
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Icon
@@ -13,6 +17,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -49,6 +54,25 @@ import java.awt.event.MouseEvent
 import javax.swing.Timer
 
 fun main() {
+    // Eagerly pre-load key helper utilities to prevent lazy classloader issues on AWT key events
+    try {
+        com.osr.ps5debugger.util.ShortcutManager.hashCode()
+    } catch (_: Throwable) {}
+
+    if (com.osr.ps5debugger.util.DefaultIpHelper.isMcpEnabled()) {
+        com.osr.ps5debugger.mcp.McpHttpServer.start()
+    }
+    AppContainer.onMcpServerToggled = { enabled ->
+        if (enabled) {
+            com.osr.ps5debugger.mcp.McpHttpServer.start()
+        } else {
+            com.osr.ps5debugger.mcp.McpHttpServer.stop()
+        }
+    }
+    Runtime.getRuntime().addShutdownHook(Thread {
+        com.osr.ps5debugger.mcp.McpHttpServer.stop()
+    })
+
     AppContainer.filePicker = object : com.osr.ps5debugger.ports.inbound.FilePicker {
         override fun saveJson(defaultName: String, content: String, onResult: (Boolean) -> Unit) {
             try {
@@ -146,26 +170,46 @@ fun main() {
     }
     
     application {
+        val onAppExit = {
+            try {
+                com.osr.ps5debugger.mcp.McpHttpServer.stop()
+            } catch (_: Exception) {}
+            try {
+                AppContainer.clientAdapter.stopKlogForwarder()
+                AppContainer.clientAdapter.stopDebugChannel()
+            } catch (_: Exception) {}
+            exitApplication()
+            kotlin.system.exitProcess(0)
+        }
+
         val scope = rememberCoroutineScope()
-        val state = com.osr.ps5debugger.ui.state.rememberMainState(scope = scope, onExit = ::exitApplication)
+        val state = com.osr.ps5debugger.ui.state.rememberMainState(scope = scope, onExit = onAppExit)
 
         val windowState = rememberWindowState(
-        width = 1280.dp,
-        height = 860.dp,
-        position = WindowPosition.Aligned(Alignment.Center)
-    )
+            width = 1100.dp,
+            height = 700.dp,
+            position = WindowPosition.Aligned(Alignment.Center)
+        )
 
-    Window(
-        onCloseRequest = ::exitApplication,
-        title = "PlayStation 5 Debugger NG Client",
-        state = windowState,
-        undecorated = true,
-        icon = painterResource("logo.png")
-    ) {
-        val window = this.window
-        val floatingBounds = remember { mutableStateOf<Rectangle?>(null) }
+        Window(
+            onCloseRequest = onAppExit,
+            title = "PlayStation 5 Debugger NG Client",
+            state = windowState,
+            visible = true,
+            undecorated = false,
+            icon = painterResource("logo.png")
+        ) {
+            val window = this.window
+            LaunchedEffect(window) {
+                javax.swing.SwingUtilities.invokeLater {
+                    window.isVisible = true
+                    window.toFront()
+                }
+            }
+            val floatingBounds = remember { mutableStateOf<Rectangle?>(null) }
         var isCustomMaximized by remember { mutableStateOf(false) }
-        var isAnimatingWindow by remember { mutableStateOf(false) }
+        var isDraggingMaximized by remember { mutableStateOf(false) }
+
         val usableScreenBounds = {
             val config = window.graphicsConfiguration
             val bounds = Rectangle(config.bounds)
@@ -176,113 +220,278 @@ fun main() {
             bounds.height -= insets.top + insets.bottom
             bounds
         }
+
         val clampToScreen: (Rectangle) -> Rectangle = { rect ->
             val screen = usableScreenBounds()
-            val width = rect.width.coerceIn(640, screen.width)
-            val height = rect.height.coerceIn(420, screen.height)
-            val x = rect.x.coerceIn(screen.x, screen.x + screen.width - width)
-            val y = rect.y.coerceIn(screen.y + 16, screen.y + screen.height - height)
+            val minW = 640
+            val minH = 420
+            val maxW = screen.width.coerceAtLeast(minW)
+            val maxH = screen.height.coerceAtLeast(minH)
+            val width = rect.width.coerceIn(minW, maxW)
+            val height = rect.height.coerceIn(minH, maxH)
+            
+            val minX = screen.x
+            val maxX = (screen.x + screen.width - width).coerceAtLeast(minX)
+            val x = rect.x.coerceIn(minX, maxX)
+
+            val minY = screen.y
+            val maxY = (screen.y + screen.height - height).coerceAtLeast(minY)
+            val y = rect.y.coerceIn(minY, maxY)
             Rectangle(x, y, width, height)
         }
+
         val rememberFloatingBounds = {
-            val screenTop = window.graphicsConfiguration?.bounds?.y ?: 0
-            val bounds = window.bounds
-            if (
-                bounds.width >= 640 &&
-                bounds.height >= 420 &&
-                bounds.y > screenTop + 48
-            ) {
-                floatingBounds.value = clampToScreen(bounds)
+            if (!isCustomMaximized) {
+                val screenTop = window.graphicsConfiguration?.bounds?.y ?: 0
+                val bounds = window.bounds
+                if (
+                    bounds.width >= 640 &&
+                    bounds.height >= 420 &&
+                    bounds.y > screenTop + 30
+                ) {
+                    floatingBounds.value = clampToScreen(bounds)
+                }
             }
         }
-        val animateBounds: (Rectangle, () -> Unit) -> Unit = { target, onDone ->
-            isAnimatingWindow = true
-            window.bounds = target
-            isAnimatingWindow = false
-            onDone()
-        }
-        val isMaximized = { isCustomMaximized }
-        val maximizeWindow = {
-            if (!isMaximized()) {
+
+        val maximizeWindow: () -> Unit = {
+            if (!isCustomMaximized) {
                 rememberFloatingBounds()
                 if (floatingBounds.value == null) {
                     floatingBounds.value = Rectangle(window.bounds).also {
                         it.y = (window.graphicsConfiguration?.bounds?.y ?: 0) + 80
                     }
                 }
-                animateBounds(usableScreenBounds()) {
-                    isCustomMaximized = true
-                }
+                val screen = usableScreenBounds()
+                isCustomMaximized = true
+                windowState.position = WindowPosition(screen.x.dp, screen.y.dp)
+                windowState.size = androidx.compose.ui.unit.DpSize(screen.width.dp, screen.height.dp)
+                window.bounds = screen
             }
-        }
-        val restoreWindow = {
-            val bounds = floatingBounds.value?.let(clampToScreen)
-            if (bounds != null) {
-                isCustomMaximized = false
-                animateBounds(bounds) {
-                    isCustomMaximized = false
-                }
-            } else {
-                isCustomMaximized = false
-            }
-            Unit
-        }
-        val restoreForDrag = {
-            val pointer = MouseInfo.getPointerInfo()?.location
-            val bounds = floatingBounds.value?.let(clampToScreen)
-                ?: Rectangle(window.x, window.y + 80, 1280, 860).let(clampToScreen)
-            val screen = usableScreenBounds()
-            val targetX = if (pointer != null) {
-                (pointer.x - bounds.width / 2).coerceIn(screen.x, screen.x + screen.width - bounds.width)
-            } else {
-                bounds.x
-            }
-            val targetY = if (pointer != null) {
-                (pointer.y - 19).coerceIn(screen.y + 8, screen.y + screen.height - bounds.height)
-            } else {
-                bounds.y
-            }
-            isCustomMaximized = false
-            window.bounds = Rectangle(targetX, targetY, bounds.width, bounds.height)
-            Unit
-        }
-        val toggleMaximize = {
-            if (isMaximized()) restoreWindow() else maximizeWindow()
-            Unit
         }
 
-        DisposableEffect(window, windowState) {
-            val listener = object : ComponentAdapter() {
+        val restoreWindow: () -> Unit = {
+            if (isCustomMaximized) {
+                val bounds = floatingBounds.value?.let(clampToScreen)
+                    ?: Rectangle(window.x, window.y + 40, 1280, 860).let(clampToScreen)
+                isCustomMaximized = false
+                windowState.position = WindowPosition(bounds.x.dp, bounds.y.dp)
+                windowState.size = androidx.compose.ui.unit.DpSize(bounds.width.dp, bounds.height.dp)
+                window.bounds = bounds
+            }
+        }
+
+        val toggleMaximize: () -> Unit = {
+            if (isCustomMaximized) restoreWindow() else maximizeWindow()
+        }
+
+        // Unified title drag state
+        var dragStartMouse by remember { mutableStateOf<java.awt.Point?>(null) }
+        var dragStartWindowBounds by remember { mutableStateOf<Rectangle?>(null) }
+
+        val onStartTitleDrag = {
+            val mouse = MouseInfo.getPointerInfo()?.location
+            if (mouse != null) {
+                dragStartMouse = mouse
+                dragStartWindowBounds = window.bounds
+            }
+        }
+
+        val onDragTitle = {
+            val currentMouse = MouseInfo.getPointerInfo()?.location
+            val startMouse = dragStartMouse
+            val startBounds = dragStartWindowBounds
+
+            if (currentMouse != null && startMouse != null && startBounds != null) {
+                if (isCustomMaximized) {
+                    // Dragging down while maximized -> restore and center horizontally under mouse
+                    val restoreBounds = floatingBounds.value?.let(clampToScreen)
+                        ?: Rectangle(window.x, window.y, 1280, 860).let(clampToScreen)
+                    isCustomMaximized = false
+                    
+                    val halfW = restoreBounds.width / 2
+                    val newX = currentMouse.x - halfW
+                    val newY = (currentMouse.y - 19).coerceAtLeast(0)
+                    val newBounds = Rectangle(newX, newY, restoreBounds.width, restoreBounds.height)
+                    windowState.position = WindowPosition(newBounds.x.dp, newBounds.y.dp)
+                    windowState.size = androidx.compose.ui.unit.DpSize(newBounds.width.dp, newBounds.height.dp)
+                    window.bounds = newBounds
+
+                    // Anchor new drag session from here
+                    dragStartMouse = currentMouse
+                    dragStartWindowBounds = newBounds
+                } else {
+                    // Absolute positioning relative to drag start point — immune to delta drift or disappearance
+                    val newX = startBounds.x + (currentMouse.x - startMouse.x)
+                    val newY = (startBounds.y + (currentMouse.y - startMouse.y)).coerceAtLeast(0)
+                    window.setLocation(newX, newY)
+                }
+            }
+        }
+
+        val onDragTitleEnd = {
+            val currentMouse = MouseInfo.getPointerInfo()?.location
+            dragStartMouse = null
+            dragStartWindowBounds = null
+
+            if (!isCustomMaximized && currentMouse != null) {
+                val screen = usableScreenBounds()
+                val screenTop = window.graphicsConfiguration?.bounds?.y ?: screen.y
+                // If cursor released within 10px of top screen boundary, snap to maximize
+                if (currentMouse.y <= screenTop + 10) {
+                    maximizeWindow()
+                }
+            }
+        }
+
+        DisposableEffect(window) {
+            val componentListener = object : ComponentAdapter() {
                 override fun componentMoved(e: ComponentEvent?) {
-                    if (!isMaximized() && !isAnimatingWindow) {
-                        val screenTop = window.graphicsConfiguration?.bounds?.y ?: 0
-                        if (window.y <= screenTop) {
-                            maximizeWindow()
-                        } else {
-                            rememberFloatingBounds()
-                        }
+                    if (!isCustomMaximized) {
+                        rememberFloatingBounds()
                     }
                 }
 
                 override fun componentResized(e: ComponentEvent?) {
-                    if (!isMaximized() && !windowState.isMinimized && !isAnimatingWindow) {
+                    if (!isCustomMaximized && !windowState.isMinimized) {
                         rememberFloatingBounds()
                     }
                 }
             }
-            val mouseListener = object : MouseAdapter() {
+
+            // Undecorated window resize listener
+            val borderSize = 6
+            var resizeDirection = 0
+            var dragStartPoint: java.awt.Point? = null
+            var dragStartBounds: Rectangle? = null
+
+            // Bitmask flags for resize directions
+            val RESIZE_N = 1
+            val RESIZE_S = 2
+            val RESIZE_W = 4
+            val RESIZE_E = 8
+
+            fun getResizeCursor(direction: Int): java.awt.Cursor {
+                return when (direction) {
+                    RESIZE_N -> java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.N_RESIZE_CURSOR)
+                    RESIZE_S -> java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.S_RESIZE_CURSOR)
+                    RESIZE_W -> java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.W_RESIZE_CURSOR)
+                    RESIZE_E -> java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.E_RESIZE_CURSOR)
+                    RESIZE_N or RESIZE_W -> java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.NW_RESIZE_CURSOR)
+                    RESIZE_N or RESIZE_E -> java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.NE_RESIZE_CURSOR)
+                    RESIZE_S or RESIZE_W -> java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.SW_RESIZE_CURSOR)
+                    RESIZE_S or RESIZE_E -> java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.SE_RESIZE_CURSOR)
+                    else -> java.awt.Cursor.getDefaultCursor()
+                }
+            }
+
+            fun calculateDirection(x: Int, y: Int, w: Int, h: Int): Int {
+                if (isCustomMaximized) return 0
+                var dir = 0
+                if (y in 0 until borderSize) dir = dir or RESIZE_N
+                else if (y in (h - borderSize)..h) dir = dir or RESIZE_S
+
+                if (x in 0 until borderSize) dir = dir or RESIZE_W
+                else if (x in (w - borderSize)..w) dir = dir or RESIZE_E
+
+                return dir
+            }
+
+            val mouseAdapter = object : MouseAdapter() {
                 override fun mouseClicked(e: MouseEvent) {
-                    if (e.clickCount == 2 && e.y in 0..38) {
+                    if (e.clickCount == 2 && e.y in 0..38 && e.button == MouseEvent.BUTTON1) {
                         toggleMaximize()
                     }
                 }
+
+                override fun mousePressed(e: MouseEvent) {
+                    if (isCustomMaximized || e.button != MouseEvent.BUTTON1) return
+                    val dir = calculateDirection(e.x, e.y, window.width, window.height)
+                    if (dir != 0) {
+                        resizeDirection = dir
+                        dragStartPoint = MouseInfo.getPointerInfo()?.location
+                        dragStartBounds = window.bounds
+                    }
+                }
+
+                override fun mouseReleased(e: MouseEvent) {
+                    resizeDirection = 0
+                    dragStartPoint = null
+                    dragStartBounds = null
+                }
+
+                override fun mouseMoved(e: MouseEvent) {
+                    if (isCustomMaximized) {
+                        window.cursor = java.awt.Cursor.getDefaultCursor()
+                        return
+                    }
+                    val dir = calculateDirection(e.x, e.y, window.width, window.height)
+                    window.cursor = getResizeCursor(dir)
+                }
+
+                override fun mouseDragged(e: MouseEvent) {
+                    val start = dragStartPoint ?: return
+                    val orig = dragStartBounds ?: return
+                    val current = MouseInfo.getPointerInfo()?.location ?: return
+                    if (resizeDirection == 0) return
+
+                    val dx = current.x - start.x
+                    val dy = current.y - start.y
+
+                    var newX = orig.x
+                    var newY = orig.y
+                    var newW = orig.width
+                    var newH = orig.height
+
+                    val minW = 640
+                    val minH = 420
+
+                    if ((resizeDirection and RESIZE_E) != 0) {
+                        newW = (orig.width + dx).coerceAtLeast(minW)
+                    }
+                    if ((resizeDirection and RESIZE_S) != 0) {
+                        newH = (orig.height + dy).coerceAtLeast(minH)
+                    }
+                    if ((resizeDirection and RESIZE_W) != 0) {
+                        val potentialW = orig.width - dx
+                        if (potentialW >= minW) {
+                            newX = orig.x + dx
+                            newW = potentialW
+                        } else {
+                            newX = orig.x + (orig.width - minW)
+                            newW = minW
+                        }
+                    }
+                    if ((resizeDirection and RESIZE_N) != 0) {
+                        val potentialH = orig.height - dy
+                        if (potentialH >= minH) {
+                            newY = orig.y + dy
+                            newH = potentialH
+                        } else {
+                            newY = orig.y + (orig.height - minH)
+                            newH = minH
+                        }
+                    }
+
+                    window.bounds = Rectangle(newX, newY, newW, newH)
+                }
+
+                override fun mouseExited(e: MouseEvent) {
+                    if (resizeDirection == 0) {
+                        window.cursor = java.awt.Cursor.getDefaultCursor()
+                    }
+                }
             }
-            window.addComponentListener(listener)
-            window.addMouseListener(mouseListener)
+
+            window.addComponentListener(componentListener)
+            window.addMouseListener(mouseAdapter)
+            window.addMouseMotionListener(mouseAdapter)
             floatingBounds.value = window.bounds
+
             onDispose {
-                window.removeComponentListener(listener)
-                window.removeMouseListener(mouseListener)
+                window.removeComponentListener(componentListener)
+                window.removeMouseListener(mouseAdapter)
+                window.removeMouseMotionListener(mouseAdapter)
             }
         }
 
@@ -454,8 +663,10 @@ fun main() {
             isMaximized = isCustomMaximized,
             onMinimize = { windowState.isMinimized = true },
             onToggleMaximize = toggleMaximize,
-            onRestoreForDrag = restoreForDrag,
-            onClose = ::exitApplication
+            onStartTitleDrag = onStartTitleDrag,
+            onDragTitle = onDragTitle,
+            onDragTitleEnd = onDragTitleEnd,
+            onClose = onAppExit
         )
     }
 
@@ -514,23 +725,29 @@ private fun WindowScope.AppWindowFrame(
     isMaximized: Boolean,
     onMinimize: () -> Unit,
     onToggleMaximize: () -> Unit,
-    onRestoreForDrag: () -> Unit,
+    onStartTitleDrag: () -> Unit,
+    onDragTitle: () -> Unit,
+    onDragTitleEnd: () -> Unit,
     onClose: () -> Unit
 ) {
     Ps5DebuggerTheme {
-        Surface(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(PS5ThemeColors.DarkBg)
-                .border(1.dp, PS5ThemeColors.BorderColor),
-            color = PS5ThemeColors.DarkBg
+                .border(
+                    width = if (isMaximized) 0.dp else 1.dp,
+                    color = if (isMaximized) Color.Transparent else PS5ThemeColors.BorderColor
+                )
         ) {
             Column(Modifier.fillMaxSize()) {
                 CustomTitleBar(
                     isMaximized = isMaximized,
                     onMinimize = onMinimize,
                     onToggleMaximize = onToggleMaximize,
-                    onRestoreForDrag = onRestoreForDrag,
+                    onStartTitleDrag = onStartTitleDrag,
+                    onDragTitle = onDragTitle,
+                    onDragTitleEnd = onDragTitleEnd,
                     onClose = onClose
                 )
                 MainView(state = state)
@@ -544,7 +761,9 @@ private fun WindowScope.CustomTitleBar(
     isMaximized: Boolean,
     onMinimize: () -> Unit,
     onToggleMaximize: () -> Unit,
-    onRestoreForDrag: () -> Unit,
+    onStartTitleDrag: () -> Unit,
+    onDragTitle: () -> Unit,
+    onDragTitleEnd: () -> Unit,
     onClose: () -> Unit
 ) {
     val isConnected by AppContainer.debuggerUseCase.isConnected.collectAsState()
@@ -554,13 +773,14 @@ private fun WindowScope.CustomTitleBar(
         modifier = Modifier
             .fillMaxWidth()
             .height(38.dp)
-            .background(PS5ThemeColors.Surface)
-            .border(width = 0.dp, color = Color.Transparent),
+            .background(PS5ThemeColors.Surface),
         verticalAlignment = Alignment.CenterVertically
     ) {
         TitleDragArea(
-            isMaximized = isMaximized,
-            onRestoreForDrag = onRestoreForDrag,
+            onStartTitleDrag = onStartTitleDrag,
+            onDragTitle = onDragTitle,
+            onDragTitleEnd = onDragTitleEnd,
+            onDoubleTap = onToggleMaximize,
             modifier = Modifier.weight(1f).fillMaxHeight()
         ) {
             Row(
@@ -598,33 +818,67 @@ private fun WindowScope.CustomTitleBar(
 }
 
 @Composable
-private fun WindowScope.TitleDragArea(
-    isMaximized: Boolean,
-    onRestoreForDrag: () -> Unit,
+private fun TitleDragArea(
+    onStartTitleDrag: () -> Unit,
+    onDragTitle: () -> Unit,
+    onDragTitleEnd: () -> Unit,
+    onDoubleTap: () -> Unit,
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit
 ) {
-    if (isMaximized) {
-        Box(
-            modifier = modifier.pointerInput(Unit) {
-                detectDragGestures(
-                    onDragStart = { onRestoreForDrag() },
-                    onDrag = { change, dragAmount ->
-                        change.consume()
-                        window.setLocation(
-                            window.x + dragAmount.x.toInt(),
-                            window.y + dragAmount.y.toInt()
-                        )
+    var lastTapTime = remember { 0L }
+
+    Box(
+        modifier = modifier
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val currentTime = System.currentTimeMillis()
+                    val isDoubleTap = (currentTime - lastTapTime) < viewConfiguration.doubleTapTimeoutMillis
+                    
+                    if (isDoubleTap) {
+                        lastTapTime = 0L
+                        onDoubleTap()
+                        // Consume the down event and wait for all pointers to go up
+                        down.consume()
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            event.changes.forEach { it.consume() }
+                            if (event.changes.all { !it.pressed }) break
+                        }
+                    } else {
+                        lastTapTime = currentTime
+                        var isDragging = false
+
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            if (!change.pressed) {
+                                if (isDragging) {
+                                    onDragTitleEnd()
+                                }
+                                break
+                            }
+
+                            val positionChange = change.positionChange()
+                            if (!isDragging) {
+                                val touchSlop = viewConfiguration.touchSlop
+                                if (positionChange.getDistance() > touchSlop) {
+                                    isDragging = true
+                                    onStartTitleDrag()
+                                    change.consume()
+                                    onDragTitle()
+                                }
+                            } else {
+                                change.consume()
+                                onDragTitle()
+                            }
+                        }
                     }
-                )
+                }
             }
-        ) {
-            content()
-        }
-    } else {
-        WindowDraggableArea(modifier = modifier) {
-            content()
-        }
+    ) {
+        content()
     }
 }
 

@@ -1,18 +1,43 @@
 [
     {
-        "titleId": "CUSA57548",
-        "name": "Call of Duty®: Black Ops II",
-        "version": "01.10",
+        "titleId": "CUSA12125",
+        "name": "Spyro Reignited Trilogy",
+        "version": "01.03",
         "platform": "PS4",
-        "iconUrl": "/user/appmeta/CUSA57548/icon0.png",
+        "iconUrl": "/user/appmeta/CUSA12125/icon0.png",
         "cheats": [
             {
-                "id": "cheat_1789833568125_213",
-                "name": "New Cheat",
+                "id": "cheat_1789998001006_693",
+                "name": "60FPS",
                 "type": "Toggle",
-                "address": 4194304,
-                "hexOffValue": "2F6C6962657865632F6C642D656C662E736F2E31",
-                "titleId": "CUSA57548"
+                "address": 51163937,
+                "hexOnValue": "48E82B040000",
+                "hexOffValue": "8A8350070000",
+                "patches": [
+                    {
+                        "address": 51163937,
+                        "hexOnValue": "48E82B040000",
+                        "hexOffValue": "8A8350070000"
+                    },
+                    {
+                        "address": 51165010,
+                        "hexOnValue": "C6835007000000",
+                        "hexOffValue": "90909090909090"
+                    },
+                    {
+                        "address": 51165017,
+                        "hexOnValue": "8A8350070000",
+                        "hexOffValue": "909090909090"
+                    },
+                    {
+                        "address": 51165023,
+                        "hexOnValue": "C3",
+                        "hexOffValue": "90"
+                    }
+                ],
+                "isEnabled": true,
+                "titleId": "CUSA12125",
+                "version": "01.03"
             }
         ]
     }

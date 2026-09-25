@@ -34,7 +34,9 @@ object DefaultIpHelper {
         val timeoutMs: Int,
         val theme: String = "Dark",
         val mockEnabled: Boolean = false,
-        val payloadPort: Int = 9021
+        val payloadPort: Int = 9021,
+        val shortcuts: String = "lock_edit:Ctrl+E;copy:Ctrl+C;paste:Ctrl+V;inject:Ctrl+I;goto:G;undo:Ctrl+Z;search:S;watchlist:W;memory:M",
+        val mcpEnabled: Boolean = true
     )
 
     private fun readConfig(): Config {
@@ -48,19 +50,21 @@ object DefaultIpHelper {
                 val theme = lines.getOrNull(3)?.trim() ?: "Dark"
                 val mockEnabled = lines.getOrNull(4)?.trim()?.toBooleanStrictOrNull() ?: false
                 val payloadPort = lines.getOrNull(5)?.trim()?.toIntOrNull() ?: 9021
-                Config(ip, autoReconnect, timeoutMs, theme, mockEnabled, payloadPort)
+                val shortcuts = lines.getOrNull(6)?.trim() ?: "lock_edit:Ctrl+E;copy:Ctrl+C;paste:Ctrl+V;inject:Ctrl+I;goto:G;undo:Ctrl+Z;search:S;watchlist:W;memory:M"
+                val mcpEnabled = lines.getOrNull(7)?.trim()?.toBooleanStrictOrNull() ?: true
+                Config(ip, autoReconnect, timeoutMs, theme, mockEnabled, payloadPort, shortcuts, mcpEnabled)
             } else {
-                Config("", true, 5000, "Dark", false, 9021)
+                Config("", true, 5000, "Dark", false, 9021, mcpEnabled = true)
             }
         } catch (_: Exception) {
-            Config("", true, 5000, "Dark", false, 9021)
+            Config("", true, 5000, "Dark", false, 9021, mcpEnabled = true)
         }
     }
 
     private fun writeConfig(config: Config) {
         try {
             val file = getConfigFile()
-            file.writeText("${config.ip}\n${config.autoReconnect}\n${config.timeoutMs}\n${config.theme}\n${config.mockEnabled}\n${config.payloadPort}")
+            file.writeText("${config.ip}\n${config.autoReconnect}\n${config.timeoutMs}\n${config.theme}\n${config.mockEnabled}\n${config.payloadPort}\n${config.shortcuts}\n${config.mcpEnabled}")
         } catch (_: Exception) {}
     }
 
@@ -117,5 +121,28 @@ object DefaultIpHelper {
     fun setPayloadPort(port: Int) {
         val current = readConfig()
         writeConfig(current.copy(payloadPort = port))
+    }
+
+    fun getShortcuts(): Map<String, String> {
+        val shortcutsStr = readConfig().shortcuts
+        return shortcutsStr.split(";").filter { it.contains(":") }.associate {
+            val parts = it.split(":")
+            parts[0] to parts[1]
+        }
+    }
+
+    fun setShortcuts(shortcuts: Map<String, String>) {
+        val shortcutsStr = shortcuts.entries.joinToString(";") { "${it.key}:${it.value}" }
+        val current = readConfig()
+        writeConfig(current.copy(shortcuts = shortcutsStr))
+    }
+
+    fun isMcpEnabled(): Boolean {
+        return readConfig().mcpEnabled
+    }
+
+    fun setMcpEnabled(enabled: Boolean) {
+        val current = readConfig()
+        writeConfig(current.copy(mcpEnabled = enabled))
     }
 }

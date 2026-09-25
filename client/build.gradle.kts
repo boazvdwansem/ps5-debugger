@@ -22,6 +22,9 @@ kotlin {
         compilerOptions {
             jvmTarget.set(JvmTarget.JVM_21)
         }
+        mainRun {
+            mainClass.set("com.osr.ps5debugger.MainKt")
+        }
         compilations.create("mobile") {
             defaultSourceSet {
                 dependencies {
@@ -59,6 +62,7 @@ kotlin {
                 implementation(libs.findLibrary("compose.runtime").get())
                 implementation(libs.findLibrary("kotlinx.coroutines.swing").get())
                 implementation("org.xerial:sqlite-jdbc:3.45.1.0")
+                implementation("org.slf4j:slf4j-nop:2.0.12")
             }
         }
 

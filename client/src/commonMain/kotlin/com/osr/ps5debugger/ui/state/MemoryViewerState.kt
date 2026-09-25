@@ -232,7 +232,9 @@ class MemoryViewerState(
         }
 
         // Optimization: If local file and already loaded for this module, don't clear or reload
-        val mapKey = "${currentTarget.start}_${currentTarget.end}_${currentTarget.name}"
+        val focusAddrForMapKey = (currentJumpAddress ?: jumpToAddress ?: currentTarget.start).coerceIn(currentTarget.start, maxOf(currentTarget.start, currentTarget.end - 1))
+        val focusChunkIdxForMapKey = ((focusAddrForMapKey - currentTarget.start) / (64 * 1024L)).toInt()
+        val mapKey = "${currentTarget.start}_${currentTarget.end}_${currentTarget.name}_$focusChunkIdxForMapKey"
         val cachedProgress = AppContainer.disassemblyProgressCache[mapKey]
         if (cachedProgress != null) {
             withContext(Dispatchers.Main) {
@@ -295,18 +297,39 @@ class MemoryViewerState(
                         // Read/disassemble chunks concurrently, but cap in-flight requests so a
                         // large map does not turn into an ever-growing queue of console requests.
                         val chunkSize = 64 * 1024L
-                        val requests = generateSequence(map.start) { start ->
-                            val next = start + chunkSize
-                            if (start < map.end) next else null
-                        }.takeWhile { it < map.end }.map { start ->
-                            start to minOf(chunkSize, map.end - start).toInt()
-                        }.toList()
+                        val totalRegionChunks = ((map.end - map.start + chunkSize - 1) / chunkSize).toInt().coerceAtLeast(1)
+                        // For large remote regions (>16MB / >256 chunks, e.g. 1GB+), restrict disassembly
+                        // to a localized window (~2MB / 32 chunks) around the focus address rather than
+                        // sequentially disassembling gigabytes over socket.
+                        val isLargeRemote = map.localData == null && (map.end - map.start > 16 * 1024 * 1024L || totalRegionChunks > 256)
+
+                        val prioritizedRequests = if (isLargeRemote) {
+                            val focusAddr = (currentJumpAddress ?: jumpToAddress ?: map.start).coerceIn(map.start, maxOf(map.start, map.end - 1))
+                            val focusChunkIdx = ((focusAddr - map.start) / chunkSize).toInt().coerceIn(0, totalRegionChunks - 1)
+                            val windowRadius = 16 // 32 chunks = 2MB window
+                            val startIdx = maxOf(0, focusChunkIdx - windowRadius)
+                            val endIdx = minOf(totalRegionChunks, focusChunkIdx + windowRadius + 1)
+                            (startIdx until endIdx).map { idx ->
+                                val start = map.start + idx * chunkSize
+                                val len = minOf(chunkSize, map.end - start).toInt()
+                                start to len
+                            }
+                        } else {
+                            generateSequence(map.start) { start ->
+                                val next = start + chunkSize
+                                if (start < map.end) next else null
+                            }.takeWhile { it < map.end }.map { start ->
+                                start to minOf(chunkSize, map.end - start).toInt()
+                            }.toList()
+                        }
+
                         // The live protocol client is stateful and is not safe for concurrent
                         // read/disassemble calls. Keep console requests serialized; local files
                         // are still handled by the parallel segment path above.
                         val gate = Semaphore(1)
                         val chunkLines = mutableListOf<DisasmLine>()
-                        requests.forEachIndexed { index, (chunkStart, len) ->
+
+                        prioritizedRequests.forEachIndexed { index, (chunkStart, len) ->
                             val result = gate.withPermit {
                                     val rawBytes = try {
                                         if (map.localData != null) {
@@ -380,7 +403,7 @@ class MemoryViewerState(
                                 }
                             chunkLines.addAll(result)
                             withContext(Dispatchers.Main) {
-                                disassemblyProgress = (index + 1).toFloat() / requests.size.coerceAtLeast(1)
+                                disassemblyProgress = (index + 1).toFloat() / prioritizedRequests.size.coerceAtLeast(1)
                                 disassemblyProgressLabel = "Disassembling memory..."
                                 AppContainer.disassemblyProgressCache[mapKey] = disassemblyProgress
                             }

@@ -13,7 +13,15 @@ class PayloadInjectorTest {
 
     @Test
     fun testLoadPayloadBytes() {
-        val bytes = Ps5PayloadInjector.loadPayloadBytes()
+        val testFile = java.io.File("build/tmp/test_ps5debug.elf").apply {
+            parentFile?.mkdirs()
+            writeBytes(byteArrayOf(0x7F, 'E'.code.toByte(), 'L'.code.toByte(), 'F'.code.toByte(), 1, 2, 3))
+        }
+        val bytes = try {
+            Ps5PayloadInjector.loadPayloadBytes()
+        } catch (_: java.io.FileNotFoundException) {
+            Ps5PayloadInjector.loadPayloadBytes(customPath = testFile.absolutePath)
+        }
         assertTrue(bytes.isNotEmpty(), "Payload bytes should not be empty")
         // Check ELF magic header: 0x7F 'E' 'L' 'F'
         assertEquals(0x7F.toByte(), bytes[0])

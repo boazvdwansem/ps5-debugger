@@ -29,6 +29,7 @@ class MainState(
     var isSidebarVisible by mutableStateOf(true)
     var isDebugSidebarVisible by mutableStateOf(false)
     var isSettingsOpen by mutableStateOf(false)
+    var showGotoDialog by mutableStateOf(false)
     var activeRightTab by mutableStateOf<String?>(null)
     var xrefTargetAddress by mutableStateOf<Long?>(null)
     
@@ -45,6 +46,16 @@ class MainState(
     val isConnected = AppContainer.debuggerUseCase.isConnected
     val watchlist = AppContainer.debuggerUseCase.watchlist
     val gameCheatProfiles = AppContainer.debuggerUseCase.gameCheatProfiles
+
+    init {
+        AppContainer.onNavigateRequested = { addr, mode ->
+            scope.launch {
+                jumpToAddress = addr
+                viewMode = mode
+                selectedTab = 0
+            }
+        }
+    }
 
     fun handleFileAction(action: String) {
         when (action) {

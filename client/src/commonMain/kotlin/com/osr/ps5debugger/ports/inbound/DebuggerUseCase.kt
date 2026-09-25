@@ -56,12 +56,21 @@ interface DebuggerUseCase {
     fun clearWatchlist()
     
     fun addCheat(titleId: String, version: String, cheat: com.osr.ps5debugger.domain.model.Cheat, gameName: String = "Unknown")
-    fun toggleCheat(titleId: String, version: String, cheatId: String)
+    fun toggleCheat(titleId: String, version: String, cheatId: String): com.osr.ps5debugger.domain.model.Cheat?
     fun deleteCheat(titleId: String, version: String, cheatId: String)
     fun updateGameName(titleId: String, name: String)
     fun updateGameVersion(titleId: String, version: String)
     fun updateGamePlatform(titleId: String, platform: String)
     suspend fun applyCheat(pid: Int, cheat: com.osr.ps5debugger.domain.model.Cheat, newValue: String? = null)
+    suspend fun exportCheatsToPs5(
+        ip: String,
+        titleId: String,
+        version: String,
+        gameName: String,
+        processName: String = "eboot.bin",
+        credits: List<String> = listOf("Boaz"),
+        cheats: List<com.osr.ps5debugger.domain.model.Cheat>
+    ): Result<String>
     fun saveCheats(onResult: (String) -> Unit)
     fun loadCheats(json: String)
 }

@@ -77,7 +77,7 @@ class DebuggerDomainService(
     init {
         watchlistManager.getActiveProcessPid = { processManager.activeProcess.value?.pid }
 
-        // Connection keeper loop to handle background disconnects (like detach socket closures)
+        // Connection keeper loop to handle background disconnects (like detach socket closures) and active process liveness
         scope.launch {
             while (isActive) {
                 if (_isConnected.value && !clientPort.isConnected) {
@@ -104,6 +104,18 @@ class DebuggerDomainService(
                     } else {
                         log("SYSTEM", "Socket connection lost. Auto-reconnect is disabled.", LogEntry.Level.WARN)
                         _isConnected.value = false
+                    }
+                } else if (_isConnected.value && clientPort.isConnected) {
+                    val currentProc = processManager.activeProcess.value
+                    if (currentProc != null) {
+                        try {
+                            val procs = clientPort.getProcesses()
+                            if (procs.isNotEmpty() && procs.none { it.pid == currentProc.pid }) {
+                                log("SYSTEM", "Active process '${currentProc.name}' (PID: ${currentProc.pid}) terminated.", LogEntry.Level.WARN)
+                                selectProcess(null)
+                                refreshProcesses()
+                            }
+                        } catch (_: Exception) {}
                     }
                 }
                 delay(2000)
@@ -245,11 +257,21 @@ class DebuggerDomainService(
             }
         }
 
-        val pid = processManager.activeProcess.value?.pid ?: return Result.failure(IllegalStateException("No active process selected"))
+        val proc = processManager.activeProcess.value ?: return Result.failure(IllegalStateException("No active process selected"))
         return try {
-            val data = clientPort.readMemory(pid, address, length)
+            val data = clientPort.readMemory(proc.pid, address, length)
             Result.success(data)
         } catch (e: Exception) {
+            scope.launch {
+                try {
+                    val procs = clientPort.getProcesses()
+                    if (procs.isNotEmpty() && procs.none { it.pid == proc.pid }) {
+                        log("SYSTEM", "Active process '${proc.name}' (PID: ${proc.pid}) terminated.", LogEntry.Level.WARN)
+                        selectProcess(null)
+                        refreshProcesses()
+                    }
+                } catch (_: Exception) {}
+            }
             Result.failure(e)
         }
     }
@@ -270,11 +292,21 @@ class DebuggerDomainService(
             }
         }
 
-        val pid = processManager.activeProcess.value?.pid ?: return Result.failure(IllegalStateException("No active process selected"))
+        val proc = processManager.activeProcess.value ?: return Result.failure(IllegalStateException("No active process selected"))
         return try {
-            val ok = clientPort.writeMemory(pid, address, data)
+            val ok = clientPort.writeMemory(proc.pid, address, data)
             Result.success(ok)
         } catch (e: Exception) {
+            scope.launch {
+                try {
+                    val procs = clientPort.getProcesses()
+                    if (procs.isNotEmpty() && procs.none { it.pid == proc.pid }) {
+                        log("SYSTEM", "Active process '${proc.name}' (PID: ${proc.pid}) terminated.", LogEntry.Level.WARN)
+                        selectProcess(null)
+                        refreshProcesses()
+                    }
+                } catch (_: Exception) {}
+            }
             Result.failure(e)
         }
     }
@@ -315,8 +347,8 @@ class DebuggerDomainService(
         cheatManager.addCheat(titleId, version, cheat, gameName)
     }
 
-    override fun toggleCheat(titleId: String, version: String, cheatId: String) {
-        cheatManager.toggleCheat(titleId, version, cheatId)
+    override fun toggleCheat(titleId: String, version: String, cheatId: String): com.osr.ps5debugger.domain.model.Cheat? {
+        return cheatManager.toggleCheat(titleId, version, cheatId)
     }
 
     override fun deleteCheat(titleId: String, version: String, cheatId: String) {
@@ -336,7 +368,20 @@ class DebuggerDomainService(
     }
 
     override suspend fun applyCheat(pid: Int, cheat: com.osr.ps5debugger.domain.model.Cheat, newValue: String?) {
-        cheatManager.applyCheat(pid, cheat, newValue)
+        val targetPid = if (pid > 0) pid else (processManager.activeProcess.value?.pid ?: 0)
+        cheatManager.applyCheat(targetPid, cheat, newValue)
+    }
+
+    override suspend fun exportCheatsToPs5(
+        ip: String,
+        titleId: String,
+        version: String,
+        gameName: String,
+        processName: String,
+        credits: List<String>,
+        cheats: List<com.osr.ps5debugger.domain.model.Cheat>
+    ): Result<String> {
+        return cheatManager.exportCheatsToPs5(ip, titleId, version, gameName, processName, credits, cheats)
     }
 
     override fun saveCheats(onResult: (String) -> Unit) {

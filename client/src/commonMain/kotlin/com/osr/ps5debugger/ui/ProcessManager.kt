@@ -54,6 +54,13 @@ fun ProcessManager(
     val isLoadingMaps = false
 
     var activeTab by remember { mutableStateOf(if (activeMap != null || activeProcess != null) 1 else 0) }
+    val isProcessSelected = activeProcess != null
+
+    LaunchedEffect(activeProcess) {
+        if (activeProcess == null) {
+            activeTab = 0
+        }
+    }
 
     Column(modifier = modifier.fillMaxHeight().width(320.dp).background(PS5ThemeColors.DarkBg).padding(8.dp)) {
         // Sidebar header
@@ -119,20 +126,36 @@ fun ProcessManager(
                 )
             }
             
-            // Memory Regions Tile
+            // Memory Regions Tile (disabled if no process is selected)
             Box(
                 modifier = Modifier
                     .weight(1f)
                     .height(36.dp)
                     .clip(RoundedCornerShape(4.dp))
-                    .background(if (activeTab == 1) PS5ThemeColors.AccentCyan.copy(alpha = 0.2f) else PS5ThemeColors.Surface)
-                    .border(1.dp, if (activeTab == 1) PS5ThemeColors.AccentCyan else PS5ThemeColors.BorderColor, RoundedCornerShape(4.dp))
-                    .clickable { activeTab = 1 },
+                    .background(
+                        when {
+                            !isProcessSelected -> PS5ThemeColors.Surface.copy(alpha = 0.5f)
+                            activeTab == 1 -> PS5ThemeColors.AccentCyan.copy(alpha = 0.2f)
+                            else -> PS5ThemeColors.Surface
+                        }
+                    )
+                    .border(
+                        1.dp,
+                        if (activeTab == 1 && isProcessSelected) PS5ThemeColors.AccentCyan else PS5ThemeColors.BorderColor.copy(alpha = if (isProcessSelected) 1f else 0.5f),
+                        RoundedCornerShape(4.dp)
+                    )
+                    .clickable(enabled = isProcessSelected) {
+                        if (isProcessSelected) activeTab = 1
+                    },
                 contentAlignment = Alignment.Center
             ) {
                 Text(
                     text = "Regions",
-                    color = if (activeTab == 1) PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMain,
+                    color = when {
+                        !isProcessSelected -> PS5ThemeColors.TextMuted.copy(alpha = 0.4f)
+                        activeTab == 1 -> PS5ThemeColors.AccentCyan
+                        else -> PS5ThemeColors.TextMain
+                    },
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold
                 )

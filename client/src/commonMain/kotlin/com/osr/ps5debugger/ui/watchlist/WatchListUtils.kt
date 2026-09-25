@@ -27,6 +27,21 @@ fun parseValueBytes(bytes: ByteArray, type: String): String {
         "Int64" -> buf.readLong().toString()
         "Float" -> buf.readFloat().toString()
         "Double" -> buf.readDouble().toString()
+        "Unknown" -> {
+            if (bytes.size >= 4) {
+                val iVal = buf.readInt()
+                val fVal = java.lang.Float.intBitsToFloat(iVal)
+                if (fVal.isFinite() && kotlin.math.abs(fVal) >= 0.0001f && kotlin.math.abs(fVal) <= 1e10f && fVal != 0f) {
+                    "$iVal (Float: $fVal)"
+                } else {
+                    iVal.toString()
+                }
+            } else if (bytes.size >= 2) {
+                buf.readShort().toString()
+            } else {
+                buf.readByte().toString()
+            }
+        }
         "String" -> bytes.takeWhile { it != 0.toByte() }.map { it.toInt().and(0xFF).toChar() }.joinToString("")
         "ByteArray" -> bytes.joinToString(" ") { it.toUByte().toString(16).padStart(2, '0').uppercase() }
         else -> "??"

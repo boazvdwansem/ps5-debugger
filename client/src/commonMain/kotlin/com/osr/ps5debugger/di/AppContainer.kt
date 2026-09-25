@@ -143,6 +143,8 @@ object AppContainer {
     }
 
     var onNavigateToMemory: ((Long) -> Unit)? = null
+    var onNavigateRequested: ((Long, Int) -> Unit)? = null
+    var onMcpServerToggled: ((Boolean) -> Unit)? = null
     var onCreateCheatRequested: ((com.osr.ps5debugger.domain.model.Cheat) -> Unit)? = null
     var filePicker: com.osr.ps5debugger.ports.inbound.FilePicker? = null
     var defaultDumpPath: String = ""
@@ -295,6 +297,105 @@ object AppContainer {
                     ftpClient.disconnect()
                 }
             }
+        }
+    }
+
+    suspend fun preloadRegionInBackground(map: com.osr.ps5debugger.domain.model.MemoryRange, pid: Int?, jumpToAddress: Long? = null) {
+        val chunkSize = 64 * 1024L
+        val focusAddr = (jumpToAddress ?: map.start).coerceIn(map.start, maxOf(map.start, map.end - 1))
+        val focusChunkIdx = ((focusAddr - map.start) / chunkSize).toInt()
+        val disasmKey = "${map.start}_${map.end}_${map.name}_$focusChunkIdx"
+        val hexKey = "${map.start}_${map.end}_${map.name}"
+
+        // 1. Preload Hex Page 0 if not already in cache
+        val pageSize = 65536
+        val pageStart = (map.start / pageSize) * pageSize
+        val hexMap = getHexCache(hexKey)
+        if (!hexMap.containsKey(pageStart)) {
+            try {
+                val pageData = ByteArray(pageSize)
+                val readLen = minOf(pageSize.toLong(), map.end - map.start).toInt()
+                val data = if (map.localData != null) {
+                    map.localData.copyOfRange(0, minOf(readLen, map.localData.size))
+                } else if (pid != null) {
+                    clientAdapter.client.readMemory(pid, pageStart, readLen)
+                } else ByteArray(0)
+                if (data.isNotEmpty()) {
+                    System.arraycopy(data, 0, pageData, 0, data.size)
+                    hexMap[pageStart] = pageData
+                }
+            } catch (_: Exception) {}
+        }
+
+        // 2. Preload Disassembly Window if not already in cache
+        val disasmList = getInstructions(disasmKey)
+        if (disasmList.isNotEmpty()) return
+
+        val totalRegionChunks = ((map.end - map.start + chunkSize - 1) / chunkSize).toInt().coerceAtLeast(1)
+        val isLargeRemote = map.localData == null && (map.end - map.start > 16 * 1024 * 1024L || totalRegionChunks > 256)
+
+        val targetRequests = if (isLargeRemote) {
+            val windowRadius = 16 // 32 chunks = 2MB window
+            val startIdx = maxOf(0, focusChunkIdx - windowRadius)
+            val endIdx = minOf(totalRegionChunks, focusChunkIdx + windowRadius + 1)
+            (startIdx until endIdx).map { idx ->
+                val start = map.start + idx * chunkSize
+                val len = minOf(chunkSize, map.end - start).toInt()
+                start to len
+            }
+        } else {
+            generateSequence(map.start) { start ->
+                val next = start + chunkSize
+                if (start < map.end) next else null
+            }.takeWhile { it < map.end }.map { start ->
+                start to minOf(chunkSize, map.end - start).toInt()
+            }.toList()
+        }
+
+        val client = clientAdapter.client
+        val chunkLines = mutableListOf<com.osr.ps5debugger.ui.DisasmLine>()
+
+        for ((chunkStart, len) in targetRequests) {
+            try {
+                val rawBytes = if (map.localData != null) {
+                    val offset = (chunkStart - map.start).toInt()
+                    map.localData.copyOfRange(offset, minOf(offset + len, map.localData.size))
+                } else if (pid != null) {
+                    client.readMemory(pid, chunkStart, len)
+                } else ByteArray(0)
+
+                if (rawBytes.isNotEmpty()) {
+                    val syncAddrs = (discoveredFunctions.toSet() + symbolNames.keys.toSet() + discoveredJumpTargets.toSet())
+                    val rawInstrs = if (map.localData != null) {
+                        com.osr.ps5debugger.util.LocalDisassembler.disassemble(rawBytes, chunkStart, syncAddrs)
+                    } else if (pid != null) {
+                        client.disassembleRegion(pid, chunkStart, len, 4000)
+                    } else emptyList()
+
+                    val lines = rawInstrs.map { instr ->
+                        val offset = (instr.addr - chunkStart).toInt()
+                        val instrBytes = if (offset >= 0 && offset + instr.length <= rawBytes.size) rawBytes.copyOfRange(offset, offset + instr.length) else ByteArray(0)
+                        com.osr.ps5debugger.ui.DisasmLine(instr, instrBytes, map, symbolNames[instr.addr])
+                    }
+                    chunkLines.addAll(lines)
+                }
+            } catch (_: Exception) {}
+        }
+
+        chunkLines.sortBy { it.instr.addr }
+        val finalLines = ArrayList<com.osr.ps5debugger.ui.DisasmLine>(chunkLines.size)
+        var prevAddr: Long? = null
+        for (line in chunkLines) {
+            if (line.instr.addr != prevAddr) {
+                finalLines.add(line)
+                prevAddr = line.instr.addr
+            }
+        }
+
+        withContext(Dispatchers.Main) {
+            disasmList.clear()
+            disasmList.addAll(finalLines)
+            disassemblyProgressCache[disasmKey] = 1.0f
         }
     }
 }

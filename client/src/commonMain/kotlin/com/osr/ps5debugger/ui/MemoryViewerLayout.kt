@@ -2,6 +2,7 @@ package com.osr.ps5debugger.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
@@ -24,6 +25,9 @@ import com.osr.ps5debugger.domain.model.MemoryRange
 import com.osr.ps5debugger.ui.components.Tooltip
 import com.osr.ps5debugger.ui.hex.HexState
 import com.osr.ps5debugger.ui.state.rememberMemoryViewerState
+import com.osr.ps5debugger.util.DefaultIpHelper
+import com.osr.ps5debugger.util.ShortcutManager
+import androidx.compose.ui.input.key.*
 import kotlinx.coroutines.launch
 
 @Composable
@@ -37,10 +41,75 @@ fun MemoryViewerLayout(
     selectionStartParam: Long? = null,
     selectionEndParam: Long? = null,
     onSelectionChanged: ((Long?, Long?) -> Unit)? = null,
+    onCopySelection: (() -> Unit)? = null,
     activeBreakpoints: MutableMap<Int, Long> = remember { mutableStateOf(mutableStateMapOf<Int, Long>()).value },
     activeWatchpoints: MutableMap<Int, Long> = remember { mutableStateOf(mutableStateMapOf<Int, Long>()).value },
     onShowXrefs: ((Long) -> Unit)? = null
 ) {
+    val activeProcess by AppContainer.debuggerUseCase.activeProcess.collectAsState()
+
+    if (activeProcess == null) {
+        Box(
+            modifier = modifier.fillMaxSize().background(PS5ThemeColors.DarkBg),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Icon(
+                    imageVector = PS5Icons.MemoryMap,
+                    contentDescription = null,
+                    tint = PS5ThemeColors.TextMuted.copy(alpha = 0.5f),
+                    modifier = Modifier.size(48.dp)
+                )
+                Text(
+                    text = "No Process Selected",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = PS5ThemeColors.TextMain
+                )
+                Text(
+                    text = "Select a process from the Process Manager to view and inspect memory.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = PS5ThemeColors.TextMuted
+                )
+            }
+        }
+        return
+    }
+
+    if (activeMap == null && activeMaps.isEmpty()) {
+        Box(
+            modifier = modifier.fillMaxSize().background(PS5ThemeColors.DarkBg),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Icon(
+                    imageVector = PS5Icons.MemoryMap,
+                    contentDescription = null,
+                    tint = PS5ThemeColors.TextMuted.copy(alpha = 0.5f),
+                    modifier = Modifier.size(48.dp)
+                )
+                Text(
+                    text = "No Memory Region Selected",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = PS5ThemeColors.TextMain
+                )
+                Text(
+                    text = "Select a memory region from the sidebar to inspect memory.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = PS5ThemeColors.TextMuted
+                )
+            }
+        }
+        return
+    }
+
     val state = rememberMemoryViewerState(
         activeMap, activeMaps, jumpToAddress, viewModeParam, onViewModeChanged,
         selectionStartParam, selectionEndParam, onSelectionChanged
@@ -108,6 +177,37 @@ fun MemoryViewerLayout(
     }
 
     val isConnected by AppContainer.debuggerUseCase.isConnected.collectAsState()
+    val shortcuts = remember { DefaultIpHelper.getShortcuts() }
+    
+    val performInject: suspend () -> Unit = {
+        val pid = AppContainer.debuggerUseCase.activeProcess.value?.pid
+        if (pid != null && hexState.pendingEdits.isNotEmpty()) {
+            val writes = hexState.pendingEdits.entries.map { (addr, byte) ->
+                addr to byteArrayOf(byte)
+            }
+            try {
+                val success = client.writeMemoryMulti(pid, writes, withStatusReport = false)
+                if (!success) {
+                    throw IllegalStateException("PS5 rejected the memory injection")
+                }
+                hexState.pendingEdits.clear()
+                hexState.memoryCache.clear()
+                hexState.loadMemory()
+                AppContainer.debuggerUseCase.log(
+                    "MEMORY",
+                    "Injected ${writes.size} byte(s) successfully",
+                    com.osr.ps5debugger.domain.model.LogEntry.Level.INFO
+                )
+            } catch (e: Exception) {
+                AppContainer.debuggerUseCase.log(
+                    "MEMORY",
+                    "Memory injection failed: ${e.message}",
+                    com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR
+                )
+            }
+        }
+    }
+
     LaunchedEffect(state.activeMap, state.activeMaps.size, isConnected) {
         hexState.startGreedyLoader()
     }
@@ -139,7 +239,36 @@ fun MemoryViewerLayout(
                 state.currentJumpAddress = addr
             }
         }
-        Column(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize().onKeyEvent { event ->
+            if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
+            
+            when {
+                ShortcutManager.isMatch(event, shortcuts["lock_edit"]) -> {
+                    hexState.isEditingUnlocked = !hexState.isEditingUnlocked
+                    true
+                }
+                ShortcutManager.isMatch(event, shortcuts["inject"]) -> {
+                    coroutineScope.launch { performInject() }
+                    true
+                }
+                ShortcutManager.isMatch(event, shortcuts["undo"]) -> {
+                    hexState.pendingEdits.clear()
+                    true
+                }
+                ShortcutManager.isMatch(event, shortcuts["copy"]) -> {
+                    onCopySelection?.invoke()
+                    true
+                }
+                ShortcutManager.isMatch(event, shortcuts["paste"]) -> {
+                    if (state.viewMode == 2) {
+                        val text = com.osr.ps5debugger.util.getFromClipboard()
+                        if (text.isNotEmpty()) hexState.pasteHex(text)
+                    }
+                    true
+                }
+                else -> false
+            }
+        }.focusable()) {
             ViewModeToolbar(
                 state = state,
                 hexState = hexState,
@@ -147,7 +276,8 @@ fun MemoryViewerLayout(
                 selectedFunction = selectedGraphFunction,
                 hexColumns = hexColumns,
                 onHexColumnsChanged = { hexColumns = it },
-                onFunctionSelected = { selectedGraphFunction = it }
+                onFunctionSelected = { selectedGraphFunction = it },
+                onInject = { coroutineScope.launch { performInject() } }
             )
             HorizontalDivider(color = PS5ThemeColors.BorderColor)
             
@@ -362,7 +492,8 @@ private fun ViewModeToolbar(
     selectedFunction: Long?,
     hexColumns: Int,
     onHexColumnsChanged: (Int) -> Unit,
-    onFunctionSelected: (Long) -> Unit
+    onFunctionSelected: (Long) -> Unit,
+    onInject: () -> Unit
 ) {
     Row(
         modifier = Modifier.fillMaxWidth().background(PS5ThemeColors.SecondaryBg).padding(horizontal = 12.dp, vertical = 6.dp),
@@ -511,7 +642,7 @@ private fun ViewModeToolbar(
 
         if (state.viewMode == 2) {
             VerticalDivider(modifier = Modifier.height(20.dp).width(1.dp), color = PS5ThemeColors.BorderColor)
-            EditActions(hexState)
+            EditActions(hexState, onInject)
         }
 
         if (state.viewMode == 1 && functions.isNotEmpty()) {
@@ -577,7 +708,7 @@ private fun ViewModeToolbar(
 }
 
 @Composable
-private fun EditActions(state: HexState) {
+private fun EditActions(state: HexState, onInject: () -> Unit) {
     val coroutineScope = rememberCoroutineScope()
     val activeProcess by AppContainer.debuggerUseCase.activeProcess.collectAsState()
     val pid = activeProcess?.pid
@@ -596,35 +727,7 @@ private fun EditActions(state: HexState) {
         }
         Tooltip("Inject overrides to memory") {
             Button(
-                onClick = {
-                    if (pid != null) {
-                        coroutineScope.launch {
-                            val writes = state.pendingEdits.entries.map { (addr, byte) ->
-                                addr to byteArrayOf(byte)
-                            }
-                            try {
-                                val success = client.writeMemoryMulti(pid, writes, withStatusReport = false)
-                                if (!success) {
-                                    throw IllegalStateException("PS5 rejected the memory injection")
-                                }
-                                state.pendingEdits.clear()
-                                state.memoryCache.clear()
-                                state.loadMemory()
-                                AppContainer.debuggerUseCase.log(
-                                    "MEMORY",
-                                    "Injected ${writes.size} byte(s) successfully",
-                                    com.osr.ps5debugger.domain.model.LogEntry.Level.INFO
-                                )
-                            } catch (e: Exception) {
-                                AppContainer.debuggerUseCase.log(
-                                    "MEMORY",
-                                    "Memory injection failed: ${e.message}",
-                                    com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR
-                                )
-                            }
-                        }
-                    }
-                },
+                onClick = { onInject() },
                 enabled = state.isEditingUnlocked && state.pendingEdits.isNotEmpty(),
                 colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.Surface),
                 shape = RoundedCornerShape(4.dp),

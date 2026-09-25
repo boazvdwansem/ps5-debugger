@@ -113,6 +113,9 @@ class MemoryDumperTest {
                 }
                 override suspend fun writeMemory(pid: Int, address: Long, data: ByteArray): Boolean = true
                 override suspend fun writeMemoryMulti(pid: Int, writes: List<Pair<Long, ByteArray>>, withStatusReport: Boolean): Boolean = true
+                override suspend fun getForegroundApp(): com.osr.ps5debugger.protocol.Ps5ForegroundApp = com.osr.ps5debugger.protocol.Ps5ForegroundApp(0, "", "", "", "")
+                override suspend fun pullFile(path: String): ByteArray? = null
+                override suspend fun uploadElfRpc(pid: Int, elfBytes: ByteArray): Long? = null
                 override fun startDebugChannel() {}
                 override fun stopDebugChannel() {}
                 override fun startKlogForwarder(ip: String) {}
@@ -122,6 +125,7 @@ class MemoryDumperTest {
             val mockUseCase = object : DebuggerUseCase {
                 override val isConnected: StateFlow<Boolean> = MutableStateFlow(true)
                 override val isAttached: StateFlow<Boolean> = MutableStateFlow(false)
+                override val isProcessStopped: StateFlow<Boolean> = MutableStateFlow(false)
                 override val threadList: StateFlow<List<Int>> = MutableStateFlow(emptyList())
                 override val selectedLwpid: StateFlow<Int?> = MutableStateFlow(null)
                 override val selectedRegs: StateFlow<GpRegs?> = MutableStateFlow(null)
@@ -134,8 +138,10 @@ class MemoryDumperTest {
                 override val logs: StateFlow<List<LogEntry>> = MutableStateFlow(emptyList())
                 override val watchlist: StateFlow<List<WatchItem>> = MutableStateFlow(emptyList())
                 override val vmMaps: StateFlow<List<MemoryRange>> = MutableStateFlow(emptyList())
+                override val gameCheatProfiles: StateFlow<List<com.osr.ps5debugger.domain.model.GameCheatProfile>> = MutableStateFlow(emptyList())
 
                 override fun setAttached(attached: Boolean) {}
+                override fun setProcessStopped(stopped: Boolean) {}
                 override fun setThreadList(threads: List<Int>) {}
                 override fun setSelectedLwpid(lwpid: Int?) {}
                 override fun setSelectedRegs(regs: GpRegs?) {}
@@ -146,6 +152,7 @@ class MemoryDumperTest {
                 override suspend fun refreshProcesses() {}
                 override suspend fun selectProcess(proc: Process?) {}
                 override suspend fun loadMemoryMaps(proc: Process) {}
+                override suspend fun pullFile(path: String): Result<ByteArray> = Result.failure(Exception())
                 override suspend fun readMemory(address: Long, length: Int): Result<ByteArray> = Result.success(ByteArray(length))
                 override suspend fun writeMemory(address: Long, data: ByteArray): Result<Boolean> = Result.success(true)
                 override fun log(tag: String, message: String, level: LogEntry.Level) {
@@ -158,6 +165,24 @@ class MemoryDumperTest {
                 override fun removeWatchItem(item: WatchItem) {}
                 override fun toggleFreezeWatchItem(item: WatchItem) {}
                 override fun clearWatchlist() {}
+                override fun addCheat(titleId: String, version: String, cheat: com.osr.ps5debugger.domain.model.Cheat, gameName: String) {}
+                override fun toggleCheat(titleId: String, version: String, cheatId: String): com.osr.ps5debugger.domain.model.Cheat? = null
+                override fun deleteCheat(titleId: String, version: String, cheatId: String) {}
+                override fun updateGameName(titleId: String, name: String) {}
+                override fun updateGameVersion(titleId: String, version: String) {}
+                override fun updateGamePlatform(titleId: String, platform: String) {}
+                override suspend fun applyCheat(pid: Int, cheat: com.osr.ps5debugger.domain.model.Cheat, newValue: String?) {}
+                override suspend fun exportCheatsToPs5(
+                    ip: String,
+                    titleId: String,
+                    version: String,
+                    gameName: String,
+                    processName: String,
+                    credits: List<String>,
+                    cheats: List<com.osr.ps5debugger.domain.model.Cheat>
+                ): Result<String> = Result.success("/data/OnionHEN/cheats/${titleId}_${version}.json")
+                override fun saveCheats(onResult: (String) -> Unit) {}
+                override fun loadCheats(json: String) {}
             }
 
             val result = MemoryDumper.dumpRegions(
@@ -238,6 +263,9 @@ class MemoryDumperTest {
                 }
                 override suspend fun writeMemory(pid: Int, address: Long, data: ByteArray): Boolean = true
                 override suspend fun writeMemoryMulti(pid: Int, writes: List<Pair<Long, ByteArray>>, withStatusReport: Boolean): Boolean = true
+                override suspend fun getForegroundApp(): com.osr.ps5debugger.protocol.Ps5ForegroundApp = com.osr.ps5debugger.protocol.Ps5ForegroundApp(0, "", "", "", "")
+                override suspend fun pullFile(path: String): ByteArray? = null
+                override suspend fun uploadElfRpc(pid: Int, elfBytes: ByteArray): Long? = null
                 override fun startDebugChannel() {}
                 override fun stopDebugChannel() {}
                 override fun startKlogForwarder(ip: String) {}
@@ -247,6 +275,7 @@ class MemoryDumperTest {
             val mockUseCase = object : DebuggerUseCase {
                 override val isConnected: StateFlow<Boolean> = MutableStateFlow(true)
                 override val isAttached: StateFlow<Boolean> = MutableStateFlow(false)
+                override val isProcessStopped: StateFlow<Boolean> = MutableStateFlow(false)
                 override val threadList: StateFlow<List<Int>> = MutableStateFlow(emptyList())
                 override val selectedLwpid: StateFlow<Int?> = MutableStateFlow(null)
                 override val selectedRegs: StateFlow<GpRegs?> = MutableStateFlow(null)
@@ -259,8 +288,10 @@ class MemoryDumperTest {
                 override val logs: StateFlow<List<LogEntry>> = MutableStateFlow(emptyList())
                 override val watchlist: StateFlow<List<WatchItem>> = MutableStateFlow(emptyList())
                 override val vmMaps: StateFlow<List<MemoryRange>> = MutableStateFlow(emptyList())
+                override val gameCheatProfiles: StateFlow<List<com.osr.ps5debugger.domain.model.GameCheatProfile>> = MutableStateFlow(emptyList())
 
                 override fun setAttached(attached: Boolean) {}
+                override fun setProcessStopped(stopped: Boolean) {}
                 override fun setThreadList(threads: List<Int>) {}
                 override fun setSelectedLwpid(lwpid: Int?) {}
                 override fun setSelectedRegs(regs: GpRegs?) {}
@@ -271,6 +302,7 @@ class MemoryDumperTest {
                 override suspend fun refreshProcesses() {}
                 override suspend fun selectProcess(proc: Process?) {}
                 override suspend fun loadMemoryMaps(proc: Process) {}
+                override suspend fun pullFile(path: String): Result<ByteArray> = Result.failure(Exception())
                 override suspend fun readMemory(address: Long, length: Int): Result<ByteArray> = Result.success(ByteArray(length))
                 override suspend fun writeMemory(address: Long, data: ByteArray): Result<Boolean> = Result.success(true)
                 override fun log(tag: String, message: String, level: LogEntry.Level) {
@@ -283,6 +315,24 @@ class MemoryDumperTest {
                 override fun removeWatchItem(item: WatchItem) {}
                 override fun toggleFreezeWatchItem(item: WatchItem) {}
                 override fun clearWatchlist() {}
+                override fun addCheat(titleId: String, version: String, cheat: com.osr.ps5debugger.domain.model.Cheat, gameName: String) {}
+                override fun toggleCheat(titleId: String, version: String, cheatId: String): com.osr.ps5debugger.domain.model.Cheat? = null
+                override fun deleteCheat(titleId: String, version: String, cheatId: String) {}
+                override fun updateGameName(titleId: String, name: String) {}
+                override fun updateGameVersion(titleId: String, version: String) {}
+                override fun updateGamePlatform(titleId: String, platform: String) {}
+                override suspend fun applyCheat(pid: Int, cheat: com.osr.ps5debugger.domain.model.Cheat, newValue: String?) {}
+                override suspend fun exportCheatsToPs5(
+                    ip: String,
+                    titleId: String,
+                    version: String,
+                    gameName: String,
+                    processName: String,
+                    credits: List<String>,
+                    cheats: List<com.osr.ps5debugger.domain.model.Cheat>
+                ): Result<String> = Result.success("/data/OnionHEN/cheats/${titleId}_${version}.json")
+                override fun saveCheats(onResult: (String) -> Unit) {}
+                override fun loadCheats(json: String) {}
             }
 
             val result = MemoryDumper.dumpRegions(

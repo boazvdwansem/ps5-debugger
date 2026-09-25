@@ -76,8 +76,12 @@ fun main() {
     }
 
     application {
+        val onAppExit = {
+            exitApplication()
+            kotlin.system.exitProcess(0)
+        }
         val scope = rememberCoroutineScope()
-        val state = com.osr.ps5debugger.ui.state.rememberMainState(scope = scope, onExit = ::exitApplication)
+        val state = com.osr.ps5debugger.ui.state.rememberMainState(scope = scope, onExit = onAppExit)
         
         val windowState = rememberWindowState(
         width = 410.dp,
@@ -86,7 +90,7 @@ fun main() {
     )
 
     Window(
-        onCloseRequest = ::exitApplication,
+        onCloseRequest = onAppExit,
         title = "PS5 Debugger Mobile Simulator",
         state = windowState,
         resizable = true

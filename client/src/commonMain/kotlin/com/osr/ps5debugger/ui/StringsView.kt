@@ -90,16 +90,23 @@ fun StringsView(
                 val client = AppContainer.clientAdapter.client
                 val allItems = mutableListOf<StringItem>()
                 
-                var totalSize = targets.sumOf { it.size }
+                val maxRemoteScanPerMap = 32 * 1024 * 1024L // Cap remote region scan to 32MB max
+                var totalSize = targets.sumOf { map ->
+                    if (map.localData == null) minOf(map.size, maxRemoteScanPerMap) else map.size
+                }
                 var processedSize = 0L
+                var hitScanLimit = false
                 
                 for (map in targets) {
-                    if (map.size <= 0) continue
+                    if (map.size <= 0 || allItems.size >= 10000) break
+                    val scanLimit = if (map.localData == null) minOf(map.size, maxRemoteScanPerMap) else map.size
+                    if (scanLimit < map.size) hitScanLimit = true
+                    
                     val readChunkSize = 256 * 1024 // Read in 256KB chunks
                     var offset = 0L
                     
-                    while (offset < map.size) {
-                        val remaining = map.size - offset
+                    while (offset < scanLimit && allItems.size < 10000) {
+                        val remaining = scanLimit - offset
                         val toRead = minOf(readChunkSize.toLong(), remaining).toInt()
                         
                         val startAddr = map.start + offset
@@ -192,7 +199,8 @@ fun StringsView(
                 allItems.sortBy { it.address }
                 withContext(Dispatchers.Main) {
                     stringItems.addAll(allItems)
-                    statusMessage = "Found ${stringItems.size} strings."
+                    val limitNotice = if (hitScanLimit) " (capped to first 32MB of large region)" else ""
+                    statusMessage = "Found ${stringItems.size} strings$limitNotice."
                 }
             }
             isScanning = false

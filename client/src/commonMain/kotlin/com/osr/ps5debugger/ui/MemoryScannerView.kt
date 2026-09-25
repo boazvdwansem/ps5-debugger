@@ -30,6 +30,125 @@ import kotlinx.coroutines.withContext
 
 private const val ScanReadTimeoutMs = 5 * 60 * 1000
 
+class CompactScanResults(initialCapacity: Int = 10000) {
+    private val lock = Any()
+
+    @Volatile
+    var size: Int = 0
+        private set
+
+    private var offsets: LongArray = LongArray(initialCapacity)
+    private var valueBytes: ByteArray = ByteArray(initialCapacity * 4)
+    private var valueOffsets: IntArray = IntArray(0)
+    private var valueLengths: IntArray = IntArray(0)
+    private var totalBytesStored: Int = 0
+    private var uniformLen: Int = -1
+
+    fun clear() {
+        synchronized(lock) {
+            size = 0
+            totalBytesStored = 0
+            uniformLen = -1
+        }
+    }
+
+    private fun ensureCapacity(minCapacity: Int) {
+        if (minCapacity > offsets.size) {
+            val newCap = maxOf(offsets.size * 2, minCapacity)
+            offsets = offsets.copyOf(newCap)
+            if (uniformLen <= 0 && valueOffsets.isNotEmpty()) {
+                valueOffsets = valueOffsets.copyOf(newCap)
+                valueLengths = valueLengths.copyOf(newCap)
+            }
+        }
+    }
+
+    fun add(offset: Long, value: ByteArray) {
+        synchronized(lock) {
+            val vLen = value.size
+            if (size == 0) {
+                uniformLen = vLen
+            } else if (uniformLen > 0 && uniformLen != vLen) {
+                val prevLen = uniformLen
+                uniformLen = -1
+                valueOffsets = IntArray(offsets.size)
+                valueLengths = IntArray(offsets.size)
+                for (i in 0 until size) {
+                    valueOffsets[i] = i * prevLen
+                    valueLengths[i] = prevLen
+                }
+            }
+
+            ensureCapacity(size + 1)
+            offsets[size] = offset
+
+            if (uniformLen > 0) {
+                val destPos = size * uniformLen
+                if (destPos + vLen > valueBytes.size) {
+                    valueBytes = valueBytes.copyOf(maxOf(valueBytes.size * 2, destPos + vLen + 4096))
+                }
+                System.arraycopy(value, 0, valueBytes, destPos, vLen)
+                totalBytesStored = destPos + vLen
+            } else {
+                valueOffsets[size] = totalBytesStored
+                valueLengths[size] = vLen
+                if (totalBytesStored + vLen > valueBytes.size) {
+                    valueBytes = valueBytes.copyOf(maxOf(valueBytes.size * 2, totalBytesStored + vLen + 4096))
+                }
+                System.arraycopy(value, 0, valueBytes, totalBytesStored, vLen)
+                totalBytesStored += vLen
+            }
+            size++
+        }
+    }
+
+    fun addAll(other: CompactScanResults) {
+        synchronized(other.lock) {
+            val otherSize = other.size
+            for (i in 0 until otherSize) {
+                add(other.getOffset(i), other.getValueBytes(i))
+            }
+        }
+    }
+
+    fun getOffset(index: Int): Long {
+        synchronized(lock) {
+            if (index !in 0 until size) return 0L
+            return offsets[index]
+        }
+    }
+
+    fun getValueBytes(index: Int): ByteArray {
+        synchronized(lock) {
+            if (index !in 0 until size) return ByteArray(0)
+            return if (uniformLen > 0) {
+                val srcPos = index * uniformLen
+                valueBytes.copyOfRange(srcPos, srcPos + uniformLen)
+            } else {
+                val srcPos = valueOffsets[index]
+                val vLen = valueLengths[index]
+                valueBytes.copyOfRange(srcPos, srcPos + vLen)
+            }
+        }
+    }
+
+    fun snapshot(): CompactScanResults {
+        synchronized(lock) {
+            val copy = CompactScanResults(size.coerceAtLeast(100))
+            copy.size = size
+            copy.uniformLen = uniformLen
+            copy.offsets = offsets.copyOf(size)
+            copy.valueBytes = valueBytes.copyOf(totalBytesStored)
+            copy.totalBytesStored = totalBytesStored
+            if (uniformLen <= 0 && valueOffsets.isNotEmpty()) {
+                copy.valueOffsets = valueOffsets.copyOf(size)
+                copy.valueLengths = valueLengths.copyOf(size)
+            }
+            return copy
+        }
+    }
+}
+
 object MemoryScannerState {
     val scanValueState = mutableStateOf("")
     val scanValueExtraState = mutableStateOf("200")
@@ -38,19 +157,25 @@ object MemoryScannerState {
     val alignmentState = mutableStateOf(4)
     val isScanningState = mutableStateOf(false)
     val progressState = mutableStateOf(0f)
-    val scanResults = mutableStateListOf<Ps5ScanResult>()
     val totalMatchesCountState = mutableStateOf(0L)
     val isRescanModeState = mutableStateOf(false)
     val timeRemainingTextState = mutableStateOf("")
     val useCustomRangeState = mutableStateOf(false)
     val customRangeStartState = mutableStateOf("")
     val customRangeEndState = mutableStateOf("")
+
+    /** Full candidate list for rescan stored in memory using primitive contiguous arrays. */
+    val allCandidates = CompactScanResults()
+
+    /** Base address used for the initial scan (needed by CMD_PROC_SCAN_COUNT). */
+    val scanBaseAddressState = mutableStateOf(0L)
 }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun MemoryScannerView(
     activeMap: MemoryRange?,
+    activeMaps: List<MemoryRange> = emptyList(),
     modifier: Modifier = Modifier,
     onJumpToAddress: ((Long) -> Unit)? = null
 ) {
@@ -73,7 +198,7 @@ fun MemoryScannerView(
 
         var isScanning by MemoryScannerState.isScanningState
         var progress by MemoryScannerState.progressState
-        val scanResults = MemoryScannerState.scanResults
+        val allCandidates = MemoryScannerState.allCandidates
         var totalMatchesCount by MemoryScannerState.totalMatchesCountState
 
         var isRescanMode by MemoryScannerState.isRescanModeState
@@ -84,6 +209,7 @@ fun MemoryScannerView(
         var customRangeEnd by MemoryScannerState.customRangeEndState
 
         val valueTypes = listOf(
+            "Unknown",
             "Byte (UInt8)", "SByte (Int8)",
             "UInt16", "Int16",
             "UInt32", "Int32",
@@ -115,7 +241,13 @@ fun MemoryScannerView(
                     isScanning = true
                     progress = 0f
                     timeRemainingText = "Starting scan..."
-                    scanResults.clear()
+
+                    // Snapshot candidates before clearing UI list
+                    val previousCandidates = if (isRescanMode) {
+                        MemoryScannerState.allCandidates.snapshot()
+                    } else {
+                        CompactScanResults()
+                    }
 
                     val vtVal = when (scanValueType) {
                         "Byte (UInt8)", "Byte" -> 0
@@ -123,13 +255,13 @@ fun MemoryScannerView(
                         "UInt16" -> 2
                         "Int16" -> 3
                         "UInt32" -> 4
-                        "Int32" -> 5
+                        "Int32", "Unknown" -> 5
                         "UInt64" -> 6
                         "Int64" -> 7
                         "Float" -> 8
                         "Double" -> 9
                         "ASCII String", "Hex Mask (e.g. 00 11 ?? 33)" -> 10
-                        else -> 4
+                        else -> 5
                     }
 
                     val ctVal = when (scanCompareType) {
@@ -157,6 +289,7 @@ fun MemoryScannerView(
 
                     var maskBytes: ByteArray? = null
                     val typeSize = when {
+                        scanValueType == "Unknown" -> 4
                         scanValueType.contains("Byte") -> 1
                         scanValueType.contains("16") -> 2
                         scanValueType.contains("32") -> 4
@@ -195,10 +328,14 @@ fun MemoryScannerView(
                     val scanStartTime = System.currentTimeMillis()
                     val progressJob = launch {
                         val estSpeedBytesPerSec = 200 * 1024 * 1024L // 200 MB/s
-                        val estTotalSec = totalRegionBytes.toDouble() / estSpeedBytesPerSec
+                        val estTotalSec = if (isRescanMode) {
+                            (previousCandidates.size * typeSize).toDouble() / estSpeedBytesPerSec
+                        } else {
+                            totalRegionBytes.toDouble() / estSpeedBytesPerSec
+                        }
                         while (isScanning) {
                             val elapsed = (System.currentTimeMillis() - scanStartTime) / 1000.0
-                            val estProgress = (elapsed / estTotalSec).toFloat().coerceIn(0f, 0.99f)
+                            val estProgress = (elapsed / maxOf(estTotalSec, 0.1)).toFloat().coerceIn(0f, 0.99f)
                             if (estProgress > progress) {
                                 progress = estProgress
                                 val remaining = maxOf(0, (estTotalSec - elapsed).toInt())
@@ -210,60 +347,168 @@ fun MemoryScannerView(
 
                     withContext(Dispatchers.IO) {
                         try {
-                            AppContainer.debuggerUseCase.log("SCAN", "Starting scan: vtVal=$vtVal, ctVal=$ctVal, alignment=$alignment, range=0x${startAddr.toString(16)}-0x${endAddr.toString(16)}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                            if (isRescanMode && previousCandidates.size > 0) {
+                                // --- RESCAN: CMD_PROC_SCAN_COUNT ---
+                                val baseAddr = MemoryScannerState.scanBaseAddressState.value
+                                AppContainer.debuggerUseCase.log("SCAN", "Rescan: vtVal=$vtVal, ctVal=$ctVal, ${previousCandidates.size} candidates, base=0x${baseAddr.toString(16)}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
 
-                            val startPayload = BinaryBuffer(23).apply {
-                                writeInt(pid)
-                                writeLong(startAddr)
-                                writeInt((endAddr - startAddr).toInt())
-                                writeByte(vtVal.toByte())
-                                writeByte(ctVal.toByte())
-                                writeByte(alignment.toByte())
-                                writeInt(bytes.size)
-                            }.bytes
+                                // Compare types 5-10 need previous values sent alongside offsets
+                                val needsPrevious = ctVal in 5..10
+                                val valSize = if (noValueNeeded && !needsPrevious) typeSize else bytes.size
 
-                            client.connection.execute(readTimeoutMs = ScanReadTimeoutMs) { inStr, outStr ->
-                                client.connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_SCAN_START, startPayload)
-                                var status = client.connection.receiveStatus(inStr)
-                                if (status != ProtocolConstants.CMD_SUCCESS) {
-                                    throw java.io.IOException("Scan start failed status: 0x${status.toString(16)}")
-                                }
+                                val countPayload = BinaryBuffer(18).apply {
+                                    writeInt(pid)
+                                    writeLong(baseAddr)
+                                    writeByte(vtVal.toByte())
+                                    writeByte(ctVal.toByte())
+                                    writeInt(bytes.size)
+                                }.bytes
 
-                                outStr.write(bytes)
-                                maskBytes?.let { outStr.write(it) }
-                                outStr.flush()
+                                client.connection.execute(readTimeoutMs = ScanReadTimeoutMs) { inStr, outStr ->
+                                    client.connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_SCAN_COUNT, countPayload)
+                                    var status = client.connection.receiveStatus(inStr)
+                                    if (status != ProtocolConstants.CMD_SUCCESS) {
+                                        throw java.io.IOException("Scan count failed status: 0x${status.toString(16)}")
+                                    }
 
-                                status = client.connection.receiveStatus(inStr)
-                                if (status != ProtocolConstants.CMD_SUCCESS) {
-                                    throw java.io.IOException("Scan start ack failed")
-                                }
+                                    // Send value/mask
+                                    outStr.write(bytes)
+                                    maskBytes?.let { outStr.write(it) }
+                                    outStr.flush()
 
-                                val valSize = bytes.size
-                                var count = 0L
-                                while (true) {
-                                    val lenBytes = client.connection.readExactly(inStr, 8)
-                                    val blockLen = BinaryBuffer(lenBytes).readLong()
-                                    if (blockLen == -1L) break
+                                    // Send candidate chunks
+                                    val entrySize = if (needsPrevious) 4 + typeSize else 4
+                                    val maxChunkDataSize = 0x3FFF0 // ~256KB chunks
+                                    val entriesPerChunk = maxChunkDataSize / entrySize
 
-                                    val blockBytes = client.connection.readExactly(inStr, blockLen.toInt())
-                                    val blockBuf = BinaryBuffer(blockBytes)
-                                    while (blockBuf.hasRemaining()) {
-                                        val offset = blockBuf.readInt().toLong()
-                                        val valBytes = blockBuf.readBytes(valSize)
-                                        count++
-                                        if (count <= 1000) {
-                                            scanResults.add(Ps5ScanResult(offset, valBytes))
+                                    val survivorResults = CompactScanResults(previousCandidates.size)
+                                    var idx = 0
+                                    val prevTotal = previousCandidates.size
+
+                                    while (idx < prevTotal) {
+                                        val batchEnd = minOf(idx + entriesPerChunk, prevTotal)
+                                        val batchSize = batchEnd - idx
+                                        val chunkDataSize = batchSize * entrySize
+
+                                        // Write chunk_len (uint32)
+                                        val chunkLenBuf = BinaryBuffer(4).apply { writeInt(chunkDataSize) }.bytes
+                                        outStr.write(chunkLenBuf)
+
+                                        // Write entries
+                                        val chunkBuf = BinaryBuffer(chunkDataSize)
+                                        for (i in idx until batchEnd) {
+                                            val candidateOffset = previousCandidates.getOffset(i)
+                                            chunkBuf.writeInt(candidateOffset.toInt())
+                                            if (needsPrevious) {
+                                                val prevVal = previousCandidates.getValueBytes(i)
+                                                if (prevVal.size >= typeSize) {
+                                                    chunkBuf.writeBytes(prevVal.copyOf(typeSize))
+                                                } else {
+                                                    chunkBuf.writeBytes(prevVal)
+                                                    chunkBuf.writeBytes(ByteArray(typeSize - prevVal.size))
+                                                }
+                                            }
                                         }
-                                        if (totalRegionBytes > 0) {
-                                            val prog = (offset.toFloat() / totalRegionBytes.toFloat()).coerceIn(0f, 1f)
-                                            if (prog > progress) {
-                                                progress = prog
+                                        outStr.write(chunkBuf.bytes)
+                                        outStr.flush()
+
+                                        // Read survivors for this chunk
+                                        while (true) {
+                                            val lenBytes = client.connection.readExactly(inStr, 8)
+                                            val blockLen = BinaryBuffer(lenBytes).readLong()
+                                            if (blockLen == -1L) break // per-chunk sentinel
+
+                                            val blockBytes = client.connection.readExactly(inStr, blockLen.toInt())
+                                            val blockBuf = BinaryBuffer(blockBytes)
+                                            while (blockBuf.hasRemaining()) {
+                                                val offset = blockBuf.readInt().toLong()
+                                                val valBytes = blockBuf.readBytes(typeSize)
+                                                survivorResults.add(offset, valBytes)
+                                            }
+                                        }
+
+                                        idx = batchEnd
+                                        if (prevTotal > 0) {
+                                            progress = idx.toFloat() / prevTotal.toFloat()
+                                        }
+                                    }
+
+                                    // Send end-of-chunks sentinel (0xFFFFFFFF)
+                                    val sentinelBuf = BinaryBuffer(4).apply { writeInt(-1) }.bytes
+                                    outStr.write(sentinelBuf)
+                                    outStr.flush()
+
+                                    MemoryScannerState.allCandidates.clear()
+                                    MemoryScannerState.allCandidates.addAll(survivorResults)
+                                    totalMatchesCount = MemoryScannerState.allCandidates.size.toLong()
+
+                                    // Final CMD_SUCCESS from server
+                                    client.connection.receiveStatus(inStr)
+                                }
+                            } else {
+                                // --- FIRST SCAN: CMD_PROC_SCAN_START ---
+                                AppContainer.debuggerUseCase.log("SCAN", "Starting scan: vtVal=$vtVal, ctVal=$ctVal, alignment=$alignment, range=0x${startAddr.toString(16)}-0x${endAddr.toString(16)}", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+
+                                MemoryScannerState.scanBaseAddressState.value = startAddr
+                                MemoryScannerState.allCandidates.clear()
+
+                                val scanLength = (endAddr - startAddr).coerceIn(0L, 0xFFFFFFFFL)
+                                val startPayload = BinaryBuffer(23).apply {
+                                    writeInt(pid)
+                                    writeLong(startAddr)
+                                    writeInt(scanLength.toInt())
+                                    writeByte(vtVal.toByte())
+                                    writeByte(ctVal.toByte())
+                                    writeByte(alignment.toByte())
+                                    writeInt(bytes.size)
+                                }.bytes
+
+                                client.connection.execute(readTimeoutMs = ScanReadTimeoutMs) { inStr, outStr ->
+                                    client.connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_SCAN_START, startPayload)
+                                    var status = client.connection.receiveStatus(inStr)
+                                    if (status != ProtocolConstants.CMD_SUCCESS) {
+                                        throw java.io.IOException("Scan start failed status: 0x${status.toString(16)}")
+                                    }
+
+                                    outStr.write(bytes)
+                                    maskBytes?.let { outStr.write(it) }
+                                    outStr.flush()
+
+                                    status = client.connection.receiveStatus(inStr)
+                                    if (status != ProtocolConstants.CMD_SUCCESS) {
+                                        throw java.io.IOException("Scan start ack failed")
+                                    }
+
+                                    val valSize = bytes.size
+                                    val newCandidates = CompactScanResults(10000)
+
+                                    while (true) {
+                                        val lenBytes = client.connection.readExactly(inStr, 8)
+                                        val blockLen = BinaryBuffer(lenBytes).readLong()
+                                        if (blockLen == -1L) break
+
+                                        val blockBytes = client.connection.readExactly(inStr, blockLen.toInt())
+                                        val blockBuf = BinaryBuffer(blockBytes)
+                                        while (blockBuf.hasRemaining()) {
+                                            val offset = blockBuf.readInt().toLong()
+                                            val valBytes = blockBuf.readBytes(valSize)
+                                            newCandidates.add(offset, valBytes)
+
+                                            if (totalRegionBytes > 0) {
+                                                val prog = (offset.toFloat() / totalRegionBytes.toFloat()).coerceIn(0f, 1f)
+                                                if (prog > progress) {
+                                                    progress = prog
+                                                }
                                             }
                                         }
                                     }
+
+                                    MemoryScannerState.allCandidates.clear()
+                                    MemoryScannerState.allCandidates.addAll(newCandidates)
+                                    totalMatchesCount = MemoryScannerState.allCandidates.size.toLong()
+
+                                    client.connection.receiveStatus(inStr)
                                 }
-                                totalMatchesCount = count
-                                client.connection.receiveStatus(inStr)
                             }
                             isRescanMode = true
                         } catch (e: Exception) {
@@ -283,7 +528,7 @@ fun MemoryScannerView(
 
         val resetScan: () -> Unit = {
             isRescanMode = false
-            scanResults.clear()
+            MemoryScannerState.allCandidates.clear()
             totalMatchesCount = 0L
             progress = 0f
         }
@@ -318,6 +563,7 @@ fun MemoryScannerView(
                         onScanValueTypeChange = {
                             scanValueType = it
                             alignment = when {
+                                it == "Unknown" -> 4
                                 it.contains("Byte") -> 1
                                 it.contains("16") -> 2
                                 it.contains("32") -> 4
@@ -338,6 +584,7 @@ fun MemoryScannerView(
                         customRangeEnd = customRangeEnd,
                         onCustomRangeEndChange = { customRangeEnd = it },
                         activeMap = activeMap,
+                        activeMaps = activeMaps,
                         isConnected = isConnected,
                         isScanning = isScanning,
                         isRescanMode = isRescanMode,
@@ -353,7 +600,6 @@ fun MemoryScannerView(
                         progress = progress,
                         timeRemainingText = timeRemainingText,
                         totalMatchesCount = totalMatchesCount,
-                        scanResults = scanResults,
                         useCustomRange = useCustomRange,
                         customRangeStart = customRangeStart,
                         activeMap = activeMap,
@@ -375,6 +621,7 @@ fun MemoryScannerView(
                     onScanValueTypeChange = {
                         scanValueType = it
                         alignment = when {
+                            it == "Unknown" -> 4
                             it.contains("Byte") -> 1
                             it.contains("16") -> 2
                             it.contains("32") -> 4
@@ -395,6 +642,7 @@ fun MemoryScannerView(
                     customRangeEnd = customRangeEnd,
                     onCustomRangeEndChange = { customRangeEnd = it },
                     activeMap = activeMap,
+                    activeMaps = activeMaps,
                     isConnected = isConnected,
                     isScanning = isScanning,
                     isRescanMode = isRescanMode,
@@ -409,7 +657,6 @@ fun MemoryScannerView(
                     progress = progress,
                     timeRemainingText = timeRemainingText,
                     totalMatchesCount = totalMatchesCount,
-                    scanResults = scanResults,
                     useCustomRange = useCustomRange,
                     customRangeStart = customRangeStart,
                     activeMap = activeMap,
@@ -443,6 +690,7 @@ fun ScannerSettings(
     customRangeEnd: String,
     onCustomRangeEndChange: (String) -> Unit,
     activeMap: MemoryRange?,
+    activeMaps: List<MemoryRange> = emptyList(),
     isConnected: Boolean,
     isScanning: Boolean,
     isRescanMode: Boolean,
@@ -453,6 +701,10 @@ fun ScannerSettings(
 ) {
     val currentStart = activeMap?.start ?: 0L
     val currentEnd = activeMap?.end ?: 0L
+    val openTargets = if (activeMaps.isNotEmpty()) activeMaps else listOfNotNull(activeMap)
+    val openMinStart = openTargets.minOfOrNull { it.start } ?: currentStart
+    val openMaxEnd = openTargets.maxOfOrNull { it.end } ?: currentEnd
+
     val customStart = parseHexAddress(customRangeStart)
     val customEnd = parseHexAddress(customRangeEnd)
     val selectedStart = if (useCustomRange) customStart else activeMap?.start
@@ -598,6 +850,38 @@ fun ScannerSettings(
                 )
             }
 
+            Button(
+                onClick = {
+                    if (openTargets.isNotEmpty()) {
+                        onUseCustomRangeChange(true)
+                        onCustomRangeStartChange(hexAddress(openMinStart))
+                        onCustomRangeEndChange(hexAddress(openMaxEnd))
+                    }
+                },
+                enabled = openTargets.isNotEmpty(),
+                modifier = Modifier.fillMaxWidth().height(32.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.Surface),
+                shape = RoundedCornerShape(4.dp),
+                border = BorderStroke(1.dp, PS5ThemeColors.BorderColor),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Icon(
+                        imageVector = PS5Icons.MemoryMap,
+                        contentDescription = null,
+                        tint = PS5ThemeColors.AccentCyan,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    val countStr = if (openTargets.size > 1) " (${openTargets.size} regions)" else ""
+                    Text(
+                        "Search All Opened Regions$countStr",
+                        fontSize = 11.sp,
+                        color = PS5ThemeColors.TextMain,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
             Surface(
                 color = PS5ThemeColors.Surface,
                 shape = RoundedCornerShape(8.dp),
@@ -606,8 +890,8 @@ fun ScannerSettings(
             ) {
                 Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(
-                        activeMap?.name?.ifEmpty { "unnamed region" } ?: "No active region selected",
-                        color = if (activeMap != null) PS5ThemeColors.AccentAmber else PS5ThemeColors.TextMuted,
+                        if (useCustomRange) "Custom Address Scope" else (activeMap?.name?.ifEmpty { "unnamed region" } ?: "No active region selected"),
+                        color = if (useCustomRange) PS5ThemeColors.AccentCyan else if (activeMap != null) PS5ThemeColors.AccentAmber else PS5ThemeColors.TextMuted,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold
                     )
@@ -647,8 +931,14 @@ fun ScannerSettings(
                     )
                 }
 
-                if (activeMap != null) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                    if (openTargets.size > 1) {
+                        SmallRangeButton("All Opened") {
+                            onCustomRangeStartChange(hexAddress(openMinStart))
+                            onCustomRangeEndChange(hexAddress(openMaxEnd))
+                        }
+                    }
+                    if (activeMap != null) {
                         SmallRangeButton("Full") {
                             onCustomRangeStartChange(hexAddress(currentStart))
                             onCustomRangeEndChange(hexAddress(currentEnd))
@@ -704,7 +994,6 @@ fun ScannerResults(
     progress: Float,
     timeRemainingText: String,
     totalMatchesCount: Long,
-    scanResults: List<Ps5ScanResult>,
     useCustomRange: Boolean,
     customRangeStart: String,
     activeMap: MemoryRange?,
@@ -717,7 +1006,8 @@ fun ScannerResults(
     } else {
         activeMap?.start ?: 0L
     }
-    val visibleCount = scanResults.size
+    val allCandidates = MemoryScannerState.allCandidates
+    val totalHits = allCandidates.size
 
     Column(
         modifier = modifier
@@ -741,7 +1031,7 @@ fun ScannerResults(
                     Column {
                         Text("Results", style = MaterialTheme.typography.titleMedium, color = PS5ThemeColors.TextMain)
                         Text(
-                            if (isScanning) timeRemainingText else "$totalMatchesCount matches found, $visibleCount shown",
+                            if (isScanning) timeRemainingText else "$totalHits matches kept in memory",
                             color = if (isScanning) PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
                             fontSize = 11.sp
                         )
@@ -773,7 +1063,7 @@ fun ScannerResults(
                 Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
                     ScannerStat("Base", hexAddress(baseAddress), Modifier.weight(1f))
                     ScannerStat("Value type", scanValueType, Modifier.weight(1f))
-                    ScannerStat("Stored", visibleCount.toString(), Modifier.weight(1f))
+                    ScannerStat("Hits Kept", totalHits.toString(), Modifier.weight(1f))
                 }
             }
         }
@@ -796,12 +1086,14 @@ fun ScannerResults(
                 modifier = Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
-                items(scanResults) { res ->
-                    val absAddr = baseAddress + res.offset
+                items(totalHits, key = { idx -> allCandidates.getOffset(idx) }) { idx ->
+                    val offset = allCandidates.getOffset(idx)
+                    val valueBytes = allCandidates.getValueBytes(idx)
+                    val absAddr = baseAddress + offset
                     ScanResultRow(
                         absAddr = absAddr,
-                        offset = res.offset,
-                        value = parseValueBytes(res.value, scanValueType),
+                        offset = offset,
+                        value = parseValueBytes(valueBytes, scanValueType),
                         onJump = { onJumpToAddress?.invoke(absAddr) },
                         onAddWatch = {
                             val wlType = when {
@@ -833,9 +1125,9 @@ fun ScannerResults(
                 }
             }
 
-            if (scanResults.isEmpty() && !isScanning && isRescanMode) {
+            if (totalHits == 0 && !isScanning && isRescanMode) {
                 EmptyScannerState("No matches found")
-            } else if (scanResults.isEmpty() && !isScanning) {
+            } else if (totalHits == 0 && !isScanning) {
                 EmptyScannerState("Run a first scan to populate this table")
             }
         }
@@ -1064,6 +1356,15 @@ private fun scanValueToBytes(valueStr: String, type: String): ByteArray? {
     val buf = BinaryBuffer(8)
     try {
         when (type) {
+            "Unknown" -> {
+                val parsedInt = valueStr.toIntOrNull()
+                    ?: valueStr.toUIntOrNull()?.toInt()
+                    ?: valueStr.toFloatOrNull()?.let { java.lang.Float.floatToIntBits(it) }
+                    ?: valueStr.toDoubleOrNull()?.let { java.lang.Float.floatToIntBits(it.toFloat()) }
+                if (parsedInt != null) {
+                    buf.writeInt(parsedInt)
+                } else return null
+            }
             "Byte (UInt8)", "Byte" -> buf.writeByte(valueStr.toUByte().toByte())
             "SByte (Int8)" -> buf.writeByte(valueStr.toByte())
             "UInt16" -> buf.writeShort(valueStr.toUShort().toShort())

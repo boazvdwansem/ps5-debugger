@@ -334,6 +334,7 @@ private fun GameProfileRow(profile: GameCheatProfile, onClick: () -> Unit) {
 private fun GameCheatsDetailView(profile: GameCheatProfile, onBack: () -> Unit) {
     val coroutineScope = rememberCoroutineScope()
     var showAddDialog by remember { mutableStateOf(false) }
+    var showExportDialog by remember { mutableStateOf(false) }
     
     val iconState = AppContainer.iconCache[profile.titleId]
     val isConnected by AppContainer.debuggerUseCase.isConnected.collectAsState()
@@ -416,6 +417,16 @@ private fun GameCheatsDetailView(profile: GameCheatProfile, onBack: () -> Unit) 
                     }
                 }
             }
+            Button(
+                onClick = { showExportDialog = true },
+                shape = RoundedCornerShape(4.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.Surface, contentColor = PS5ThemeColors.AccentCyan),
+                border = BorderStroke(1.dp, PS5ThemeColors.AccentCyan.copy(alpha = 0.5f))
+            ) {
+                Icon(PS5Icons.Connections, null, modifier = Modifier.size(16.dp), tint = PS5ThemeColors.AccentCyan)
+                Spacer(Modifier.width(8.dp))
+                Text("Add to PS5", color = PS5ThemeColors.AccentCyan)
+            }
             Button(onClick = { showAddDialog = true }, shape = RoundedCornerShape(4.dp), colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.AccentCyan, contentColor = Color.Black)) {
                 Icon(PS5Icons.Add, null, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(8.dp))
@@ -434,6 +445,9 @@ private fun GameCheatsDetailView(profile: GameCheatProfile, onBack: () -> Unit) 
 
     if (showAddDialog) {
         AddCheatDialog(profile.titleId, profile.version, profile.name) { showAddDialog = false }
+    }
+    if (showExportDialog) {
+        ExportToPs5Dialog(profile = profile) { showExportDialog = false }
     }
 }
 
@@ -465,9 +479,12 @@ private fun CheatItemRow(titleId: String, version: String, cheat: Cheat) {
                 }
             }
             .clickable {
-                AppContainer.debuggerUseCase.toggleCheat(titleId, version, cheat.id)
-                coroutineScope.launch {
-                    AppContainer.debuggerUseCase.applyCheat(activeProcess?.pid ?: 0, cheat)
+                val toggledCheat = AppContainer.debuggerUseCase.toggleCheat(titleId, version, cheat.id)
+                if (toggledCheat != null) {
+                    val pid = activeProcess?.pid ?: 0
+                    coroutineScope.launch {
+                        AppContainer.debuggerUseCase.applyCheat(pid, toggledCheat)
+                    }
                 }
             },
         colors = CardDefaults.cardColors(containerColor = PS5ThemeColors.Surface),
@@ -483,7 +500,15 @@ private fun CheatItemRow(titleId: String, version: String, cheat: Cheat) {
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(cheat.name, fontWeight = FontWeight.Bold, color = PS5ThemeColors.TextMain)
-                    Text("0x${cheat.address.toString(16).uppercase()}", fontSize = 12.sp, fontFamily = FontFamily.Monospace, color = PS5ThemeColors.TextMuted)
+                    val patches = cheat.getEffectivePatches()
+                    val addrText = if (patches.size <= 1) {
+                        val addr = patches.firstOrNull()?.address ?: cheat.address
+                        "0x${addr.toString(16).uppercase()}"
+                    } else {
+                        val firstAddr = patches.first().address.toString(16).uppercase()
+                        "0x$firstAddr (+${patches.size - 1} more patches)"
+                    }
+                    Text(addrText, fontSize = 12.sp, fontFamily = FontFamily.Monospace, color = PS5ThemeColors.TextMuted)
                 }
                 
                 Checkbox(
@@ -558,7 +583,8 @@ private fun CheatItemRow(titleId: String, version: String, cheat: Cheat) {
                     DropdownMenuItem(
                         text = { Text("Show in Memory View", color = PS5ThemeColors.TextMain) },
                         onClick = {
-                            AppContainer.onNavigateToMemory?.invoke(cheat.address)
+                            val targetAddr = cheat.getEffectivePatches().firstOrNull()?.address ?: cheat.address
+                            AppContainer.onNavigateToMemory?.invoke(targetAddr)
                             showContextMenu = false
                         }
                     )
@@ -594,15 +620,45 @@ internal fun AddCheatDialog(
     onDismiss: () -> Unit
 ) {
     var name by remember { mutableStateOf(existingCheat?.name ?: "") }
-    var addressStr by remember { mutableStateOf(existingCheat?.address?.toString(16)?.uppercase() ?: "") }
     var type by remember { mutableStateOf(existingCheat?.type ?: CheatType.Toggle) }
     var inputFormat by remember { mutableStateOf(existingCheat?.inputFormat ?: InputFormat.Hex) }
-    var hexOnValue by remember { mutableStateOf(existingCheat?.hexOnValue ?: "") }
-    var hexOffValue by remember { mutableStateOf(existingCheat?.hexOffValue ?: "") }
+    
+    // Multi-patch list state: (addressStr, hexOnValue, hexOffValue)
+    class PatchDraft(
+        initialAddress: String = "",
+        initialHexOn: String = "",
+        initialHexOff: String = "",
+        initialComment: String = ""
+    ) {
+        var addressStr by mutableStateOf(initialAddress)
+        var hexOnValue by mutableStateOf(initialHexOn)
+        var hexOffValue by mutableStateOf(initialHexOff)
+        var comment by mutableStateOf(initialComment)
+    }
+
+    val initialPatches = remember {
+        val existingPatches = existingCheat?.getEffectivePatches() ?: emptyList()
+        if (existingPatches.isNotEmpty()) {
+            existingPatches.map {
+                PatchDraft(
+                    initialAddress = it.address.toString(16).uppercase(),
+                    initialHexOn = it.hexOnValue,
+                    initialHexOff = it.hexOffValue ?: "",
+                    initialComment = it.comment ?: ""
+                )
+            }
+        } else {
+            listOf(PatchDraft())
+        }
+    }
+
+    val patchList = remember { mutableStateListOf<PatchDraft>().apply { addAll(initialPatches) } }
     
     val options = remember { mutableStateListOf<CheatOption>().apply { if (existingCheat != null) addAll(existingCheat.options) } }
     var newOptName by remember { mutableStateOf("") }
     var newOptVal by remember { mutableStateOf("") }
+
+    val hasValidPatches = patchList.isNotEmpty() && patchList.any { it.addressStr.isNotBlank() }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -611,17 +667,31 @@ internal fun AddCheatDialog(
                 Text(if (existingCheat != null) "Edit Cheat" else "Add New Cheat", color = PS5ThemeColors.TextMain)
                 Button(
                     onClick = {
-                        val addr = addressStr.trim().removePrefix("0x").toLongOrNull(16) ?: 0L
-                        val cheatId = existingCheat?.id ?: ("cheat_${System.currentTimeMillis()}_${(0..999).random()}")
+                        val parsedPatches = patchList.mapNotNull { p ->
+                            val cleanAddrStr = p.addressStr.trim().removePrefix("0x")
+                            val addr = cleanAddrStr.toLongOrNull(16)
+                            if (addr != null) {
+                                CheatPatch(
+                                    address = addr,
+                                    hexOnValue = if (type == CheatType.Dropdown) (options.firstOrNull()?.hexValue ?: "") else p.hexOnValue.trim(),
+                                    hexOffValue = if (type == CheatType.Toggle) p.hexOffValue.trim() else null,
+                                    comment = p.comment.trim().ifEmpty { null }
+                                )
+                            } else null
+                        }
+
+                        val firstPatch = parsedPatches.firstOrNull()
+                        val cheatId = existingCheat?.id?.ifEmpty { null } ?: ("cheat_${System.currentTimeMillis()}_${(0..999).random()}")
                         val cheat = Cheat(
                             id = cheatId,
-                            name = name,
+                            name = name.trim(),
                             type = type,
-                            address = addr,
+                            address = firstPatch?.address ?: 0L,
                             inputFormat = inputFormat,
-                            hexOnValue = if (type == CheatType.Dropdown) (options.firstOrNull()?.hexValue ?: "") else hexOnValue,
-                            hexOffValue = if (type == CheatType.Toggle) hexOffValue else null,
+                            hexOnValue = firstPatch?.hexOnValue ?: "",
+                            hexOffValue = firstPatch?.hexOffValue,
                             options = if (type == CheatType.Dropdown) options.toList() else emptyList(),
+                            patches = parsedPatches,
                             titleId = titleId,
                             version = version,
                             isEnabled = existingCheat?.isEnabled ?: false
@@ -629,16 +699,21 @@ internal fun AddCheatDialog(
                         AppContainer.debuggerUseCase.addCheat(titleId, version, cheat, gameName)
                         onDismiss()
                     },
-                    enabled = name.isNotEmpty() && addressStr.isNotEmpty() && (type != CheatType.Dropdown || options.isNotEmpty()),
+                    enabled = name.isNotBlank() && hasValidPatches && (type != CheatType.Dropdown || options.isNotEmpty()),
                     shape = RoundedCornerShape(4.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.AccentCyan, contentColor = Color.Black)
                 ) { Text(if (existingCheat != null) "Save" else "Add") }
             }
         },
         text = {
-            Column(modifier = Modifier.fillMaxWidth().heightIn(max = 450.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Cheat Name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                OutlinedTextField(value = addressStr, onValueChange = { addressStr = it }, label = { Text("Address (Hex)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+            Column(modifier = Modifier.fillMaxWidth().heightIn(max = 520.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = name, 
+                    onValueChange = { name = it }, 
+                    label = { Text("Cheat Name") }, 
+                    modifier = Modifier.fillMaxWidth(), 
+                    singleLine = true
+                )
                 
                 Text("Cheat Type:", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = PS5ThemeColors.TextMuted)
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -653,12 +728,93 @@ internal fun AddCheatDialog(
                         FilterChip(selected = inputFormat == InputFormat.Hex, onClick = { inputFormat = InputFormat.Hex }, label = { Text("Hexadecimal", fontSize = 11.sp) })
                         FilterChip(selected = inputFormat == InputFormat.Text, onClick = { inputFormat = InputFormat.Text }, label = { Text("ASCII Text", fontSize = 11.sp) })
                     }
-                    OutlinedTextField(value = hexOnValue, onValueChange = { hexOnValue = it }, label = { Text(if (inputFormat == InputFormat.Hex) "Default Hex Value" else "Default Text Value") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                 }
-                
-                if (type == CheatType.Toggle) {
-                    OutlinedTextField(value = hexOnValue, onValueChange = { hexOnValue = it }, label = { Text("Hex Value when ON") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                    OutlinedTextField(value = hexOffValue, onValueChange = { hexOffValue = it }, label = { Text("Hex Value when OFF") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Patches (${patchList.size} address/byte target" + (if (patchList.size > 1) "s" else "") + "):", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = PS5ThemeColors.TextMuted)
+                    Button(
+                        onClick = { patchList.add(PatchDraft()) },
+                        shape = RoundedCornerShape(4.dp),
+                        modifier = Modifier.height(28.dp),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.Surface)
+                    ) {
+                        Icon(PS5Icons.Add, null, modifier = Modifier.size(12.dp), tint = PS5ThemeColors.AccentCyan)
+                        Spacer(Modifier.width(4.dp))
+                        Text("Add Address", fontSize = 11.sp, color = PS5ThemeColors.AccentCyan)
+                    }
+                }
+
+                patchList.forEachIndexed { index, patch ->
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(1.dp, PS5ThemeColors.BorderColor.copy(alpha = 0.6f), RoundedCornerShape(6.dp))
+                            .background(Color.Black.copy(alpha = 0.15f), RoundedCornerShape(6.dp))
+                            .padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Address #${index + 1}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = PS5ThemeColors.AccentCyan)
+                            if (patchList.size > 1) {
+                                IconButton(
+                                    onClick = { patchList.removeAt(index) },
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(PS5Icons.Delete, "Remove Address", modifier = Modifier.size(16.dp), tint = Color.Red.copy(alpha = 0.8f))
+                                }
+                            }
+                        }
+
+                        OutlinedTextField(
+                            value = patch.addressStr,
+                            onValueChange = { patch.addressStr = it },
+                            label = { Text("Address (Hex, e.g. 0x400000)") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+
+                        OutlinedTextField(
+                            value = patch.comment,
+                            onValueChange = { patch.comment = it },
+                            label = { Text("Comment / Description (Optional)") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+
+                        if (type == CheatType.TextField) {
+                            OutlinedTextField(
+                                value = patch.hexOnValue,
+                                onValueChange = { patch.hexOnValue = it },
+                                label = { Text(if (inputFormat == InputFormat.Hex) "Default Hex Value" else "Default Text Value") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true
+                            )
+                        } else if (type == CheatType.Toggle) {
+                            OutlinedTextField(
+                                value = patch.hexOnValue,
+                                onValueChange = { patch.hexOnValue = it },
+                                label = { Text("Hex Value when ON (e.g. 90 90 90)") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true
+                            )
+                            OutlinedTextField(
+                                value = patch.hexOffValue,
+                                onValueChange = { patch.hexOffValue = it },
+                                label = { Text("Hex Value when OFF (Original Bytes)") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true
+                            )
+                        }
+                    }
                 }
 
                 if (type == CheatType.Dropdown) {
@@ -704,3 +860,193 @@ internal fun AddCheatDialog(
         confirmButton = {}
     )
 }
+
+@Composable
+internal fun ExportToPs5Dialog(
+    profile: GameCheatProfile,
+    onDismiss: () -> Unit
+) {
+    val coroutineScope = rememberCoroutineScope()
+    val consoleIp = remember { AppContainer.clientAdapter.connection.ipAddress ?: DefaultIpHelper.getDefaultIp() ?: "" }
+    val profiles by AppContainer.debuggerUseCase.gameCheatProfiles.collectAsState()
+    val activeProfile = profiles.firstOrNull { it.titleId == profile.titleId && it.version == profile.version } ?: profile
+    
+    val resolvedName = remember(activeProfile.name, activeProfile.titleId, AppContainer.titleIdToName[activeProfile.titleId]) {
+        val mapped = AppContainer.titleIdToName[activeProfile.titleId]
+        fun isBad(n: String?) = n.isNullOrEmpty() || n == "Unknown" || n.lowercase().let { it.contains("eboot.bin") || it.endsWith(".elf") || it.endsWith(".bin") }
+        if (!isBad(mapped)) mapped!!
+        else if (!isBad(activeProfile.name)) activeProfile.name
+        else activeProfile.titleId
+    }
+    val resolvedVersion = remember(activeProfile.version, activeProfile.titleId, AppContainer.titleIdToVersion[activeProfile.titleId]) {
+        AppContainer.titleIdToVersion[activeProfile.titleId] ?: activeProfile.version
+    }
+
+    var gameName by remember { mutableStateOf(resolvedName) }
+    var titleId by remember { mutableStateOf(activeProfile.titleId) }
+    var version by remember { mutableStateOf(resolvedVersion) }
+    var processName by remember { mutableStateOf("eboot.bin") }
+    var author by remember { mutableStateOf("Boaz") }
+    var targetIp by remember { mutableStateOf(consoleIp) }
+
+    var isUploading by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+    var successMessage by remember { mutableStateOf<String?>(null) }
+
+    val previewFileName = "${titleId.trim().ifEmpty { "TITLE_ID" }}_${version.trim().ifEmpty { "1.00" }}.json"
+    val previewPath = "/data/OnionHEN/cheats/$previewFileName"
+
+    AlertDialog(
+        onDismissRequest = { if (!isUploading) onDismiss() },
+        title = {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("Add Cheats to PS5 (OnionHEN)", color = PS5ThemeColors.TextMain, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                if (isUploading) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), color = PS5ThemeColors.AccentCyan, strokeWidth = 2.dp)
+                }
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth().heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    "This will export all ${activeProfile.cheats.size} cheat mod(s) in OnionHEN format to your PS5 via FTP.",
+                    fontSize = 12.sp,
+                    color = PS5ThemeColors.TextMuted
+                )
+
+                OutlinedTextField(
+                    value = gameName,
+                    onValueChange = { gameName = it },
+                    label = { Text("Game Name") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    enabled = !isUploading
+                )
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = titleId,
+                        onValueChange = { titleId = it },
+                        label = { Text("Title ID") },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        enabled = !isUploading
+                    )
+                    OutlinedTextField(
+                        value = version,
+                        onValueChange = { version = it },
+                        label = { Text("Version") },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        enabled = !isUploading
+                    )
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = processName,
+                        onValueChange = { processName = it },
+                        label = { Text("Process") },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        enabled = !isUploading
+                    )
+                    OutlinedTextField(
+                        value = author,
+                        onValueChange = { author = it },
+                        label = { Text("Author / Credits") },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        enabled = !isUploading
+                    )
+                }
+
+                OutlinedTextField(
+                    value = targetIp,
+                    onValueChange = { targetIp = it },
+                    label = { Text("PS5 IP Address") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    enabled = !isUploading
+                )
+
+                // Path Preview Box
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color.Black.copy(alpha = 0.25f), RoundedCornerShape(6.dp))
+                        .border(1.dp, PS5ThemeColors.BorderColor, RoundedCornerShape(6.dp))
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text("Remote FTP Target:", fontSize = 11.sp, color = PS5ThemeColors.TextMuted, fontWeight = FontWeight.Bold)
+                    Text(previewPath, fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = PS5ThemeColors.AccentCyan)
+                }
+
+                if (errorMessage != null) {
+                    Text(
+                        text = errorMessage!!,
+                        color = Color.Red,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(vertical = 4.dp)
+                    )
+                }
+
+                if (successMessage != null) {
+                    Text(
+                        text = successMessage!!,
+                        color = Color(0xFF4CAF50),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(vertical = 4.dp)
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    isUploading = true
+                    errorMessage = null
+                    successMessage = null
+                    val authors = author.split(",", ";").map { it.trim() }.filter { it.isNotEmpty() }
+                    val credits = if (authors.isNotEmpty()) authors else listOf("Boaz")
+
+                    coroutineScope.launch {
+                        val res = AppContainer.debuggerUseCase.exportCheatsToPs5(
+                            ip = targetIp,
+                            titleId = titleId,
+                            version = version,
+                            gameName = gameName,
+                            processName = processName,
+                            credits = credits,
+                            cheats = activeProfile.cheats
+                        )
+                        isUploading = false
+                        if (res.isSuccess) {
+                            successMessage = "Successfully written to ${res.getOrNull()}!"
+                            kotlinx.coroutines.delay(1000)
+                            onDismiss()
+                        } else {
+                            errorMessage = res.exceptionOrNull()?.message ?: "Failed to upload via FTP"
+                        }
+                    }
+                },
+                enabled = !isUploading && titleId.isNotBlank() && targetIp.isNotBlank(),
+                shape = RoundedCornerShape(4.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = PS5ThemeColors.AccentCyan, contentColor = Color.Black)
+            ) {
+                Text(if (isUploading) "Uploading..." else "Add to PS5")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !isUploading) {
+                Text("Cancel", color = PS5ThemeColors.TextMuted)
+            }
+        }
+    )
+}
+

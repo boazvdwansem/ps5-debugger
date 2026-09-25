@@ -43,17 +43,6 @@ class CheatManager(
         storagePort.saveCheats(_gameProfiles.value)
     }
 
-    private val titleIdMap = mapOf(
-        "CUSA00001" to "Sample App",
-        "PPSA01234" to "Sample PS5 Game",
-        "CUSA57547" to "Call of Duty: Black Ops"
-    )
-
-    private fun resolveGameName(titleId: String, currentName: String): String {
-        if (!isBadName(currentName)) return currentName
-        return titleIdMap[titleId] ?: currentName
-    }
-
     fun updateGameName(titleId: String, name: String) {
         if (isBadName(name)) return
         
@@ -176,41 +165,90 @@ class CheatManager(
         }
     }
 
-    suspend fun applyCheat(pid: Int, cheat: Cheat, newValue: String? = null) {
-        val address = cheat.address
-        val hexToInject = when (cheat.type) {
-            CheatType.Toggle -> {
-                if (cheat.isEnabled) cheat.hexOnValue else cheat.hexOffValue ?: ""
+    private fun parseHexBytes(hexStr: String): ByteArray {
+        val clean = hexStr.trim()
+        if (clean.isEmpty()) return ByteArray(0)
+        val tokens = clean.split(Regex("[\\s,\\-]+")).filter { it.isNotBlank() }
+        val byteList = mutableListOf<Byte>()
+        for (token in tokens) {
+            val t = token.removePrefix("0x").removePrefix("0X")
+            if (t.isEmpty()) continue
+            if (t.length % 2 != 0) {
+                val padded = "0$t"
+                padded.chunked(2).forEach { byteList.add(it.toInt(16).toByte()) }
+            } else {
+                t.chunked(2).forEach { byteList.add(it.toInt(16).toByte()) }
             }
-            CheatType.TextField -> {
-                if (cheat.inputFormat == InputFormat.Text) {
-                    val text = newValue ?: cheat.hexOnValue
-                    text.encodeToByteArray().joinToString("") { it.toUByte().toString(16).padStart(2, '0') }
-                } else {
-                    newValue ?: cheat.hexOnValue
+        }
+        return byteList.toByteArray()
+    }
+
+    suspend fun applyCheat(pid: Int, cheat: Cheat, newValue: String? = null) {
+        val patches = cheat.getEffectivePatches()
+        if (patches.isEmpty()) return
+
+        val writes = mutableListOf<Pair<Long, ByteArray>>()
+
+        for (patch in patches) {
+            val hexToInject = when (cheat.type) {
+                CheatType.Toggle -> {
+                    if (cheat.isEnabled) patch.hexOnValue else patch.hexOffValue ?: ""
+                }
+                CheatType.TextField -> {
+                    if (cheat.inputFormat == InputFormat.Text) {
+                        val text = newValue ?: patch.hexOnValue
+                        text.encodeToByteArray().joinToString("") { it.toUByte().toString(16).padStart(2, '0') }
+                    } else {
+                        newValue ?: patch.hexOnValue
+                    }
+                }
+                CheatType.Dropdown -> {
+                    newValue ?: patch.hexOnValue
                 }
             }
-            CheatType.Dropdown -> {
-                newValue ?: cheat.hexOnValue
+
+            if (hexToInject.isNotBlank()) {
+                try {
+                    val bytes = parseHexBytes(hexToInject)
+                    if (bytes.isNotEmpty()) {
+                        writes.add(patch.address to bytes)
+                    }
+                } catch (e: Exception) {
+                    logManager.log("CHEATS", "Invalid hex in patch for cheat '${cheat.name}' at 0x${patch.address.toString(16)}: ${e.message}", LogEntry.Level.ERROR)
+                }
             }
         }
 
-        if (hexToInject.isNotEmpty()) {
-            try {
-                val bytes = hexToInject.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
-                val result = com.osr.ps5debugger.di.AppContainer.debuggerUseCase.writeMemory(address, bytes)
-                if (result.isSuccess) {
-                    logManager.log("CHEATS", "Applied cheat '${cheat.name}' at 0x${address.toString(16)}", LogEntry.Level.INFO)
-                } else {
-                    logManager.log("CHEATS", "Failed to apply cheat '${cheat.name}': ${result.exceptionOrNull()?.message}", LogEntry.Level.ERROR)
-                }
-            } catch (e: Exception) {
-                logManager.log("CHEATS", "Failed to apply cheat '${cheat.name}': ${e.message}", LogEntry.Level.ERROR)
+        if (writes.isEmpty()) {
+            if (cheat.type == CheatType.Toggle && !cheat.isEnabled) {
+                logManager.log("CHEATS", "Cheat '${cheat.name}' turned OFF (no OFF bytes specified to revert)", LogEntry.Level.INFO)
+            } else {
+                logManager.log("CHEATS", "No bytes to inject for cheat '${cheat.name}'", LogEntry.Level.WARN)
             }
+            return
+        }
+
+        if (pid <= 0) {
+            logManager.log("CHEATS", "Cannot apply cheat '${cheat.name}': No active process attached (PID $pid)", LogEntry.Level.ERROR)
+            return
+        }
+
+        try {
+            // Inject the same way MemoryViewerLayout (Hex Editor) injects memory
+            val success = clientPort.writeMemoryMulti(pid, writes, withStatusReport = false)
+            if (success) {
+                val totalBytes = writes.sumOf { it.second.size }
+                val stateText = if (cheat.type == CheatType.Toggle) (if (cheat.isEnabled) "ON" else "OFF") else "Applied"
+                logManager.log("CHEATS", "[$stateText] Applied cheat '${cheat.name}': injected $totalBytes byte(s) across ${writes.size} patch location(s)", LogEntry.Level.INFO)
+            } else {
+                logManager.log("CHEATS", "PS5 rejected the memory injection for cheat '${cheat.name}' (PID $pid)", LogEntry.Level.ERROR)
+            }
+        } catch (e: Exception) {
+            logManager.log("CHEATS", "Failed to apply cheat '${cheat.name}': ${e.message}", LogEntry.Level.ERROR)
         }
     }
 
-    fun toggleCheat(titleId: String, version: String, cheatId: String) {
+    fun toggleCheat(titleId: String, version: String, cheatId: String): Cheat? {
         val currentProfiles = _gameProfiles.value.toMutableList()
         val pIdx = currentProfiles.indexOfFirst { it.titleId == titleId && it.version == version }
         if (pIdx != -1) {
@@ -219,11 +257,113 @@ class CheatManager(
             if (cIdx != -1) {
                 val updatedCheats = profile.cheats.toMutableList()
                 val cheat = updatedCheats[cIdx]
-                updatedCheats[cIdx] = cheat.copy(isEnabled = !cheat.isEnabled)
+                val toggled = cheat.copy(isEnabled = !cheat.isEnabled)
+                updatedCheats[cIdx] = toggled
                 currentProfiles[pIdx] = profile.copy(cheats = updatedCheats)
                 _gameProfiles.value = currentProfiles
                 persist()
+                return toggled
             }
+        }
+        return null
+    }
+
+    private val onionHenJson = Json {
+        prettyPrint = true
+        encodeDefaults = true
+        explicitNulls = false
+        ignoreUnknownKeys = true
+    }
+
+    fun cleanHexForExport(hexStr: String?): String {
+        if (hexStr == null) return ""
+        val cleaned = hexStr
+            .replace("0x", "", ignoreCase = true)
+            .replace("0X", "")
+            .replace(" ", "")
+            .replace(",", "")
+            .replace("-", "")
+            .uppercase()
+        return cleaned
+    }
+
+    suspend fun exportCheatsToPs5(
+        ip: String,
+        titleId: String,
+        version: String,
+        gameName: String,
+        processName: String = "eboot.bin",
+        credits: List<String> = listOf("Boaz"),
+        cheats: List<Cheat>
+    ): Result<String> {
+        val cleanIp = ip.trim()
+        if (cleanIp.isEmpty()) {
+            val err = "PS5 IP address is empty. Please check your connection."
+            logManager.log("CHEATS", err, LogEntry.Level.ERROR)
+            return Result.failure(IllegalArgumentException(err))
+        }
+        val cleanTitleId = titleId.trim()
+        if (cleanTitleId.isEmpty()) {
+            val err = "Title ID cannot be empty."
+            logManager.log("CHEATS", err, LogEntry.Level.ERROR)
+            return Result.failure(IllegalArgumentException(err))
+        }
+        val cleanVersion = version.trim().ifEmpty { "1.00" }
+        val cleanProcess = processName.trim().ifEmpty { "eboot.bin" }
+
+        val mods = cheats.map { cheat ->
+            val effectivePatches = cheat.getEffectivePatches()
+            val memoryEntries = effectivePatches.map { patch ->
+                val offsetHex = patch.address.toString(16).uppercase()
+                val onHex = cleanHexForExport(patch.hexOnValue)
+                val offHex = patch.hexOffValue?.takeIf { it.isNotBlank() }?.let { cleanHexForExport(it) }
+                val comment = patch.comment?.takeIf { it.isNotBlank() } ?: cheat.description.takeIf { it.isNotBlank() }
+
+                OnionHenMemoryEntry(
+                    comment = comment,
+                    offset = offsetHex,
+                    on = onHex,
+                    off = offHex
+                )
+            }
+            OnionHenMod(
+                name = cheat.name,
+                type = "checkbox",
+                memory = memoryEntries
+            )
+        }
+
+        val cheatFile = OnionHenCheatFile(
+            name = gameName.trim().ifEmpty { cleanTitleId },
+            id = cleanTitleId,
+            version = cleanVersion,
+            process = cleanProcess,
+            mods = mods,
+            credits = credits.map { it.trim() }.filter { it.isNotEmpty() }
+        )
+
+        val jsonString = onionHenJson.encodeToString(cheatFile)
+        val fileName = "${cleanTitleId}_${cleanVersion}.json"
+        val targetDir = "/data/OnionHEN/cheats"
+        val targetPath = "$targetDir/$fileName"
+
+        return try {
+            val ftpClient = com.osr.ps5debugger.network.Ps5FtpClient(cleanIp)
+            // Ensure parent directories exist
+            try { ftpClient.createDirectory("/data") } catch (_: Exception) {}
+            try { ftpClient.createDirectory("/data/OnionHEN") } catch (_: Exception) {}
+            try { ftpClient.createDirectory("/data/OnionHEN/cheats") } catch (_: Exception) {}
+
+            java.io.ByteArrayInputStream(jsonString.encodeToByteArray()).use { input ->
+                ftpClient.uploadFile(targetPath, input)
+            }
+            ftpClient.disconnect()
+
+            logManager.log("CHEATS", "Successfully exported OnionHEN cheats to PS5 ($targetPath)", LogEntry.Level.INFO)
+            Result.success(targetPath)
+        } catch (e: Exception) {
+            logManager.log("CHEATS", "Failed to export OnionHEN cheats to PS5 ($targetPath): ${e.message}", LogEntry.Level.ERROR)
+            Result.failure(e)
         }
     }
 

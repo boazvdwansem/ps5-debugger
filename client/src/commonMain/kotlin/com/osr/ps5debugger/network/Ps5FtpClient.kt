@@ -36,11 +36,15 @@ class Ps5FtpClient(private val ip: String, private val port: Int = 2121) {
         }
         
         val cleanIp = ip.trim().removePrefix("http://").removePrefix("https://").split(":")[0]
-        controlSocket = Socket()
-        controlSocket!!.connect(InetSocketAddress(cleanIp, port), 10000)
-        controlSocket!!.soTimeout = 15000
-        reader = controlSocket!!.getInputStream().bufferedReader()
-        writer = controlSocket!!.getOutputStream().bufferedWriter()
+        if (cleanIp.isEmpty()) {
+            throw IOException("Console IP is empty")
+        }
+        val socket = Socket()
+        socket.connect(InetSocketAddress(cleanIp, port), 4000)
+        socket.soTimeout = 8000
+        controlSocket = socket
+        reader = socket.getInputStream().bufferedReader()
+        writer = socket.getOutputStream().bufferedWriter()
         
         readResponse() // Wait for greeting
         
@@ -87,7 +91,8 @@ class Ps5FtpClient(private val ip: String, private val port: Int = 2121) {
                 val dataPort = p1.toInt() * 256 + p2.toInt()
                 
                 val socket = Socket()
-                socket.connect(InetSocketAddress(cleanIp, dataPort), 5000)
+                socket.connect(InetSocketAddress(cleanIp, dataPort), 4000)
+                socket.soTimeout = 8000
                 return@withContext socket
             }
         }

@@ -116,9 +116,8 @@ fun FileBrowserView() {
                         }
                     }
                 } catch (e: Exception) {
-                    e.printStackTrace()
-                    errorMessage = "${e::class.simpleName}: ${e.message}\n"
-                    AppContainer.debuggerUseCase.log("FTP", "Error loading $currentPath: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                    errorMessage = "${e::class.simpleName}: ${e.message ?: "Connection timed out"}\n"
+                    AppContainer.debuggerUseCase.log("FTP", "Error loading $currentPath: ${e.message ?: "Connection timed out"}", com.osr.ps5debugger.domain.model.LogEntry.Level.WARN)
                 } finally {
                     isLoading = false
                 }

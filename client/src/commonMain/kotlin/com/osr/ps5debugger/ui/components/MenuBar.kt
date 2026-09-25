@@ -19,7 +19,7 @@ fun TopMenuBar(
 ) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         FileMenuDropdown(onFileAction)
 
@@ -58,14 +58,14 @@ private fun FileMenuDropdown(onFileAction: (String) -> Unit) {
         Text(
             text = "File",
             color = MaterialTheme.colorScheme.primary,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Bold,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
             modifier = Modifier
                 .clickable {
                     expanded = true
                     exportExpanded = false
                 }
-                .padding(horizontal = 8.dp, vertical = 6.dp)
+                .padding(horizontal = 6.dp, vertical = 4.dp)
         )
         DropdownMenu(
             expanded = expanded,
@@ -76,7 +76,7 @@ private fun FileMenuDropdown(onFileAction: (String) -> Unit) {
         ) {
             listOf("Save", "Load", "Load eboot", "Preferences", "Exit").forEach { option ->
                 DropdownMenuItem(
-                    text = { Text(option) },
+                    text = { Text(option, fontSize = 12.sp) },
                     onClick = {
                         expanded = false
                         onFileAction(option)
@@ -87,7 +87,7 @@ private fun FileMenuDropdown(onFileAction: (String) -> Unit) {
                 modifier = Modifier.clickable { exportExpanded = true }
             ) {
                 DropdownMenuItem(
-                    text = { Text("Export  >") },
+                    text = { Text("Export  >", fontSize = 12.sp) },
                     onClick = { exportExpanded = true }
                 )
                 DropdownMenu(
@@ -97,7 +97,7 @@ private fun FileMenuDropdown(onFileAction: (String) -> Unit) {
                 ) {
                     listOf("Export disassembly", "Export Hexadecimal").forEach { option ->
                         DropdownMenuItem(
-                            text = { Text(option) },
+                            text = { Text(option, fontSize = 12.sp) },
                             onClick = {
                                 expanded = false
                                 exportExpanded = false
@@ -122,11 +122,11 @@ fun MenuDropdown(
         Text(
             text = title,
             color = MaterialTheme.colorScheme.primary,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Bold,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
             modifier = Modifier
                 .clickable { expanded = true }
-                .padding(horizontal = 8.dp, vertical = 6.dp)
+                .padding(horizontal = 6.dp, vertical = 4.dp)
         )
 
         DropdownMenu(
@@ -135,7 +135,7 @@ fun MenuDropdown(
         ) {
             options.forEach { (option, action) ->
                 DropdownMenuItem(
-                    text = { Text(option) },
+                    text = { Text(option, fontSize = 12.sp) },
                     onClick = {
                         expanded = false
                         action()

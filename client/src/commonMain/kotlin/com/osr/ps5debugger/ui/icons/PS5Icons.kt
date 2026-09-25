@@ -1875,4 +1875,38 @@ object PS5Icons {
         }
     }
 
+    /**
+     * Keyboard icon for shortcuts settings
+     */
+    val Keyboard: ImageVector by lazy {
+        icon("Keyboard") {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 2f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round
+            ) {
+                // Keyboard frame
+                moveTo(3f, 7f)
+                lineTo(21f, 7f)
+                arcTo(2f, 2f, 0f, false, true, 23f, 9f)
+                lineTo(23f, 15f)
+                arcTo(2f, 2f, 0f, false, true, 21f, 17f)
+                lineTo(3f, 17f)
+                arcTo(2f, 2f, 0f, false, true, 1f, 15f)
+                lineTo(1f, 9f)
+                arcTo(2f, 2f, 0f, false, true, 3f, 7f)
+                close()
+
+                // Keys
+                moveTo(5f, 10f); lineTo(5.1f, 10f)
+                moveTo(9f, 10f); lineTo(9.1f, 10f)
+                moveTo(13f, 10f); lineTo(13.1f, 10f)
+                moveTo(17f, 10f); lineTo(17.1f, 10f)
+                moveTo(5f, 14f); lineTo(5.1f, 14f)
+                moveTo(9f, 14f); lineTo(15f, 14f)
+                moveTo(19f, 14f); lineTo(19.1f, 14f)
+            }
+        }
+    }
 }
