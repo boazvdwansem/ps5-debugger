@@ -1,11 +1,13 @@
 package com.osr.ps5debugger.ui.state
 
+import com.osr.ps5debugger.di.DisassemblyCache
+import com.osr.ps5debugger.domain.service.SymbolManager
 import androidx.compose.runtime.*
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import com.osr.ps5debugger.di.AppContainer
 import com.osr.ps5debugger.domain.model.MemoryRange
-import com.osr.ps5debugger.ui.DisasmLine
-import com.osr.ps5debugger.protocol.Ps5DisasmInstr
+import com.osr.ps5debugger.ui.memory.disasm.DisasmLine
+import com.osr.ps5debugger.infrastructure.protocol.Ps5DisasmInstr
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.Dispatchers
@@ -15,7 +17,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 
 import androidx.compose.ui.graphics.Color
-import com.osr.ps5debugger.ui.disasm.DisasmFormatter
+import com.osr.ps5debugger.ui.memory.disasm.DisasmFormatter
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
@@ -108,7 +110,7 @@ class MemoryViewerState(
     val instructions: SnapshotStateList<DisasmLine> get() {
         val map = activeMap ?: activeMaps.firstOrNull()
         val key = map?.let { "${it.start}_${it.end}_${it.name}" } ?: "default"
-        return AppContainer.getInstructions(key)
+        return DisassemblyCache.getInstructions(key)
     }
 
     val functions = mutableStateListOf<Long>()
@@ -182,9 +184,9 @@ class MemoryViewerState(
             jumpTracks = tracks
             jumpColors = colors
             jumpTargets = targets
-            val mergedTargets = (AppContainer.discoveredJumpTargets + targets).distinct().take(100_000)
-            AppContainer.discoveredJumpTargets.clear()
-            AppContainer.discoveredJumpTargets.addAll(mergedTargets)
+            val mergedTargets = (SymbolManager.discoveredJumpTargets + targets).distinct().take(100_000)
+            SymbolManager.discoveredJumpTargets.clear()
+            SymbolManager.discoveredJumpTargets.addAll(mergedTargets)
         }
     }
 
@@ -246,8 +248,8 @@ class MemoryViewerState(
         val focusAddrForMapKey = (currentJumpAddress ?: jumpToAddress ?: currentTarget.start).coerceIn(currentTarget.start, maxOf(currentTarget.start, currentTarget.end - 1))
         val focusChunkIdxForMapKey = ((focusAddrForMapKey - currentTarget.start) / (64 * 1024L)).toInt()
         val mapKey = "${currentTarget.start}_${currentTarget.end}_${currentTarget.name}_$focusChunkIdxForMapKey"
-        val cachedProgress = AppContainer.disassemblyProgressCache[mapKey]
-            ?: AppContainer.disassemblyProgressCache["${currentTarget.start}_${currentTarget.end}_${currentTarget.name}"]
+        val cachedProgress = DisassemblyCache.disassemblyProgressCache[mapKey]
+            ?: DisassemblyCache.disassemblyProgressCache["${currentTarget.start}_${currentTarget.end}_${currentTarget.name}"]
         if (cachedProgress != null) {
             withContext(Dispatchers.Main) {
                 disassemblyProgress = cachedProgress
@@ -278,7 +280,7 @@ class MemoryViewerState(
             isLoading = true
             disassemblyProgress = 0f
             disassemblyProgressLabel = "Preparing memory chunks..."
-            AppContainer.disassemblyProgressCache[mapKey] = 0f
+            DisassemblyCache.disassemblyProgressCache[mapKey] = 0f
             lastLoadedMapKey = mapKey
         }
         
@@ -301,7 +303,7 @@ class MemoryViewerState(
                         val segmentResults = map.subRanges.map { seg ->
                             async {
                                 val segData = seg.localData ?: return@async emptyList<DisasmLine>()
-                                val syncAddrs = (AppContainer.discoveredFunctions.toSet() + AppContainer.symbolNames.keys.toSet() + AppContainer.discoveredJumpTargets.toSet())
+                                val syncAddrs = (SymbolManager.discoveredFunctions.toSet() + SymbolManager.symbolNames.keys.toSet() + SymbolManager.discoveredJumpTargets.toSet())
                                 val segInstrs = com.osr.ps5debugger.util.LocalDisassembler.disassemble(segData, seg.start, syncAddrs)
                                 
                                 segInstrs.map { instr ->
@@ -309,7 +311,7 @@ class MemoryViewerState(
                                     val instrBytes = if (offset >= 0 && offset + instr.length <= segData.size) {
                                         segData.copyOfRange(offset, offset + instr.length)
                                     } else ByteArray(0)
-                                    val symbolName = AppContainer.symbolNames[instr.addr]
+                                    val symbolName = SymbolManager.symbolNames[instr.addr]
                                     DisasmLine(instr, instrBytes, seg, symbolName)
                                 }
                             }
@@ -365,7 +367,7 @@ class MemoryViewerState(
                                     } catch (_: Exception) { ByteArray(0) }
                                     if (rawBytes.isEmpty()) return@withPermit emptyList<DisasmLine>()
 
-                                    val syncAddrs = (AppContainer.discoveredFunctions.toSet() + AppContainer.symbolNames.keys.toSet() + AppContainer.discoveredJumpTargets.toSet())
+                                    val syncAddrs = (SymbolManager.discoveredFunctions.toSet() + SymbolManager.symbolNames.keys.toSet() + SymbolManager.discoveredJumpTargets.toSet())
                                     val isLocalOrOffline = map.localData != null || !AppContainer.clientAdapter.isConnected
                                     val rawInstrs = try {
                                         if (isLocalOrOffline) {
@@ -384,7 +386,7 @@ class MemoryViewerState(
                                             val offset = (instr.addr - chunkStart).toInt()
                                             val instrBytes = if (offset >= 0 && offset + instr.length <= rawBytes.size) rawBytes.copyOfRange(offset, offset + instr.length) else ByteArray(0)
                                             val lineRegion = map.subRanges.firstOrNull { instr.addr >= it.start && instr.addr < it.end } ?: map
-                                            DisasmLine(instr, instrBytes, lineRegion, AppContainer.symbolNames[instr.addr])
+                                            DisasmLine(instr, instrBytes, lineRegion, SymbolManager.symbolNames[instr.addr])
                                         }
                                     } else {
                                         // The remote decoder may interpret embedded strings and padding zeroes as
@@ -471,7 +473,7 @@ class MemoryViewerState(
                                             val offset = (instr.addr - chunkStart).toInt()
                                             val instrBytes = if (offset >= 0 && offset + instr.length <= rawBytes.size) rawBytes.copyOfRange(offset, offset + instr.length) else ByteArray(0)
                                             val lineRegion = map.subRanges.firstOrNull { instr.addr >= it.start && instr.addr < it.end } ?: map
-                                            DisasmLine(instr, instrBytes, lineRegion, AppContainer.symbolNames[instr.addr])
+                                            DisasmLine(instr, instrBytes, lineRegion, SymbolManager.symbolNames[instr.addr])
                                         }
                                     }
                                 }
@@ -482,7 +484,7 @@ class MemoryViewerState(
                                     disassemblyProgress = prog
                                     disassemblyProgressLabel = "Disassembling memory..."
                                 }
-                                AppContainer.disassemblyProgressCache[mapKey] = prog
+                                DisassemblyCache.disassemblyProgressCache[mapKey] = prog
                             }
                             kotlinx.coroutines.delay(5)
                         }
@@ -519,12 +521,12 @@ class MemoryViewerState(
                 instructions.addAll(finalLines)
                 functions.clear()
                 functions.addAll(finalFunctions)
-                val mergedFuncs = (AppContainer.discoveredFunctions + finalFunctions).distinct().sortedBy { it.toULong() }
-                AppContainer.discoveredFunctions.clear()
-                AppContainer.discoveredFunctions.addAll(mergedFuncs)
+                val mergedFuncs = (SymbolManager.discoveredFunctions + finalFunctions).distinct().sortedBy { it.toULong() }
+                SymbolManager.discoveredFunctions.clear()
+                SymbolManager.discoveredFunctions.addAll(mergedFuncs)
                 disassemblyProgress = 1f
                 disassemblyProgressLabel = "Disassembly ready"
-                AppContainer.disassemblyProgressCache[mapKey] = 1f
+                DisassemblyCache.disassemblyProgressCache[mapKey] = 1f
                 // The linear rows are now complete. Metadata and XRef enrichment below are
                 // secondary background work and must not keep the full-screen processing veil up.
                 isLoading = false
@@ -553,7 +555,7 @@ class MemoryViewerState(
         val scanLen = (scanMap.end - scanMap.start).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
         
         // Only fetch for function starts or significant labels to save time
-        val targets = lines.filter { AppContainer.symbolNames.containsKey(it.instr.addr) || AppContainer.discoveredFunctions.contains(it.instr.addr) }
+        val targets = lines.filter { SymbolManager.symbolNames.containsKey(it.instr.addr) || SymbolManager.discoveredFunctions.contains(it.instr.addr) }
             .map { it.instr.addr }
             .distinct()
             .take(50) // Limit per batch
@@ -615,3 +617,6 @@ fun rememberMemoryViewerState(
 
     return state
 }
+
+
+

@@ -1,4 +1,4 @@
-package com.osr.ps5debugger.network
+package com.osr.ps5debugger.infrastructure.network
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -93,3 +93,4 @@ class PayloadInjectorTest {
         assertTrue(result.isFailure, "Injection to closed port should fail")
     }
 }
+

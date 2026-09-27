@@ -4,9 +4,9 @@ import com.osr.ps5debugger.domain.model.*
 import com.osr.ps5debugger.ports.outbound.CheatStoragePort
 import com.osr.ps5debugger.ports.outbound.DebuggerClientPort
 import com.osr.ps5debugger.ports.outbound.LogStoragePort
-import com.osr.ps5debugger.protocol.Ps5DebugEvent
-import com.osr.ps5debugger.protocol.Ps5ForegroundApp
-import com.osr.ps5debugger.protocol.Ps5ProcessInfo
+import com.osr.ps5debugger.infrastructure.protocol.Ps5DebugEvent
+import com.osr.ps5debugger.infrastructure.protocol.Ps5ForegroundApp
+import com.osr.ps5debugger.infrastructure.protocol.Ps5ProcessInfo
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -169,3 +169,4 @@ class CheatManagerTest {
         assertEquals(0x01.toByte(), writes[1].second[1])
     }
 }
+

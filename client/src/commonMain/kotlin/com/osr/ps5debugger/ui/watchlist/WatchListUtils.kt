@@ -1,7 +1,7 @@
 package com.osr.ps5debugger.ui.watchlist
 
 import com.osr.ps5debugger.domain.model.WatchItem
-import com.osr.ps5debugger.protocol.BinaryBuffer
+import com.osr.ps5debugger.infrastructure.protocol.BinaryBuffer
 
 val typeOptions = listOf("Byte", "Int16", "Int32", "Int64", "Float", "Double", "String", "ByteArray")
 const val WatchStringMaxBytes = 256
@@ -187,7 +187,7 @@ fun sessionToJson(
     customSymbols: Map<Long, String>,
     discoveredFunctions: List<Long>,
     vmMaps: List<com.osr.ps5debugger.domain.model.MemoryRange>,
-    processInfo: com.osr.ps5debugger.protocol.Ps5ProcessInfo?
+    processInfo: com.osr.ps5debugger.infrastructure.protocol.Ps5ProcessInfo?
 ): String = buildString {
     appendLine("{")
     append("  \"processName\": ").append(processInfo?.name?.let { "\"${jsonEscape(it)}\"" } ?: "null").append(",\n")
@@ -287,3 +287,6 @@ fun sessionFromJson(json: String): SessionData {
     
     return SessionData(processName, titleId, contentId, watchlist, symbols)
 }
+
+
+

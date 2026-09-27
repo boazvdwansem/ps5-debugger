@@ -12,8 +12,8 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.rememberWindowState
 import androidx.compose.ui.window.application
-import com.osr.ps5debugger.ui.Ps5DebuggerTheme
-import com.osr.ps5debugger.ui.PS5ThemeColors
+import com.osr.ps5debugger.ui.theme.Ps5DebuggerTheme
+import com.osr.ps5debugger.ui.theme.PS5ThemeColors
 import com.osr.ps5debugger.MobileMainView
 
 fun main() {
@@ -106,3 +106,4 @@ fun main() {
     }
 }
 }
+

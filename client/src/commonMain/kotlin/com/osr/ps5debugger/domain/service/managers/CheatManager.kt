@@ -1,5 +1,6 @@
 package com.osr.ps5debugger.domain.service.managers
 
+import com.osr.ps5debugger.di.MetadataResolver
 import com.osr.ps5debugger.domain.model.*
 import com.osr.ps5debugger.ports.outbound.DebuggerClientPort
 import kotlinx.coroutines.*
@@ -21,7 +22,7 @@ class CheatManager(
     private val _gameProfiles = MutableStateFlow<List<GameCheatProfile>>(emptyList())
     val gameProfiles: StateFlow<List<GameCheatProfile>> = _gameProfiles.asStateFlow()
 
-    // Freeze infrastructure — same pattern as WatchlistManager
+    // Freeze infrastructure â€” same pattern as WatchlistManager
     private val frozenCheatWrites = mutableMapOf<String, List<Pair<Long, ByteArray>>>() // cheatId -> writes
     private val freezeMutex = Mutex()
     private var freezeJob: Job? = null
@@ -40,10 +41,10 @@ class CheatManager(
         _gameProfiles.value = loaded
         loaded.forEach { profile ->
             if (!isBadName(profile.name)) {
-                com.osr.ps5debugger.di.AppContainer.titleIdToName[profile.titleId] = profile.name
+                com.osr.ps5debugger.di.MetadataResolver.titleIdToName[profile.titleId] = profile.name
             }
             if (!profile.platform.isNullOrEmpty()) {
-                com.osr.ps5debugger.di.AppContainer.titleIdToPlatform[profile.titleId] = profile.platform
+                com.osr.ps5debugger.di.MetadataResolver.titleIdToPlatform[profile.titleId] = profile.platform
             }
         }
     }
@@ -55,7 +56,7 @@ class CheatManager(
     fun updateGameName(titleId: String, name: String) {
         if (isBadName(name)) return
         
-        com.osr.ps5debugger.di.AppContainer.titleIdToName[titleId] = name
+        com.osr.ps5debugger.di.MetadataResolver.titleIdToName[titleId] = name
         
         val currentProfiles = _gameProfiles.value.toMutableList()
         var changed = false
@@ -74,7 +75,7 @@ class CheatManager(
     fun updateGameVersion(titleId: String, version: String) {
         if (version.isEmpty()) return
         
-        com.osr.ps5debugger.di.AppContainer.titleIdToVersion[titleId] = version
+        com.osr.ps5debugger.di.MetadataResolver.titleIdToVersion[titleId] = version
         
         val currentProfiles = _gameProfiles.value.toMutableList()
         var changed = false
@@ -93,7 +94,7 @@ class CheatManager(
     fun updateGamePlatform(titleId: String, platform: String) {
         if (platform.isEmpty()) return
         
-        com.osr.ps5debugger.di.AppContainer.titleIdToPlatform[titleId] = platform
+        com.osr.ps5debugger.di.MetadataResolver.titleIdToPlatform[titleId] = platform
         
         val currentProfiles = _gameProfiles.value.toMutableList()
         var changed = false
@@ -118,11 +119,11 @@ class CheatManager(
         }
         
         val iconPath = "/user/appmeta/$titleId/icon0.png"
-        val platform = com.osr.ps5debugger.di.AppContainer.titleIdToPlatform[titleId]
+        val platform = com.osr.ps5debugger.di.MetadataResolver.titleIdToPlatform[titleId]
         
         // Populate global name map for other views
         if (!isBadName(gameName)) {
-            com.osr.ps5debugger.di.AppContainer.titleIdToName[titleId] = gameName
+            com.osr.ps5debugger.di.MetadataResolver.titleIdToName[titleId] = gameName
         }
 
         // Improve name resolution: don't overwrite a good name with a bad one (like eboot.bin or Unknown)
@@ -434,7 +435,7 @@ class CheatManager(
         val targetPath = "$targetDir/$fileName"
 
         return try {
-            val ftpClient = com.osr.ps5debugger.network.Ps5FtpClient(cleanIp)
+            val ftpClient = com.osr.ps5debugger.infrastructure.network.Ps5FtpClient(cleanIp)
             // Ensure parent directories exist
             try { ftpClient.createDirectory("/data") } catch (_: Exception) {}
             try { ftpClient.createDirectory("/data/OnionHEN") } catch (_: Exception) {}
@@ -467,3 +468,4 @@ class CheatManager(
         }
     }
 }
+

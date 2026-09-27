@@ -170,7 +170,7 @@ class WatchlistManager(
 
     private fun parseValueBytes(bytes: ByteArray, type: String): String {
         if (bytes.isEmpty()) return "??"
-        val buf = com.osr.ps5debugger.protocol.BinaryBuffer(bytes)
+        val buf = com.osr.ps5debugger.infrastructure.protocol.BinaryBuffer(bytes)
         return when (type) {
             "Byte"   -> buf.readByte().toString()
             "Int16"  -> buf.readShort().toString()
@@ -189,3 +189,4 @@ class WatchlistManager(
         }
     }
 }
+

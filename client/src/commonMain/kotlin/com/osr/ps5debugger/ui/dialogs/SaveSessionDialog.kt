@@ -18,10 +18,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import com.osr.ps5debugger.PS5ThemeColors
+import com.osr.ps5debugger.ui.theme.PS5ThemeColors
 import com.osr.ps5debugger.di.AppContainer
 import com.osr.ps5debugger.domain.model.MemoryRange
-import com.osr.ps5debugger.ui.icons.PS5Icons
+import com.osr.ps5debugger.ui.common.PS5Icons
 import com.osr.ps5debugger.ui.state.MainState
 import com.osr.ps5debugger.util.SessionManager
 import kotlinx.coroutines.Dispatchers

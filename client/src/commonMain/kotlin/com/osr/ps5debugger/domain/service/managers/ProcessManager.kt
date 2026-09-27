@@ -1,10 +1,11 @@
 package com.osr.ps5debugger.domain.service.managers
 
+import com.osr.ps5debugger.di.MetadataResolver
 import com.osr.ps5debugger.domain.model.Process
 import com.osr.ps5debugger.domain.model.MemoryRange
 import com.osr.ps5debugger.domain.model.LogEntry
 import com.osr.ps5debugger.ports.outbound.DebuggerClientPort
-import com.osr.ps5debugger.protocol.Ps5ProcessInfo
+import com.osr.ps5debugger.infrastructure.protocol.Ps5ProcessInfo
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -39,12 +40,12 @@ class ProcessManager(
     private fun resolveGameName(titleId: String, currentName: String): String {
         // 1. Source of truth: AppContainer map (populated from Cheats and foreground queries)
         if (currentName.isNotEmpty() && !currentName.contains("eboot.bin", ignoreCase = true) && currentName != "Unknown") {
-            com.osr.ps5debugger.di.AppContainer.titleIdToName[titleId] = currentName
+            com.osr.ps5debugger.di.MetadataResolver.titleIdToName[titleId] = currentName
             return currentName
         }
         
         // 2. Check persistent map
-        val mapped = com.osr.ps5debugger.di.AppContainer.titleIdToName[titleId]
+        val mapped = com.osr.ps5debugger.di.MetadataResolver.titleIdToName[titleId]
         if (!mapped.isNullOrEmpty()) return mapped
         
         // 3. Last resort: Hardcoded common IDs (if any)
@@ -68,8 +69,8 @@ class ProcessManager(
         isAttached: MutableStateFlow<Boolean>,
         threadList: MutableStateFlow<List<Int>>,
         selectedLwpid: MutableStateFlow<Int?>,
-        selectedRegs: MutableStateFlow<com.osr.ps5debugger.protocol.GpRegs?>,
-        selectedDbRegs: MutableStateFlow<com.osr.ps5debugger.protocol.DbRegs?>,
+        selectedRegs: MutableStateFlow<com.osr.ps5debugger.infrastructure.protocol.GpRegs?>,
+        selectedDbRegs: MutableStateFlow<com.osr.ps5debugger.infrastructure.protocol.DbRegs?>,
         selectedFsGs: MutableStateFlow<Pair<Long, Long>?>,
         isConnected: MutableStateFlow<Boolean>,
         lastConnectedIp: String?,
@@ -190,3 +191,4 @@ class ProcessManager(
         _vmMaps.value = emptyList()
     }
 }
+

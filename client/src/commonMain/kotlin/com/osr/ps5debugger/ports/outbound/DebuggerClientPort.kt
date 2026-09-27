@@ -2,8 +2,8 @@ package com.osr.ps5debugger.ports.outbound
 
 import com.osr.ps5debugger.domain.model.Process
 import com.osr.ps5debugger.domain.model.MemoryRange
-import com.osr.ps5debugger.protocol.Ps5ProcessInfo
-import com.osr.ps5debugger.protocol.Ps5DebugEvent
+import com.osr.ps5debugger.infrastructure.protocol.Ps5ProcessInfo
+import com.osr.ps5debugger.infrastructure.protocol.Ps5DebugEvent
 import kotlinx.coroutines.flow.SharedFlow
 
 interface DebuggerClientPort {
@@ -18,7 +18,7 @@ interface DebuggerClientPort {
     suspend fun getProcesses(): List<Process>
     suspend fun getMaps(pid: Int): List<MemoryRange>
     suspend fun getProcessInfo(pid: Int): Ps5ProcessInfo
-    suspend fun getForegroundApp(): com.osr.ps5debugger.protocol.Ps5ForegroundApp
+    suspend fun getForegroundApp(): com.osr.ps5debugger.infrastructure.protocol.Ps5ForegroundApp
     suspend fun pullFile(path: String): ByteArray?
     suspend fun readMemory(pid: Int, address: Long, length: Int): ByteArray
     suspend fun uploadElfRpc(pid: Int, elfBytes: ByteArray): Long?
@@ -30,3 +30,4 @@ interface DebuggerClientPort {
     fun startKlogForwarder(ip: String)
     fun stopKlogForwarder()
 }
+

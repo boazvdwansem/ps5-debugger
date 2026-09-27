@@ -1,5 +1,6 @@
 package com.osr.ps5debugger.domain.service
 
+import com.osr.ps5debugger.di.HexCache
 import com.osr.ps5debugger.domain.model.Process
 import com.osr.ps5debugger.domain.model.MemoryRange
 import com.osr.ps5debugger.domain.model.LogEntry
@@ -11,8 +12,8 @@ import com.osr.ps5debugger.domain.service.managers.WatchlistManager
 import com.osr.ps5debugger.ports.inbound.DebuggerUseCase
 import com.osr.ps5debugger.ports.outbound.DebuggerClientPort
 import com.osr.ps5debugger.ports.outbound.LogStoragePort
-import com.osr.ps5debugger.protocol.Ps5ProcessInfo
-import com.osr.ps5debugger.protocol.Ps5DebugEvent
+import com.osr.ps5debugger.infrastructure.protocol.Ps5ProcessInfo
+import com.osr.ps5debugger.infrastructure.protocol.Ps5DebugEvent
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 
@@ -54,11 +55,11 @@ class DebuggerDomainService(
     private val _selectedLwpid = MutableStateFlow<Int?>(null)
     override val selectedLwpid: StateFlow<Int?> = _selectedLwpid.asStateFlow()
 
-    private val _selectedRegs = MutableStateFlow<com.osr.ps5debugger.protocol.GpRegs?>(null)
-    override val selectedRegs: StateFlow<com.osr.ps5debugger.protocol.GpRegs?> = _selectedRegs.asStateFlow()
+    private val _selectedRegs = MutableStateFlow<com.osr.ps5debugger.infrastructure.protocol.GpRegs?>(null)
+    override val selectedRegs: StateFlow<com.osr.ps5debugger.infrastructure.protocol.GpRegs?> = _selectedRegs.asStateFlow()
 
-    private val _selectedDbRegs = MutableStateFlow<com.osr.ps5debugger.protocol.DbRegs?>(null)
-    override val selectedDbRegs: StateFlow<com.osr.ps5debugger.protocol.DbRegs?> = _selectedDbRegs.asStateFlow()
+    private val _selectedDbRegs = MutableStateFlow<com.osr.ps5debugger.infrastructure.protocol.DbRegs?>(null)
+    override val selectedDbRegs: StateFlow<com.osr.ps5debugger.infrastructure.protocol.DbRegs?> = _selectedDbRegs.asStateFlow()
 
     private val _selectedFsGs = MutableStateFlow<Pair<Long, Long>?>(null)
     override val selectedFsGs: StateFlow<Pair<Long, Long>?> = _selectedFsGs.asStateFlow()
@@ -199,11 +200,11 @@ class DebuggerDomainService(
         _selectedLwpid.value = lwpid
     }
 
-    override fun setSelectedRegs(regs: com.osr.ps5debugger.protocol.GpRegs?) {
+    override fun setSelectedRegs(regs: com.osr.ps5debugger.infrastructure.protocol.GpRegs?) {
         _selectedRegs.value = regs
     }
 
-    override fun setSelectedDbRegs(regs: com.osr.ps5debugger.protocol.DbRegs?) {
+    override fun setSelectedDbRegs(regs: com.osr.ps5debugger.infrastructure.protocol.DbRegs?) {
         _selectedDbRegs.value = regs
     }
 
@@ -291,7 +292,7 @@ class DebuggerDomainService(
             var curr = address
             while (readBytes < length) {
                 val pageStart = (curr / 65536L) * 65536L
-                val page = com.osr.ps5debugger.di.AppContainer.hexCache[pageStart]
+                val page = com.osr.ps5debugger.di.HexCache.hexCache[pageStart]
                 val pageOffset = (curr - pageStart).toInt()
                 val inPage = minOf(length - readBytes, (65536L - pageOffset).toInt())
                 if (page != null && pageOffset >= 0 && pageOffset < page.size) {
@@ -443,3 +444,4 @@ class DebuggerDomainService(
         cheatManager.loadCheats(json)
     }
 }
+

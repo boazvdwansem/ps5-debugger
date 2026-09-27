@@ -1,5 +1,6 @@
-package com.osr.ps5debugger.mcp
+package com.osr.ps5debugger.infrastructure.mcp
 
+import com.osr.ps5debugger.domain.service.SymbolManager
 import com.osr.ps5debugger.di.AppContainer
 import java.net.HttpURLConnection
 import java.net.URL
@@ -56,8 +57,8 @@ class McpHttpServerIntegrationTest {
 
     @Test
     fun testSymbolsAndFunctionsEndpoints() {
-        AppContainer.symbolNames[0x400500L] = "main"
-        AppContainer.discoveredFunctions.add(0x400500L)
+        SymbolManager.symbolNames[0x400500L] = "main"
+        SymbolManager.discoveredFunctions.add(0x400500L)
 
         val symConn = URL("http://127.0.0.1:8599/api/symbols").openConnection() as HttpURLConnection
         assertEquals(200, symConn.responseCode)
@@ -70,3 +71,4 @@ class McpHttpServerIntegrationTest {
         assertTrue(funcBody.contains("main"))
     }
 }
+

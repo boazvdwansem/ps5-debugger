@@ -47,3 +47,5 @@ fun rememberWatchListState(
     onJumpToAddress: (Long) -> Unit,
     scope: CoroutineScope = rememberCoroutineScope()
 ) = remember { WatchListState(scope, onJumpToAddress) }
+
+

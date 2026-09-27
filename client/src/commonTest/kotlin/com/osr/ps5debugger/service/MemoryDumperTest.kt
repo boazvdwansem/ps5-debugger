@@ -1,4 +1,4 @@
-package com.osr.ps5debugger.service
+package com.osr.ps5debugger.domain.service
 
 import com.osr.ps5debugger.domain.model.MemoryRange
 import com.osr.ps5debugger.domain.model.Process
@@ -6,10 +6,10 @@ import com.osr.ps5debugger.domain.model.LogEntry
 import com.osr.ps5debugger.domain.model.WatchItem
 import com.osr.ps5debugger.ports.outbound.DebuggerClientPort
 import com.osr.ps5debugger.ports.inbound.DebuggerUseCase
-import com.osr.ps5debugger.protocol.Ps5ProcessInfo
-import com.osr.ps5debugger.protocol.Ps5DebugEvent
-import com.osr.ps5debugger.protocol.GpRegs
-import com.osr.ps5debugger.protocol.DbRegs
+import com.osr.ps5debugger.infrastructure.protocol.Ps5ProcessInfo
+import com.osr.ps5debugger.infrastructure.protocol.Ps5DebugEvent
+import com.osr.ps5debugger.infrastructure.protocol.GpRegs
+import com.osr.ps5debugger.infrastructure.protocol.DbRegs
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -36,7 +36,7 @@ class MemoryDumperTest {
             MemoryRange(name = "unnamed", start = 0xA00000000L, end = 0xA00020000L, offset = 0, protections = 3)
         )
 
-        val merged = MemoryDumper.mergeLibraryMaps(maps)
+        val merged = MemoryDumperService.mergeLibraryMaps(maps)
 
         // 1 entry for libc.prx, 1 entry for libkernel.prx, 1 unified entry for all unnamed = 3 entries total
         assertEquals(3, merged.size)
@@ -83,7 +83,7 @@ class MemoryDumperTest {
             val seg1 = MemoryRange("libc.prx", start = 0x1000L, end = 0x1000L + seg1Data.size, offset = 0, protections = 5)
             val seg2 = MemoryRange("libc.prx", start = 0x1000L + seg1Data.size, end = 0x1000L + seg1Data.size + seg2Data.size, offset = seg1Data.size.toLong(), protections = 3)
 
-            val merged = MemoryDumper.mergeLibraryMaps(listOf(seg1, seg2))
+            val merged = MemoryDumperService.mergeLibraryMaps(listOf(seg1, seg2))
             assertEquals(1, merged.size)
 
             val loggedMessages = mutableListOf<String>()
@@ -113,7 +113,7 @@ class MemoryDumperTest {
                 }
                 override suspend fun writeMemory(pid: Int, address: Long, data: ByteArray): Boolean = true
                 override suspend fun writeMemoryMulti(pid: Int, writes: List<Pair<Long, ByteArray>>, withStatusReport: Boolean): Boolean = true
-                override suspend fun getForegroundApp(): com.osr.ps5debugger.protocol.Ps5ForegroundApp = com.osr.ps5debugger.protocol.Ps5ForegroundApp(0, "", "", "", "")
+                override suspend fun getForegroundApp(): com.osr.ps5debugger.infrastructure.protocol.Ps5ForegroundApp = com.osr.ps5debugger.infrastructure.protocol.Ps5ForegroundApp(0, "", "", "", "")
                 override suspend fun pullFile(path: String): ByteArray? = null
                 override suspend fun uploadElfRpc(pid: Int, elfBytes: ByteArray): Long? = null
                 override fun startDebugChannel() {}
@@ -152,6 +152,7 @@ class MemoryDumperTest {
                 override suspend fun refreshProcesses() {}
                 override suspend fun selectProcess(proc: Process?) {}
                 override suspend fun loadMemoryMaps(proc: Process) {}
+                override fun setOfflineSession(process: Process?, processInfo: Ps5ProcessInfo?, maps: List<MemoryRange>) {}
                 override suspend fun pullFile(path: String): Result<ByteArray> = Result.failure(Exception())
                 override suspend fun readMemory(address: Long, length: Int): Result<ByteArray> = Result.success(ByteArray(length))
                 override suspend fun writeMemory(address: Long, data: ByteArray): Result<Boolean> = Result.success(true)
@@ -186,7 +187,7 @@ class MemoryDumperTest {
                 override fun loadCheats(json: String) {}
             }
 
-            val result = MemoryDumper.dumpRegions(
+            val result = MemoryDumperService.dumpRegions(
                 pid = 42,
                 regions = merged,
                 outputDir = tempDir,
@@ -234,7 +235,7 @@ class MemoryDumperTest {
             val seg1 = MemoryRange("libc.prx", start = 0x800000000L, end = 0x800000000L + seg1Data.size, offset = 0, protections = 5)
             val seg2 = MemoryRange("libc.prx", start = 0x800004000L, end = 0x800004000L + seg2Data.size, offset = 0x4000, protections = 1)
 
-            val merged = MemoryDumper.mergeLibraryMaps(listOf(seg1, seg2))
+            val merged = MemoryDumperService.mergeLibraryMaps(listOf(seg1, seg2))
             assertEquals(1, merged.size)
 
             val loggedMessages = mutableListOf<String>()
@@ -264,7 +265,7 @@ class MemoryDumperTest {
                 }
                 override suspend fun writeMemory(pid: Int, address: Long, data: ByteArray): Boolean = true
                 override suspend fun writeMemoryMulti(pid: Int, writes: List<Pair<Long, ByteArray>>, withStatusReport: Boolean): Boolean = true
-                override suspend fun getForegroundApp(): com.osr.ps5debugger.protocol.Ps5ForegroundApp = com.osr.ps5debugger.protocol.Ps5ForegroundApp(0, "", "", "", "")
+                override suspend fun getForegroundApp(): com.osr.ps5debugger.infrastructure.protocol.Ps5ForegroundApp = com.osr.ps5debugger.infrastructure.protocol.Ps5ForegroundApp(0, "", "", "", "")
                 override suspend fun pullFile(path: String): ByteArray? = null
                 override suspend fun uploadElfRpc(pid: Int, elfBytes: ByteArray): Long? = null
                 override fun startDebugChannel() {}
@@ -303,6 +304,7 @@ class MemoryDumperTest {
                 override suspend fun refreshProcesses() {}
                 override suspend fun selectProcess(proc: Process?) {}
                 override suspend fun loadMemoryMaps(proc: Process) {}
+                override fun setOfflineSession(process: Process?, processInfo: Ps5ProcessInfo?, maps: List<MemoryRange>) {}
                 override suspend fun pullFile(path: String): Result<ByteArray> = Result.failure(Exception())
                 override suspend fun readMemory(address: Long, length: Int): Result<ByteArray> = Result.success(ByteArray(length))
                 override suspend fun writeMemory(address: Long, data: ByteArray): Result<Boolean> = Result.success(true)
@@ -337,7 +339,7 @@ class MemoryDumperTest {
                 override fun loadCheats(json: String) {}
             }
 
-            val result = MemoryDumper.dumpRegions(
+            val result = MemoryDumperService.dumpRegions(
                 pid = 42,
                 regions = merged,
                 outputDir = tempDir,
@@ -387,3 +389,4 @@ class MemoryDumperTest {
         }
     }
 }
+

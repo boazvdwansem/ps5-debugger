@@ -1,10 +1,10 @@
-package com.osr.ps5debugger.protocol
+package com.osr.ps5debugger.infrastructure.protocol
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
-import com.osr.ps5debugger.protocol.ProtocolConstants
-import com.osr.ps5debugger.protocol.BinaryBuffer
+import com.osr.ps5debugger.infrastructure.protocol.ProtocolConstants
+import com.osr.ps5debugger.infrastructure.protocol.BinaryBuffer
 
 class ProtocolTest {
 
@@ -100,3 +100,4 @@ class ProtocolTest {
         }
     }
 }
+

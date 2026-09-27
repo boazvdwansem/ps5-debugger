@@ -4,10 +4,10 @@ import com.osr.ps5debugger.domain.model.Process
 import com.osr.ps5debugger.domain.model.MemoryRange
 import com.osr.ps5debugger.domain.model.LogEntry
 import com.osr.ps5debugger.domain.model.WatchItem
-import com.osr.ps5debugger.protocol.Ps5ProcessInfo
-import com.osr.ps5debugger.protocol.Ps5DebugEvent
-import com.osr.ps5debugger.protocol.GpRegs
-import com.osr.ps5debugger.protocol.DbRegs
+import com.osr.ps5debugger.infrastructure.protocol.Ps5ProcessInfo
+import com.osr.ps5debugger.infrastructure.protocol.Ps5DebugEvent
+import com.osr.ps5debugger.infrastructure.protocol.GpRegs
+import com.osr.ps5debugger.infrastructure.protocol.DbRegs
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.SharedFlow
 
@@ -76,3 +76,4 @@ interface DebuggerUseCase {
     fun saveCheats(onResult: (String) -> Unit)
     fun loadCheats(json: String)
 }
+

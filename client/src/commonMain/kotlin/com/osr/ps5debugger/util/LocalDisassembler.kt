@@ -1,6 +1,6 @@
 package com.osr.ps5debugger.util
 
-import com.osr.ps5debugger.protocol.Ps5DisasmInstr
+import com.osr.ps5debugger.infrastructure.protocol.Ps5DisasmInstr
 
 object LocalDisassembler {
     fun disassemble(bytes: ByteArray, baseAddr: Long, syncAddresses: Set<Long> = emptySet()): List<Ps5DisasmInstr> {
@@ -339,3 +339,4 @@ object LocalDisassembler {
         return kind
     }
 }
+

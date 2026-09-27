@@ -1,5 +1,9 @@
 package com.osr.ps5debugger.ui.state
 
+import com.osr.ps5debugger.di.RegionPreloader
+import com.osr.ps5debugger.di.HexCache
+import com.osr.ps5debugger.di.DisassemblyCache
+import com.osr.ps5debugger.domain.service.SymbolManager
 import androidx.compose.runtime.*
 import com.osr.ps5debugger.di.AppContainer
 import com.osr.ps5debugger.domain.model.MemoryRange
@@ -8,7 +12,7 @@ import com.osr.ps5debugger.ui.watchlist.watchListFromJson
 import com.osr.ps5debugger.ui.watchlist.watchListToJson
 import com.osr.ps5debugger.ui.watchlist.sessionToJson
 import com.osr.ps5debugger.ui.watchlist.sessionFromJson
-import com.osr.ps5debugger.ui.disasm.DisasmFormatter
+import com.osr.ps5debugger.ui.memory.disasm.DisasmFormatter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
@@ -54,7 +58,7 @@ class MainState(
         selectionStart = null
         selectionEnd = null
         if (!AppContainer.isOfflineSession) {
-            AppContainer.clearHexCache()
+            HexCache.clearHexCache()
         }
     }
 
@@ -68,13 +72,13 @@ class MainState(
                         var p = (map.start / 65536L) * 65536L
                         var hasData = false
                         while (p < map.end) {
-                            if (AppContainer.hexCache.containsKey(p)) {
+                            if (HexCache.hexCache.containsKey(p)) {
                                 hasData = true
                                 break
                             }
                             p += 65536L
                         }
-                        hasData || AppContainer.instructionsCache.keys.any { it.startsWith("${map.start}_${map.end}") }
+                        hasData || DisassemblyCache.instructionsCache.keys.any { it.startsWith("${map.start}_${map.end}") }
                     } ?: vmMaps.firstOrNull()
 
                     activeMap = targetMap
@@ -146,16 +150,16 @@ class MainState(
                                     val map = vmMaps.firstOrNull { it.name == sym.mapName }
                                     if (map != null) {
                                         val absAddr = map.start + sym.offset
-                                        AppContainer.renameSymbol(absAddr, sym.name)
+                                        SymbolManager.renameSymbol(absAddr, sym.name)
                                         if (sym.isFunction) {
-                                            if (!AppContainer.discoveredFunctions.contains(absAddr)) {
-                                                AppContainer.discoveredFunctions.add(absAddr)
-                                                AppContainer.discoveredFunctions.sortBy { it.toULong() }
+                                            if (!SymbolManager.discoveredFunctions.contains(absAddr)) {
+                                                SymbolManager.discoveredFunctions.add(absAddr)
+                                                SymbolManager.discoveredFunctions.sortBy { it.toULong() }
                                             }
                                         } else {
-                                            if (!AppContainer.discoveredJumpTargets.contains(absAddr)) {
-                                                AppContainer.discoveredJumpTargets.add(absAddr)
-                                                AppContainer.discoveredJumpTargets.sortBy { it.toULong() }
+                                            if (!SymbolManager.discoveredJumpTargets.contains(absAddr)) {
+                                                SymbolManager.discoveredJumpTargets.add(absAddr)
+                                                SymbolManager.discoveredJumpTargets.sortBy { it.toULong() }
                                             }
                                         }
                                     }
@@ -181,10 +185,10 @@ class MainState(
                             activeMap = mergedRange
                             
                             if (entry != null) {
-                                AppContainer.elfEntryPoint = entry
-                                if (!AppContainer.discoveredFunctions.contains(entry)) {
-                                    AppContainer.discoveredFunctions.add(entry)
-                                    AppContainer.discoveredFunctions.sortBy { it.toULong() }
+                                SymbolManager.elfEntryPoint = entry
+                                if (!SymbolManager.discoveredFunctions.contains(entry)) {
+                                    SymbolManager.discoveredFunctions.add(entry)
+                                    SymbolManager.discoveredFunctions.sortBy { it.toULong() }
                                 }
                                 jumpToAddress = entry
                                 selectionStart = entry
@@ -233,7 +237,7 @@ class MainState(
         }
         scope.launch {
             try {
-            val disasmStart = AppContainer.getDisassemblyStartForMap(map)
+            val disasmStart = RegionPreloader.getDisassemblyStartForMap(map)
             val length = (map.end - disasmStart).coerceAtMost(256 * 1024L).toInt()
             val content = if ((map.protections and 4) == 0) {
                 // Non-executable: export raw hex instead
@@ -345,3 +349,5 @@ fun rememberMainState(
     scope: CoroutineScope = rememberCoroutineScope(),
     onExit: () -> Unit = {}
 ) = remember { MainState(scope, onExit) }
+
+

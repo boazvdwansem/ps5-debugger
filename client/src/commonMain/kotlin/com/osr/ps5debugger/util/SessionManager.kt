@@ -1,12 +1,15 @@
 package com.osr.ps5debugger.util
 
+import com.osr.ps5debugger.di.HexCache
+import com.osr.ps5debugger.di.DisassemblyCache
+import com.osr.ps5debugger.domain.service.SymbolManager
 import com.osr.ps5debugger.di.AppContainer
 import com.osr.ps5debugger.domain.model.MemoryRange
 import com.osr.ps5debugger.domain.model.Process
 import com.osr.ps5debugger.domain.model.WatchItem
-import com.osr.ps5debugger.protocol.Ps5DisasmInstr
-import com.osr.ps5debugger.protocol.Ps5ProcessInfo
-import com.osr.ps5debugger.ui.DisasmLine
+import com.osr.ps5debugger.infrastructure.protocol.Ps5DisasmInstr
+import com.osr.ps5debugger.infrastructure.protocol.Ps5ProcessInfo
+import com.osr.ps5debugger.ui.memory.disasm.DisasmLine
 import com.osr.ps5debugger.ui.watchlist.SymbolSaveItem
 import com.osr.ps5debugger.ui.watchlist.extractJsonObjects
 import com.osr.ps5debugger.ui.watchlist.jsonEscape
@@ -179,7 +182,7 @@ object SessionManager {
                     } else {
                         var p = (reg.start / pageSize) * pageSize
                         while (p < reg.end) {
-                            val pageBytes = AppContainer.hexCache[p]
+                            val pageBytes = HexCache.hexCache[p]
                             if (pageBytes != null) {
                                 pages.add(p to pageBytes)
                                 regCachedBytes += pageBytes.size
@@ -197,7 +200,7 @@ object SessionManager {
                 var hasDisasmData = false
                 if (!excludeDisassembly) {
                     val lines = mutableListOf<DisasmLine>()
-                    AppContainer.instructionsCache.forEach { (key, cachedLines) ->
+                    DisassemblyCache.instructionsCache.forEach { (key, cachedLines) ->
                         if (key.startsWith("${reg.start}_${reg.end}")) {
                             lines.addAll(cachedLines)
                         }
@@ -550,12 +553,12 @@ object SessionManager {
 
                 // 1. Reset caches safely
                 androidx.compose.runtime.snapshots.Snapshot.withMutableSnapshot {
-                    AppContainer.clearHexCache()
-                    AppContainer.instructionsCache.clear()
-                    AppContainer.disassemblyProgressCache.clear()
-                    AppContainer.symbolNames.clear()
-                    AppContainer.discoveredFunctions.clear()
-                    AppContainer.discoveredJumpTargets.clear()
+                    HexCache.clearHexCache()
+                    DisassemblyCache.instructionsCache.clear()
+                    DisassemblyCache.disassemblyProgressCache.clear()
+                    SymbolManager.symbolNames.clear()
+                    SymbolManager.discoveredFunctions.clear()
+                    SymbolManager.discoveredJumpTargets.clear()
                 }
                 AppContainer.debuggerUseCase.clearWatchlist()
 
@@ -584,7 +587,7 @@ object SessionManager {
 
                     // Register progress for this region so Hex Viewer recognizes it as complete
                     val regionKey = "${reg.start}-${reg.end}"
-                    val progress = AppContainer.hexProgressCache.getOrPut(regionKey) { AppContainer.HexRegionProgress() }
+                    val progress = HexCache.hexProgressCache.getOrPut(regionKey) { HexCache.HexRegionProgress() }
                     progress.isComplete = true
                     progress.progress = 1.0f
                     progress.loadedBytes = reg.end - reg.start
@@ -598,7 +601,7 @@ object SessionManager {
 
                 androidx.compose.runtime.snapshots.Snapshot.withMutableSnapshot {
                     for ((pageAddr, pageBytes) in loadedPages) {
-                        AppContainer.hexCache[pageAddr] = pageBytes
+                        HexCache.hexCache[pageAddr] = pageBytes
                     }
                 }
 
@@ -651,10 +654,10 @@ object SessionManager {
                                 }
 
                                 val mapKey = "${reg.start}_${reg.end}_${reg.name}"
-                                val list = AppContainer.getInstructions(mapKey)
+                                val list = DisassemblyCache.getInstructions(mapKey)
                                 list.clear()
                                 list.addAll(restoredLines)
-                                AppContainer.disassemblyProgressCache[mapKey] = 1.0f
+                                DisassemblyCache.disassemblyProgressCache[mapKey] = 1.0f
                             }
                         }
                     }
@@ -665,26 +668,26 @@ object SessionManager {
                     val map = finalVmMaps.firstOrNull { it.name == sym.mapName }
                     if (map != null) {
                         val absAddr = map.start + sym.offset
-                        AppContainer.renameSymbol(absAddr, sym.name)
-                        if (sym.isFunction && !AppContainer.discoveredFunctions.contains(absAddr)) {
-                            AppContainer.discoveredFunctions.add(absAddr)
+                        SymbolManager.renameSymbol(absAddr, sym.name)
+                        if (sym.isFunction && !SymbolManager.discoveredFunctions.contains(absAddr)) {
+                            SymbolManager.discoveredFunctions.add(absAddr)
                         }
                     }
                 }
                 for (f in functions) {
-                    if (!AppContainer.discoveredFunctions.contains(f)) {
-                        AppContainer.discoveredFunctions.add(f)
+                    if (!SymbolManager.discoveredFunctions.contains(f)) {
+                        SymbolManager.discoveredFunctions.add(f)
                     }
                 }
-                AppContainer.discoveredFunctions.sortBy { it.toULong() }
+                SymbolManager.discoveredFunctions.sortBy { it.toULong() }
 
                 for (j in jumpTargets) {
-                    if (!AppContainer.discoveredJumpTargets.contains(j)) {
-                        AppContainer.discoveredJumpTargets.add(j)
+                    if (!SymbolManager.discoveredJumpTargets.contains(j)) {
+                        SymbolManager.discoveredJumpTargets.add(j)
                     }
                 }
-                AppContainer.discoveredJumpTargets.sortBy { it.toULong() }
-                AppContainer.elfEntryPoint = elfEntryPoint
+                SymbolManager.discoveredJumpTargets.sortBy { it.toULong() }
+                SymbolManager.elfEntryPoint = elfEntryPoint
 
                 // 5. Restore Watchlist
                 for (item in watchlist) {
@@ -717,3 +720,7 @@ object SessionManager {
         }
     }
 }
+
+
+
+

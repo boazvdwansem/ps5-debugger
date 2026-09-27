@@ -23,10 +23,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.osr.ps5debugger.PS5ThemeColors
+import com.osr.ps5debugger.ui.theme.PS5ThemeColors
 import com.osr.ps5debugger.di.AppContainer
 import com.osr.ps5debugger.domain.model.WatchItem
-import com.osr.ps5debugger.ui.icons.PS5Icons
+import com.osr.ps5debugger.ui.common.PS5Icons
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
@@ -404,3 +404,7 @@ private fun watchRowTextFieldColors() = OutlinedTextFieldDefaults.colors(
     unfocusedTextColor = PS5ThemeColors.TextMain,
     cursorColor = PS5ThemeColors.AccentCyan
 )
+
+
+
+

@@ -5,7 +5,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import com.osr.ps5debugger.MobileMainView
-import com.osr.ps5debugger.Ps5DebuggerTheme
+import com.osr.ps5debugger.ui.theme.Ps5DebuggerTheme
 
 class MainActivity : ComponentActivity() {
     private var saveCallback: ((Boolean) -> Unit)? = null
@@ -112,3 +112,4 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
+

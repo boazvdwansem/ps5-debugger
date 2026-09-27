@@ -1,5 +1,6 @@
 package com.osr.ps5debugger
 
+import com.osr.ps5debugger.domain.service.SymbolManager
 import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -22,13 +23,16 @@ import androidx.compose.ui.unit.sp
 import com.osr.ps5debugger.di.AppContainer
 import com.osr.ps5debugger.domain.model.MemoryRange
 import androidx.compose.ui.text.font.FontFamily
-import com.osr.ps5debugger.ui.HexViewer
-import com.osr.ps5debugger.ui.MemoryViewerLayout
-import com.osr.ps5debugger.ui.MemoryScannerView
-import com.osr.ps5debugger.ui.WatchList
-import com.osr.ps5debugger.service.MemoryDumper
-import com.osr.ps5debugger.ui.MemoryDumperView
-import com.osr.ps5debugger.ui.LoggerConsole
+import com.osr.ps5debugger.ui.memory.hex.HexViewer
+import com.osr.ps5debugger.ui.memory.MemoryViewerLayout
+import com.osr.ps5debugger.ui.scanner.MemoryScannerView
+import com.osr.ps5debugger.ui.watchlist.WatchList
+import com.osr.ps5debugger.ui.theme.PS5ThemeColors
+import com.osr.ps5debugger.ui.theme.Ps5DebuggerTheme
+import com.osr.ps5debugger.ui.settings.SettingsDialog
+import com.osr.ps5debugger.domain.service.MemoryDumperService
+import com.osr.ps5debugger.ui.dumper.MemoryDumperView
+import com.osr.ps5debugger.ui.logger.LoggerConsole
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -179,10 +183,10 @@ fun MobileMainView() {
                             if (mergedRange != null) {
                                 activeMap = mergedRange
                                 if (entry != null) {
-                                    AppContainer.elfEntryPoint = entry
-                                    if (!AppContainer.discoveredFunctions.contains(entry)) {
-                                        AppContainer.discoveredFunctions.add(entry)
-                                        AppContainer.discoveredFunctions.sortBy { it.toULong() }
+                                    SymbolManager.elfEntryPoint = entry
+                                    if (!SymbolManager.discoveredFunctions.contains(entry)) {
+                                        SymbolManager.discoveredFunctions.add(entry)
+                                        SymbolManager.discoveredFunctions.sortBy { it.toULong() }
                                     }
                                     jumpToAddress = entry
                                 } else {
@@ -304,7 +308,7 @@ fun MobileMainView() {
             }
 
             if (showSettings) {
-                com.osr.ps5debugger.ui.screens.SettingsDialog(onClose = { showSettings = false })
+                SettingsDialog(onClose = { showSettings = false })
             }
         }
     }
@@ -463,7 +467,7 @@ fun MobileConnectionScreen(onLoadEboot: (() -> Unit)? = null) {
                             isDiscovering = true
                             statusMessage = "Scanning network..."
                             statusColor = PS5ThemeColors.AccentCyan
-                            val list = com.osr.ps5debugger.network.Ps5Discovery.discoverConsoles()
+                            val list = com.osr.ps5debugger.infrastructure.network.Ps5Discovery.discoverConsoles()
                             if (list.isNotEmpty()) {
                                 ipInput = list.first()
                                 statusMessage = "Found console at ${list.first()}"
@@ -496,7 +500,7 @@ fun MobileConnectionScreen(onLoadEboot: (() -> Unit)? = null) {
                             val port = com.osr.ps5debugger.util.DefaultIpHelper.getPayloadPort()
                             statusMessage = "Injecting debug payload to $targetIp:$port..."
                             statusColor = PS5ThemeColors.AccentCyan
-                            val result = com.osr.ps5debugger.network.Ps5PayloadInjector.injectPayload(targetIp, port)
+                            val result = com.osr.ps5debugger.infrastructure.network.Ps5PayloadInjector.injectPayload(targetIp, port)
                             result.onSuccess { bytesSent ->
                                 val sizeKb = bytesSent / 1024
                                 statusMessage = "Payload injected successfully ($sizeKb KB sent to $targetIp:$port)"
@@ -798,7 +802,7 @@ fun MobileRegionSelector(
     onMapSelected: (MemoryRange) -> Unit
 ) {
     val maps by AppContainer.debuggerUseCase.vmMaps.collectAsState()
-    val displayEntries = remember(maps) { MemoryDumper.mergeLibraryMaps(maps) }
+    val displayEntries = remember(maps) { MemoryDumperService.mergeLibraryMaps(maps) }
     var searchText by remember { mutableStateOf("") }
     var clickedMapId by remember { mutableStateOf<String?>(null) }
     val coroutineScope = rememberCoroutineScope()
@@ -920,3 +924,6 @@ fun MobileRegionSelector(
         }
     }
 }
+
+
+

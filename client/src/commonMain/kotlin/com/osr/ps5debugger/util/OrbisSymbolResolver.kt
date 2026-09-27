@@ -1,8 +1,9 @@
 package com.osr.ps5debugger.util
 
+import com.osr.ps5debugger.domain.service.SymbolManager
 import com.osr.ps5debugger.di.AppContainer
-import com.osr.ps5debugger.ui.DisasmLine
-import com.osr.ps5debugger.ui.disasm.DisasmFormatter
+import com.osr.ps5debugger.ui.memory.disasm.DisasmLine
+import com.osr.ps5debugger.ui.memory.disasm.DisasmFormatter
 import java.io.File
 import java.io.BufferedReader
 import java.io.FileReader
@@ -102,9 +103,9 @@ object OrbisSymbolResolver {
                         val name = syscalls[sysNum]
                         if (name != null) {
                             val targetAddr = prevLine.instr.addr
-                            AppContainer.symbolNames[targetAddr] = name
-                            if (!AppContainer.discoveredFunctions.contains(targetAddr)) {
-                                AppContainer.discoveredFunctions.add(targetAddr)
+                            SymbolManager.symbolNames[targetAddr] = name
+                            if (!SymbolManager.discoveredFunctions.contains(targetAddr)) {
+                                SymbolManager.discoveredFunctions.add(targetAddr)
                             }
                             break
                         }
@@ -115,15 +116,17 @@ object OrbisSymbolResolver {
 
         // 2. Resolve any symbols whose name contains or matches a NID
         // We still check everything here as symbolNames is a global map and might have been updated
-        val currentSymbols = AppContainer.symbolNames.toMap()
+        val currentSymbols = SymbolManager.symbolNames.toMap()
         for ((addr, name) in currentSymbols) {
             if (name.contains("#")) {
                 val resolvedName = nidDb[name.split("#")[0]]
-                if (resolvedName != null) AppContainer.symbolNames[addr] = resolvedName
+                if (resolvedName != null) SymbolManager.symbolNames[addr] = resolvedName
             } else if (nidDb.containsKey(name)) {
                 val resolvedName = nidDb[name]
-                if (resolvedName != null) AppContainer.symbolNames[addr] = resolvedName
+                if (resolvedName != null) SymbolManager.symbolNames[addr] = resolvedName
             }
         }
     }
 }
+
+

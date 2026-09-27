@@ -39,8 +39,8 @@ import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import androidx.compose.ui.res.painterResource
 import com.osr.ps5debugger.ui.MainView
-import com.osr.ps5debugger.PS5ThemeColors
-import com.osr.ps5debugger.Ps5DebuggerTheme
+import com.osr.ps5debugger.ui.theme.PS5ThemeColors
+import com.osr.ps5debugger.ui.theme.Ps5DebuggerTheme
 import com.osr.ps5debugger.di.AppContainer
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.awt.awtEventOrNull
@@ -60,17 +60,17 @@ fun main() {
     } catch (_: Throwable) {}
 
     if (com.osr.ps5debugger.util.DefaultIpHelper.isMcpEnabled()) {
-        com.osr.ps5debugger.mcp.McpHttpServer.start()
+        com.osr.ps5debugger.infrastructure.mcp.McpHttpServer.start()
     }
     AppContainer.onMcpServerToggled = { enabled ->
         if (enabled) {
-            com.osr.ps5debugger.mcp.McpHttpServer.start()
+            com.osr.ps5debugger.infrastructure.mcp.McpHttpServer.start()
         } else {
-            com.osr.ps5debugger.mcp.McpHttpServer.stop()
+            com.osr.ps5debugger.infrastructure.mcp.McpHttpServer.stop()
         }
     }
     Runtime.getRuntime().addShutdownHook(Thread {
-        com.osr.ps5debugger.mcp.McpHttpServer.stop()
+        com.osr.ps5debugger.infrastructure.mcp.McpHttpServer.stop()
     })
 
     AppContainer.filePicker = object : com.osr.ps5debugger.ports.inbound.FilePicker {
@@ -190,7 +190,7 @@ fun main() {
     application {
         val onAppExit = {
             try {
-                com.osr.ps5debugger.mcp.McpHttpServer.stop()
+                com.osr.ps5debugger.infrastructure.mcp.McpHttpServer.stop()
             } catch (_: Exception) {}
             try {
                 AppContainer.clientAdapter.stopKlogForwarder()
@@ -514,20 +514,20 @@ fun main() {
         }
 
         DisposableEffect(window) {
-            com.osr.ps5debugger.ui.FileBrowserDragDropHelper.mainWindow = window
-            com.osr.ps5debugger.ui.FileBrowserDragDropHelper.startDragOut = { pointerEvent ->
+            com.osr.ps5debugger.ui.filebrowser.FileBrowserDragDropHelper.mainWindow = window
+            com.osr.ps5debugger.ui.filebrowser.FileBrowserDragDropHelper.startDragOut = { pointerEvent ->
                 val pe = pointerEvent as? androidx.compose.ui.input.pointer.PointerEvent
                 val awtEvent = pe?.awtEventOrNull
                 if (awtEvent != null) {
                     val comp = window.contentPane as javax.swing.JComponent
-                    comp.transferHandler = com.osr.ps5debugger.ui.FileBrowserTransferHandler()
+                    comp.transferHandler = com.osr.ps5debugger.ui.filebrowser.FileBrowserTransferHandler()
                     comp.transferHandler.exportAsDrag(comp, awtEvent, javax.swing.TransferHandler.COPY)
                 }
             }
 
             val dropTarget = java.awt.dnd.DropTarget(window, object : java.awt.dnd.DropTargetListener {
                 override fun dragEnter(dtde: java.awt.dnd.DropTargetDragEvent) {
-                    if (com.osr.ps5debugger.ui.FileBrowserDragDropHelper.isFileBrowserActive && 
+                    if (com.osr.ps5debugger.ui.filebrowser.FileBrowserDragDropHelper.isFileBrowserActive && 
                         dtde.isDataFlavorSupported(java.awt.datatransfer.DataFlavor.javaFileListFlavor)) {
                         dtde.acceptDrag(java.awt.dnd.DnDConstants.ACTION_COPY)
                     } else {
@@ -536,7 +536,7 @@ fun main() {
                 }
 
                 override fun dragOver(dtde: java.awt.dnd.DropTargetDragEvent) {
-                    if (com.osr.ps5debugger.ui.FileBrowserDragDropHelper.isFileBrowserActive && 
+                    if (com.osr.ps5debugger.ui.filebrowser.FileBrowserDragDropHelper.isFileBrowserActive && 
                         dtde.isDataFlavorSupported(java.awt.datatransfer.DataFlavor.javaFileListFlavor)) {
                         dtde.acceptDrag(java.awt.dnd.DnDConstants.ACTION_COPY)
                     } else {
@@ -548,7 +548,7 @@ fun main() {
                 override fun dragExit(dte: java.awt.dnd.DropTargetEvent) {}
 
                 override fun drop(dtde: java.awt.dnd.DropTargetDropEvent) {
-                    if (!com.osr.ps5debugger.ui.FileBrowserDragDropHelper.isFileBrowserActive || 
+                    if (!com.osr.ps5debugger.ui.filebrowser.FileBrowserDragDropHelper.isFileBrowserActive || 
                         !dtde.isDataFlavorSupported(java.awt.datatransfer.DataFlavor.javaFileListFlavor)) {
                         dtde.rejectDrop()
                         return
@@ -559,33 +559,33 @@ fun main() {
                         val transferable = dtde.transferable
                         val files = transferable.getTransferData(java.awt.datatransfer.DataFlavor.javaFileListFlavor) as List<java.io.File>
                         
-                        val consoleIp = com.osr.ps5debugger.ui.FileBrowserDragDropHelper.consoleIp
-                        val currentPath = com.osr.ps5debugger.ui.FileBrowserDragDropHelper.currentPath
+                        val consoleIp = com.osr.ps5debugger.ui.filebrowser.FileBrowserDragDropHelper.consoleIp
+                        val currentPath = com.osr.ps5debugger.ui.filebrowser.FileBrowserDragDropHelper.currentPath
                         
                         if (consoleIp.isNotEmpty() && files.isNotEmpty()) {
-                            com.osr.ps5debugger.ui.FileBrowserDragDropHelper.onUploadStarted?.invoke()
+                            com.osr.ps5debugger.ui.filebrowser.FileBrowserDragDropHelper.onUploadStarted?.invoke()
                             
                             Thread {
                                 try {
-                                    val ftpClient = com.osr.ps5debugger.network.Ps5FtpClient(consoleIp)
+                                    val ftpClient = com.osr.ps5debugger.infrastructure.network.Ps5FtpClient(consoleIp)
                                     
                                     // Reset global choices for this operation batch
-                                    com.osr.ps5debugger.ui.FileBrowserDragDropHelper.rememberConflictChoice = false
-                                    com.osr.ps5debugger.ui.FileBrowserDragDropHelper.conflictResolution = null
+                                    com.osr.ps5debugger.ui.filebrowser.FileBrowserDragDropHelper.rememberConflictChoice = false
+                                    com.osr.ps5debugger.ui.filebrowser.FileBrowserDragDropHelper.conflictResolution = null
 
                                     var currentItem = 0
                                     val totalItems = files.size
 
                                     javax.swing.SwingUtilities.invokeLater {
-                                        com.osr.ps5debugger.ui.FileBrowserDragDropHelper.isTransferring = true
-                                        com.osr.ps5debugger.ui.FileBrowserDragDropHelper.transferProgress = 0f
-                                        com.osr.ps5debugger.ui.FileBrowserDragDropHelper.transferStatusText = "Initializing uploads..."
+                                        com.osr.ps5debugger.ui.filebrowser.FileBrowserDragDropHelper.isTransferring = true
+                                        com.osr.ps5debugger.ui.filebrowser.FileBrowserDragDropHelper.transferProgress = 0f
+                                        com.osr.ps5debugger.ui.filebrowser.FileBrowserDragDropHelper.transferStatusText = "Initializing uploads..."
                                     }
 
                                     fun checkConflictAndProceed(fileName: String, targetPath: String): Boolean {
-                                        if (com.osr.ps5debugger.ui.FileBrowserDragDropHelper.rememberConflictChoice && 
-                                            com.osr.ps5debugger.ui.FileBrowserDragDropHelper.conflictResolution != null) {
-                                            return com.osr.ps5debugger.ui.FileBrowserDragDropHelper.conflictResolution == com.osr.ps5debugger.ui.FileBrowserDragDropHelper.OverwriteAction.OVERWRITE
+                                        if (com.osr.ps5debugger.ui.filebrowser.FileBrowserDragDropHelper.rememberConflictChoice && 
+                                            com.osr.ps5debugger.ui.filebrowser.FileBrowserDragDropHelper.conflictResolution != null) {
+                                            return com.osr.ps5debugger.ui.filebrowser.FileBrowserDragDropHelper.conflictResolution == com.osr.ps5debugger.ui.filebrowser.FileBrowserDragDropHelper.OverwriteAction.OVERWRITE
                                         }
 
                                         // Check if remote file exists
@@ -599,22 +599,22 @@ fun main() {
                                         if (!exists) return true
 
                                         // We have a conflict! Ask the user
-                                        synchronized(com.osr.ps5debugger.ui.FileBrowserDragDropHelper.conflictLock) {
+                                        synchronized(com.osr.ps5debugger.ui.filebrowser.FileBrowserDragDropHelper.conflictLock) {
                                             javax.swing.SwingUtilities.invokeLater {
-                                                com.osr.ps5debugger.ui.FileBrowserDragDropHelper.conflictFileName = fileName
-                                                com.osr.ps5debugger.ui.FileBrowserDragDropHelper.showConflictDialog = true
+                                                com.osr.ps5debugger.ui.filebrowser.FileBrowserDragDropHelper.conflictFileName = fileName
+                                                com.osr.ps5debugger.ui.filebrowser.FileBrowserDragDropHelper.showConflictDialog = true
                                             }
 
                                             // Block thread until resolved
-                                            while (com.osr.ps5debugger.ui.FileBrowserDragDropHelper.showConflictDialog) {
+                                            while (com.osr.ps5debugger.ui.filebrowser.FileBrowserDragDropHelper.showConflictDialog) {
                                                 try {
                                                     @Suppress("PLATFORM_CLASS_MAPPED_TO_KOTLIN")
-                                                    (com.osr.ps5debugger.ui.FileBrowserDragDropHelper.conflictLock as Object).wait(100)
+                                                    (com.osr.ps5debugger.ui.filebrowser.FileBrowserDragDropHelper.conflictLock as Object).wait(100)
                                                 } catch (_: Exception) {}
                                             }
                                         }
 
-                                        return com.osr.ps5debugger.ui.FileBrowserDragDropHelper.conflictResolution == com.osr.ps5debugger.ui.FileBrowserDragDropHelper.OverwriteAction.OVERWRITE
+                                        return com.osr.ps5debugger.ui.filebrowser.FileBrowserDragDropHelper.conflictResolution == com.osr.ps5debugger.ui.filebrowser.FileBrowserDragDropHelper.OverwriteAction.OVERWRITE
                                     }
                                     
                                     fun uploadRecursive(localFile: java.io.File, remoteDir: String) {
@@ -640,22 +640,22 @@ fun main() {
                                         currentItem++
                                         val idx = currentItem
                                         javax.swing.SwingUtilities.invokeLater {
-                                            com.osr.ps5debugger.ui.FileBrowserDragDropHelper.transferStatusText = "Uploading ${file.name} ($idx/$totalItems)..."
-                                            com.osr.ps5debugger.ui.FileBrowserDragDropHelper.transferProgress = (idx - 1).toFloat() / totalItems
+                                            com.osr.ps5debugger.ui.filebrowser.FileBrowserDragDropHelper.transferStatusText = "Uploading ${file.name} ($idx/$totalItems)..."
+                                            com.osr.ps5debugger.ui.filebrowser.FileBrowserDragDropHelper.transferProgress = (idx - 1).toFloat() / totalItems
                                         }
                                         uploadRecursive(file, currentPath)
                                     }
                                     
                                     javax.swing.SwingUtilities.invokeLater {
-                                        com.osr.ps5debugger.ui.FileBrowserDragDropHelper.isTransferring = false
-                                        com.osr.ps5debugger.ui.FileBrowserDragDropHelper.transferProgress = 1f
-                                        com.osr.ps5debugger.ui.FileBrowserDragDropHelper.onUploadFinished?.invoke(null)
+                                        com.osr.ps5debugger.ui.filebrowser.FileBrowserDragDropHelper.isTransferring = false
+                                        com.osr.ps5debugger.ui.filebrowser.FileBrowserDragDropHelper.transferProgress = 1f
+                                        com.osr.ps5debugger.ui.filebrowser.FileBrowserDragDropHelper.onUploadFinished?.invoke(null)
                                     }
                                 } catch (e: Exception) {
                                     e.printStackTrace()
                                     javax.swing.SwingUtilities.invokeLater {
-                                        com.osr.ps5debugger.ui.FileBrowserDragDropHelper.isTransferring = false
-                                        com.osr.ps5debugger.ui.FileBrowserDragDropHelper.onUploadFinished?.invoke("Upload failed: ${e.message}")
+                                        com.osr.ps5debugger.ui.filebrowser.FileBrowserDragDropHelper.isTransferring = false
+                                        com.osr.ps5debugger.ui.filebrowser.FileBrowserDragDropHelper.onUploadFinished?.invoke("Upload failed: ${e.message}")
                                     }
                                 }
                             }.start()
@@ -670,8 +670,8 @@ fun main() {
             window.dropTarget = dropTarget
 
             onDispose {
-                com.osr.ps5debugger.ui.FileBrowserDragDropHelper.mainWindow = null
-                com.osr.ps5debugger.ui.FileBrowserDragDropHelper.startDragOut = null
+                com.osr.ps5debugger.ui.filebrowser.FileBrowserDragDropHelper.mainWindow = null
+                com.osr.ps5debugger.ui.filebrowser.FileBrowserDragDropHelper.startDragOut = null
                 window.dropTarget = null
             }
         }
@@ -717,13 +717,13 @@ fun main() {
                                 modifier = Modifier.weight(1f)
                             )
                             IconButton(onClick = { state.isConsoleFloating = false }, modifier = Modifier.size(24.dp)) {
-                                Icon(com.osr.ps5debugger.ui.icons.PS5Icons.Dock, contentDescription = "Dock", tint = PS5ThemeColors.AccentCyan, modifier = Modifier.size(16.dp))
+                                Icon(com.osr.ps5debugger.ui.common.PS5Icons.Dock, contentDescription = "Dock", tint = PS5ThemeColors.AccentCyan, modifier = Modifier.size(16.dp))
                             }
                             IconButton(onClick = { state.isConsoleVisible = false }, modifier = Modifier.size(24.dp)) {
-                                Icon(com.osr.ps5debugger.ui.icons.PS5Icons.Close, contentDescription = "Close", tint = PS5ThemeColors.StatusRed, modifier = Modifier.size(16.dp))
+                                Icon(com.osr.ps5debugger.ui.common.PS5Icons.Close, contentDescription = "Close", tint = PS5ThemeColors.StatusRed, modifier = Modifier.size(16.dp))
                             }
                         }
-                        com.osr.ps5debugger.ui.LoggerConsole(
+                        com.osr.ps5debugger.ui.logger.LoggerConsole(
                             modifier = Modifier.fillMaxSize(),
                             onAddressClick = { addr ->
                                 AppContainer.onNavigateToMemory?.invoke(addr)
@@ -963,3 +963,7 @@ private fun WindowControlButton(
         }
     }
 }
+
+
+
+
