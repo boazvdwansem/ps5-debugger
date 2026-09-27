@@ -159,7 +159,7 @@ object MemoryDumper {
                 outputDir.mkdirs()
             }
 
-            val chunkSize = 16384 // 16KB chunks for highly stable network streaming on mobile and desktop
+            val chunkSize = 1024 * 1024 // 1MB chunks for high-speed memory streaming
             val zeroBuffer = ByteArray(chunkSize)
 
             regions.forEachIndexed { index, entry ->

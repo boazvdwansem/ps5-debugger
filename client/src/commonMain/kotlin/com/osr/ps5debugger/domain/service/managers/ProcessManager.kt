@@ -168,6 +168,21 @@ class ProcessManager(
         }
     }
 
+    fun setOfflineSession(
+        proc: Process?,
+        info: Ps5ProcessInfo?,
+        maps: List<MemoryRange>
+    ) {
+        _activeProcess.value = proc
+        _activeProcessInfo.value = info
+        _vmMaps.value = maps
+        if (proc != null) {
+            _processes.value = listOf(proc)
+        } else {
+            _processes.value = emptyList()
+        }
+    }
+
     fun clear() {
         _processes.value = emptyList()
         _activeProcess.value = null

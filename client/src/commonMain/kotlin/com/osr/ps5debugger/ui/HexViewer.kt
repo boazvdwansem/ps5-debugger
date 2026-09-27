@@ -49,7 +49,6 @@ fun HexViewer(
         LaunchedEffect(columns) {
             if (state.bytesPerRow != columns) {
                 state.bytesPerRow = columns
-                state.memoryCache.clear()
                 state.updateScrollPosition(0L)
             }
         }
@@ -60,7 +59,8 @@ fun HexViewer(
             state.visibleRowsCount = ((maxHeight - nonGridHeight) / HexLayoutMetrics.rowHeightDp).toInt().coerceAtLeast(1) + 1
         }
 
-        LaunchedEffect(state.scrollPosition, state.bytesPerRow, state.startAddress, state.endAddress, state.visibleRowsCount) {
+        LaunchedEffect(state, state.scrollPosition, state.bytesPerRow, state.startAddress, state.endAddress, state.visibleRowsCount, state.activeMap, state.activeMaps.toList()) {
+            delay(50)
             state.loadMemory()
         }
 
@@ -79,12 +79,12 @@ fun HexViewer(
 
         val isConnected by AppContainer.debuggerUseCase.isConnected.collectAsState()
 
-        // AUTO-POLLING LOOP
-        LaunchedEffect(state.refreshRateMs, isConnected, state.activeMap, state.activeMaps.size) {
+        // AUTO-POLLING LOOP - only update bytes once initial processing is complete
+        LaunchedEffect(state.refreshRateMs, isConnected, state.isHexComplete, state.isGreedyLoading, state.activeMap, state.activeMaps.toList()) {
             if (state.refreshRateMs <= 0) return@LaunchedEffect
             while (true) {
                 delay(state.refreshRateMs)
-                if (isConnected || (state.activeMap?.localData != null)) {
+                if (state.isHexComplete && !state.isGreedyLoading && isConnected && state.activeMap?.localData == null) {
                     state.loadMemory(forceRefresh = true)
                 }
             }
@@ -146,9 +146,9 @@ fun HexViewer(
                 }
             } else {
                 // Sleek Region status banner
-                val targets = if (state.activeMap != null) listOf(state.activeMap!!) else state.activeMaps.toList()
+                val targets = state.getEffectiveTargets()
                 val currentAddress = state.selectionEnd ?: state.getAddressForRow(state.scrollPosition)
-                val activeRegion = targets.firstOrNull { currentAddress >= it.start && currentAddress < it.end }
+                val activeRegion = targets.firstOrNull { currentAddress >= it.start && currentAddress < it.end } ?: state.activeMap
 
                 if (activeRegion != null) {
                     HexRegionBanner(activeRegion)
@@ -509,11 +509,7 @@ private fun HexGridBody(state: HexState, isMobile: Boolean, showAddress: Boolean
                     }
                 }
         ) {
-            val totalRows = if (state.activeMap != null) {
-                (state.activeMap!!.end - state.activeMap!!.start + state.bytesPerRow - 1) / state.bytesPerRow
-            } else if (state.activeMaps.isNotEmpty()) {
-                state.activeMaps.sumOf { (it.end - it.start + state.bytesPerRow - 1) / state.bytesPerRow }
-            } else 0L
+            val totalRows = state.getTotalRows()
 
             for (rowIndex in 0 until state.visibleRowsCount) {
                 if (state.scrollPosition + rowIndex >= totalRows) break
@@ -523,7 +519,7 @@ private fun HexGridBody(state: HexState, isMobile: Boolean, showAddress: Boolean
                 val cachedPage = state.memoryCache[pageStart]
                 val offsetInPage = (rowAddress - pageStart).toInt()
 
-                val stableRowBytes = remember(rowAddress, cachedPage, state.activeMap, state.activeMaps.size) {
+                key(rowAddress) {
                     val bytes = ByteArray(state.bytesPerRow)
                     if (cachedPage != null && offsetInPage >= 0 && offsetInPage < cachedPage.size) {
                         val toCopy = minOf(state.bytesPerRow, cachedPage.size - offsetInPage)
@@ -531,8 +527,10 @@ private fun HexGridBody(state: HexState, isMobile: Boolean, showAddress: Boolean
                             System.arraycopy(cachedPage, offsetInPage, bytes, 0, toCopy)
                         }
                     } else {
-                        val targets = if (state.activeMap != null) listOf(state.activeMap!!) else state.activeMaps.toList()
+                        val targets = state.getEffectiveTargets()
                         val localMap = targets.firstOrNull { it.localData != null && rowAddress >= it.start && rowAddress < it.end }
+                            ?: (if (state.activeMap?.localData != null && rowAddress >= state.activeMap!!.start && rowAddress < state.activeMap!!.end) state.activeMap else null)
+                            ?: state.activeMaps.firstOrNull { it.localData != null && rowAddress >= it.start && rowAddress < it.end }
                         if (localMap != null) {
                             val localOffset = (rowAddress - localMap.start).toInt()
                             val data = localMap.localData
@@ -544,22 +542,22 @@ private fun HexGridBody(state: HexState, isMobile: Boolean, showAddress: Boolean
                             }
                         }
                     }
-                    StableRowBytes(bytes)
-                }
+                    val stableRowBytes = StableRowBytes(bytes)
 
-                HexRowView(
-                    address = rowAddress,
-                    stableBytes = stableRowBytes,
-                    columns = state.bytesPerRow,
-                    selectionMin = if (state.selectionStart != null && state.selectionEnd != null) minOf(state.selectionStart!!, state.selectionEnd!!) else null,
-                    selectionMax = if (state.selectionStart != null && state.selectionEnd != null) maxOf(state.selectionStart!!, state.selectionEnd!!) else null,
-                    cursorAddress = state.selectionEnd,
-                    pendingEdits = state.pendingEdits,
-                    changedBytes = state.changedBytes,
-                    hexInputBuffer = state.hexInputBuffer,
-                    isMobile = isMobile,
-                    showAddress = showAddress
-                )
+                    HexRowView(
+                        address = rowAddress,
+                        stableBytes = stableRowBytes,
+                        columns = state.bytesPerRow,
+                        selectionMin = if (state.selectionStart != null && state.selectionEnd != null) minOf(state.selectionStart!!, state.selectionEnd!!) else null,
+                        selectionMax = if (state.selectionStart != null && state.selectionEnd != null) maxOf(state.selectionStart!!, state.selectionEnd!!) else null,
+                        cursorAddress = state.selectionEnd,
+                        pendingEdits = state.pendingEdits,
+                        changedBytes = state.changedBytes,
+                        hexInputBuffer = state.hexInputBuffer,
+                        isMobile = isMobile,
+                        showAddress = showAddress
+                    )
+                }
             }
         }
 
@@ -574,11 +572,7 @@ private fun BoxScope.HexScrollbar(state: HexState, modifier: Modifier = Modifier
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val trackHeight = maxHeight
 
-            val totalRows = if (state.activeMap != null) {
-                (state.activeMap!!.end - state.activeMap!!.start + state.bytesPerRow - 1) / state.bytesPerRow
-            } else if (state.activeMaps.isNotEmpty()) {
-                state.activeMaps.sumOf { (it.end - it.start + state.bytesPerRow - 1) / state.bytesPerRow }
-            } else 0L
+            val totalRows = state.getTotalRows()
 
             val thumbHeight = if (totalRows > 0L) {
                 val ratio = state.visibleRowsCount.toDouble() / totalRows.toDouble()

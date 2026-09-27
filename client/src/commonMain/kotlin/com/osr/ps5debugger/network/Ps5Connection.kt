@@ -3,6 +3,7 @@ package com.osr.ps5debugger.network
 import com.osr.ps5debugger.protocol.BinaryBuffer
 import com.osr.ps5debugger.protocol.ProtocolConstants
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -30,9 +31,11 @@ class Ps5Connection {
             if (isConnected) return@withLock true
             try {
                 val newSocket = Socket()
+                newSocket.receiveBufferSize = 4 * 1024 * 1024
+                newSocket.sendBufferSize = 1024 * 1024
                 newSocket.tcpNoDelay = true
                 newSocket.keepAlive = true
-                newSocket.soTimeout = 20000 // 20 seconds read timeout for stable memory dumps
+                newSocket.soTimeout = 300000 // 5 minutes read timeout for stable memory dumps
                 newSocket.connect(InetSocketAddress(ip, port), timeoutMs)
                 
                 socket = newSocket
@@ -55,6 +58,8 @@ class Ps5Connection {
     }
 
     private fun cleanup() {
+        try { inputStream?.close() } catch (_: Exception) {}
+        try { outputStream?.close() } catch (_: Exception) {}
         try { socket?.close() } catch (_: Exception) {}
         socket = null
         inputStream = null
@@ -67,35 +72,42 @@ class Ps5Connection {
      */
     suspend fun <T> execute(readTimeoutMs: Int? = null, block: suspend (InputStream, OutputStream) -> T): T = withContext(Dispatchers.IO) {
         mutex.withLock {
-            val activeSocket = socket ?: throw IllegalStateException("Not connected")
-            val inStr = inputStream ?: throw IllegalStateException("Not connected")
-            val outStr = outputStream ?: throw IllegalStateException("Not connected")
-            
-            // CLEAR PENDING DATA (Desync Guard)
-            try {
-                val available = inStr.available()
-                if (available > 0) {
-                    inStr.skip(available.toLong())
-                }
-            } catch (_: Exception) {}
+            withContext(NonCancellable) {
+                val activeSocket = socket ?: throw IllegalStateException("Not connected")
+                val inStr = inputStream ?: throw IllegalStateException("Not connected")
+                val outStr = outputStream ?: throw IllegalStateException("Not connected")
+                
+                // Desync Guard: check if unread bytes are lingering on the socket
+                try {
+                    var available = inStr.available()
+                    if (available > 0) {
+                        println("[Ps5Connection] Warning: Draining $available unread bytes on socket before command.")
+                        while (available > 0) {
+                            inStr.skip(available.toLong())
+                            available = inStr.available()
+                        }
+                    }
+                } catch (_: Exception) {}
 
-            val previousTimeoutMs = activeSocket.soTimeout
-            try {
-                if (readTimeoutMs != null) {
-                    activeSocket.soTimeout = readTimeoutMs
-                }
-                block(inStr, outStr)
-            } catch (e: Exception) {
-                // Only cleanup on actual socket failures, not logic errors
-                if (e is java.net.SocketException || e is java.io.EOFException || e.message?.contains("Socket closed") == true || e is java.net.SocketTimeoutException) {
-                    cleanup()
-                }
-                throw e
-            } finally {
-                if (isConnected && readTimeoutMs != null) {
-                    try {
-                        activeSocket.soTimeout = previousTimeoutMs
-                    } catch (_: Exception) {}
+                val previousTimeoutMs = activeSocket.soTimeout
+                try {
+                    if (readTimeoutMs != null) {
+                        activeSocket.soTimeout = readTimeoutMs
+                    }
+                    block(inStr, outStr)
+                } catch (e: Throwable) {
+                    // Only tear down socket on true transport/socket failures, NOT protocol status exceptions
+                    if (e !is com.osr.ps5debugger.protocol.Ps5CommandException) {
+                        println("[Ps5Connection] Socket transport error: ${e::class.simpleName}: ${e.message}")
+                        cleanup()
+                    }
+                    throw e
+                } finally {
+                    if (isConnected && readTimeoutMs != null) {
+                        try {
+                            activeSocket.soTimeout = previousTimeoutMs
+                        } catch (_: Exception) {}
+                    }
                 }
             }
         }

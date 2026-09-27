@@ -42,6 +42,58 @@ class MainState(
     // Pending Cheat State for Dialog
     var pendingCheatToCreate by mutableStateOf<com.osr.ps5debugger.domain.model.Cheat?>(null)
     var showAddCheatDialog by mutableStateOf(false)
+    var showSaveSessionDialog by mutableStateOf(false)
+
+    val isOfflineSession: Boolean get() = AppContainer.isOfflineSession
+    val loadedSessionName: String? get() = AppContainer.loadedSessionName
+
+    fun closeAllOpenedRegions() {
+        activeMap = null
+        activeMaps.clear()
+        jumpToAddress = null
+        selectionStart = null
+        selectionEnd = null
+        if (!AppContainer.isOfflineSession) {
+            AppContainer.clearHexCache()
+        }
+    }
+
+    fun loadSessionFile(file: java.io.File) {
+        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val result = com.osr.ps5debugger.util.SessionManager.loadSession(file)
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                result.onSuccess { name ->
+                    val vmMaps = AppContainer.debuggerUseCase.vmMaps.value
+                    val targetMap = vmMaps.firstOrNull { map ->
+                        var p = (map.start / 65536L) * 65536L
+                        var hasData = false
+                        while (p < map.end) {
+                            if (AppContainer.hexCache.containsKey(p)) {
+                                hasData = true
+                                break
+                            }
+                            p += 65536L
+                        }
+                        hasData || AppContainer.instructionsCache.keys.any { it.startsWith("${map.start}_${map.end}") }
+                    } ?: vmMaps.firstOrNull()
+
+                    activeMap = targetMap
+                    activeMaps.clear()
+                    selectedTab = 0
+                    AppContainer.debuggerUseCase.log("SESSION", "Session '$name' loaded successfully", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                }.onFailure { ex ->
+                    AppContainer.debuggerUseCase.log("SESSION", "Failed to load session from ${file.name}: ${ex.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
+                }
+            }
+        }
+    }
+
+    fun closeOfflineSession() {
+        AppContainer.isOfflineSession = false
+        AppContainer.loadedSessionName = null
+        AppContainer.debuggerUseCase.setOfflineSession(null, null, emptyList())
+        closeAllOpenedRegions()
+    }
 
     val isConnected = AppContainer.debuggerUseCase.isConnected
     val watchlist = AppContainer.debuggerUseCase.watchlist
@@ -60,65 +112,59 @@ class MainState(
     fun handleFileAction(action: String) {
         when (action) {
             "Save" -> {
-                val activeProcessInfo = AppContainer.debuggerUseCase.activeProcessInfo.value
-                val vmMaps = AppContainer.debuggerUseCase.vmMaps.value
-                val json = sessionToJson(
-                    watchlist = watchlist.value,
-                    customSymbols = AppContainer.symbolNames.toMap(),
-                    discoveredFunctions = AppContainer.discoveredFunctions.toList(),
-                    vmMaps = vmMaps,
-                    processInfo = activeProcessInfo
-                )
-                AppContainer.filePicker?.saveJson("session.json", json) { success ->
-                    if (success) AppContainer.debuggerUseCase.log("FILE", "Session saved successfully", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
-                }
+                showSaveSessionDialog = true
             }
             "Load" -> {
-                AppContainer.filePicker?.loadJson { json ->
-                    if (json != null) {
-                        try {
-                            val session = sessionFromJson(json)
-                            
-                            val activeProcessInfo = AppContainer.debuggerUseCase.activeProcessInfo.value
-                            if (activeProcessInfo != null && session.processName != null) {
-                                val nameMatch = activeProcessInfo.name == session.processName
-                                val titleMatch = session.titleId == null || activeProcessInfo.titleId == session.titleId
-                                val contentMatch = session.contentId == null || activeProcessInfo.contentId == session.contentId
-                                if (!nameMatch || !titleMatch || !contentMatch) {
-                                    AppContainer.debuggerUseCase.log(
-                                        "FILE", 
-                                        "Warning: Loaded session is for ${session.processName} (${session.titleId}), but active process is ${activeProcessInfo.name} (${activeProcessInfo.titleId})", 
-                                        com.osr.ps5debugger.domain.model.LogEntry.Level.WARN
-                                    )
+                AppContainer.filePicker?.pickSessionFile { file ->
+                    if (file != null) {
+                        if (file.name.endsWith(".ps5session", ignoreCase = true)) {
+                            loadSessionFile(file)
+                        } else {
+                            try {
+                                val json = file.readText(Charsets.UTF_8)
+                                val session = sessionFromJson(json)
+                                
+                                val activeProcessInfo = AppContainer.debuggerUseCase.activeProcessInfo.value
+                                if (activeProcessInfo != null && session.processName != null) {
+                                    val nameMatch = activeProcessInfo.name == session.processName
+                                    val titleMatch = session.titleId == null || activeProcessInfo.titleId == session.titleId
+                                    val contentMatch = session.contentId == null || activeProcessInfo.contentId == session.contentId
+                                    if (!nameMatch || !titleMatch || !contentMatch) {
+                                        AppContainer.debuggerUseCase.log(
+                                            "FILE", 
+                                            "Warning: Loaded session is for ${session.processName} (${session.titleId}), but active process is ${activeProcessInfo.name} (${activeProcessInfo.titleId})", 
+                                            com.osr.ps5debugger.domain.model.LogEntry.Level.WARN
+                                        )
+                                    }
                                 }
-                            }
-                            
-                            AppContainer.debuggerUseCase.clearWatchlist()
-                            session.watchlist.forEach { AppContainer.debuggerUseCase.addWatchItem(it) }
-                            
-                            val vmMaps = AppContainer.debuggerUseCase.vmMaps.value
-                            session.symbols.forEach { sym ->
-                                val map = vmMaps.firstOrNull { it.name == sym.mapName }
-                                if (map != null) {
-                                    val absAddr = map.start + sym.offset
-                                    AppContainer.renameSymbol(absAddr, sym.name)
-                                    if (sym.isFunction) {
-                                        if (!AppContainer.discoveredFunctions.contains(absAddr)) {
-                                            AppContainer.discoveredFunctions.add(absAddr)
-                                            AppContainer.discoveredFunctions.sortBy { it.toULong() }
-                                        }
-                                    } else {
-                                        if (!AppContainer.discoveredJumpTargets.contains(absAddr)) {
-                                            AppContainer.discoveredJumpTargets.add(absAddr)
-                                            AppContainer.discoveredJumpTargets.sortBy { it.toULong() }
+                                
+                                AppContainer.debuggerUseCase.clearWatchlist()
+                                session.watchlist.forEach { AppContainer.debuggerUseCase.addWatchItem(it) }
+                                
+                                val vmMaps = AppContainer.debuggerUseCase.vmMaps.value
+                                session.symbols.forEach { sym ->
+                                    val map = vmMaps.firstOrNull { it.name == sym.mapName }
+                                    if (map != null) {
+                                        val absAddr = map.start + sym.offset
+                                        AppContainer.renameSymbol(absAddr, sym.name)
+                                        if (sym.isFunction) {
+                                            if (!AppContainer.discoveredFunctions.contains(absAddr)) {
+                                                AppContainer.discoveredFunctions.add(absAddr)
+                                                AppContainer.discoveredFunctions.sortBy { it.toULong() }
+                                            }
+                                        } else {
+                                            if (!AppContainer.discoveredJumpTargets.contains(absAddr)) {
+                                                AppContainer.discoveredJumpTargets.add(absAddr)
+                                                AppContainer.discoveredJumpTargets.sortBy { it.toULong() }
+                                            }
                                         }
                                     }
                                 }
+                                
+                                AppContainer.debuggerUseCase.log("FILE", "Session loaded successfully", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
+                            } catch (e: Exception) {
+                                AppContainer.debuggerUseCase.log("FILE", "Failed to load session: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
                             }
-                            
-                            AppContainer.debuggerUseCase.log("FILE", "Session loaded successfully", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
-                        } catch (e: Exception) {
-                            AppContainer.debuggerUseCase.log("FILE", "Failed to load session: ${e.message}", com.osr.ps5debugger.domain.model.LogEntry.Level.ERROR)
                         }
                     }
                 }

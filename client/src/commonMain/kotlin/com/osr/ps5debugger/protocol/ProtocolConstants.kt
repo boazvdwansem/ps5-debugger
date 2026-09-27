@@ -45,6 +45,7 @@ object ProtocolConstants {
     const val CMD_PROC_ELF_RPC = 0xBDAA0010.toInt()
 
     const val CMD_PROC_DISASM_REGION = 0xBDAA0020.toInt()
+    const val DISASM_INSTR_ENTRY_SIZE = 160
     const val CMD_PROC_EXTRACT_CODE_XREFS = 0xBDAA0021.toInt()
     const val CMD_PROC_FIND_XREFS_TO = 0xBDAA0022.toInt()
     const val CMD_PROC_READ_STACK = 0xBDAA0023.toInt()
@@ -143,3 +144,6 @@ object ProtocolConstants {
         return ((x ushr 1) and 0x55555555) or ((x shl 1) and 0xAAAAAAAA.toInt())
     }
 }
+
+open class Ps5CommandException(message: String, val status: Int = 0) : Exception(message)
+

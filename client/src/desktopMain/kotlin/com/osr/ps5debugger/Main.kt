@@ -167,6 +167,24 @@ fun main() {
                 onResult(null)
             }
         }
+
+        override fun pickSessionFile(onResult: (java.io.File?) -> Unit) {
+            try {
+                val dialog = java.awt.FileDialog(null as java.awt.Frame?, "Load Debugger Session", java.awt.FileDialog.LOAD)
+                dialog.file = "*.ps5session;*.json"
+                dialog.isVisible = true
+                val directory = dialog.directory
+                val file = dialog.file
+                if (directory != null && file != null) {
+                    onResult(java.io.File(directory, file))
+                } else {
+                    onResult(null)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                onResult(null)
+            }
+        }
     }
     
     application {

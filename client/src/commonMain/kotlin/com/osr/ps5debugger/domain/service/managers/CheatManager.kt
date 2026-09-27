@@ -2,11 +2,12 @@ package com.osr.ps5debugger.domain.service.managers
 
 import com.osr.ps5debugger.domain.model.*
 import com.osr.ps5debugger.ports.outbound.DebuggerClientPort
-import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.decodeFromString
@@ -19,6 +20,14 @@ class CheatManager(
 ) {
     private val _gameProfiles = MutableStateFlow<List<GameCheatProfile>>(emptyList())
     val gameProfiles: StateFlow<List<GameCheatProfile>> = _gameProfiles.asStateFlow()
+
+    // Freeze infrastructure — same pattern as WatchlistManager
+    private val frozenCheatWrites = mutableMapOf<String, List<Pair<Long, ByteArray>>>() // cheatId -> writes
+    private val freezeMutex = Mutex()
+    private var freezeJob: Job? = null
+    private var isFreezeLoopRunning = false
+    private val freezeIntervalMs = 500L
+    var getActiveProcessPid: (() -> Int?)? = null
 
     private fun isBadName(name: String?): Boolean {
         if (name.isNullOrEmpty() || name == "Unknown") return true
@@ -250,6 +259,79 @@ class CheatManager(
         } catch (e: Exception) {
             logManager.log("CHEATS", "Failed to apply cheat '${cheat.name}': ${e.message}", LogEntry.Level.ERROR)
         }
+    }
+
+    fun toggleFreezeCheat(titleId: String, version: String, cheatId: String) {
+        val currentProfiles = _gameProfiles.value.toMutableList()
+        val pIdx = currentProfiles.indexOfFirst { it.titleId == titleId && it.version == version }
+            .takeIf { it != -1 } ?: currentProfiles.indexOfFirst { it.titleId == titleId }
+        if (pIdx == -1) return
+
+        val profile = currentProfiles[pIdx]
+        val cIdx = profile.cheats.indexOfFirst { it.id == cheatId }
+        if (cIdx == -1) return
+
+        val cheat = profile.cheats[cIdx]
+        val nowFrozen = !cheat.isFrozen
+        val updatedCheats = profile.cheats.toMutableList()
+        updatedCheats[cIdx] = cheat.copy(isFrozen = nowFrozen)
+        currentProfiles[pIdx] = profile.copy(cheats = updatedCheats)
+        _gameProfiles.value = currentProfiles
+        persist()
+
+        scope.launch {
+            if (nowFrozen) {
+                // Compute the writes from ON-value patches
+                val patches = cheat.getEffectivePatches()
+                val writes = mutableListOf<Pair<Long, ByteArray>>()
+                for (patch in patches) {
+                    val hex = patch.hexOnValue
+                    if (hex.isNotBlank()) {
+                        try {
+                            val bytes = parseHexBytes(hex)
+                            if (bytes.isNotEmpty()) writes.add(patch.address to bytes)
+                        } catch (_: Exception) {}
+                    }
+                }
+                if (writes.isNotEmpty()) {
+                    freezeMutex.withLock { frozenCheatWrites[cheatId] = writes }
+                    startCheatFreezeLoop()
+                    logManager.log("CHEATS", "Frozen cheat '${cheat.name}': writing ${writes.sumOf { it.second.size }} byte(s) every ${freezeIntervalMs}ms", LogEntry.Level.INFO)
+                }
+            } else {
+                freezeMutex.withLock {
+                    frozenCheatWrites.remove(cheatId)
+                    if (frozenCheatWrites.isEmpty()) stopCheatFreezeLoop()
+                }
+                logManager.log("CHEATS", "Unfroze cheat '${cheat.name}'", LogEntry.Level.INFO)
+            }
+        }
+    }
+
+    private fun startCheatFreezeLoop() {
+        if (isFreezeLoopRunning) return
+        isFreezeLoopRunning = true
+        freezeJob = scope.launch(Dispatchers.IO) {
+            while (isActive && isFreezeLoopRunning) {
+                val allWrites = freezeMutex.withLock {
+                    frozenCheatWrites.values.flatten()
+                }
+                val pid = getActiveProcessPid?.invoke()
+                if (pid != null && clientPort.isConnected && allWrites.isNotEmpty()) {
+                    try {
+                        clientPort.writeMemoryMulti(pid, allWrites, withStatusReport = false)
+                    } catch (_: Exception) {}
+                }
+                delay(freezeIntervalMs)
+            }
+            isFreezeLoopRunning = false
+        }
+    }
+
+    private fun stopCheatFreezeLoop() {
+        isFreezeLoopRunning = false
+        freezeJob?.cancel()
+        freezeJob = null
     }
 
     fun toggleCheat(titleId: String, version: String, cheatId: String): Cheat? {

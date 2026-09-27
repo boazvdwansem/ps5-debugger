@@ -41,6 +41,7 @@ data class Cheat(
     val options: List<CheatOption> = emptyList(), // For Dropdown
     val patches: List<CheatPatch> = emptyList(),
     val isEnabled: Boolean = false,
+    val isFrozen: Boolean = false,
     val titleId: String,
     val version: String = "1.00",
     val description: String = ""

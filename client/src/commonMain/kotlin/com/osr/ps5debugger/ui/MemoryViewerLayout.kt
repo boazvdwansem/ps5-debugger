@@ -42,8 +42,8 @@ fun MemoryViewerLayout(
     selectionEndParam: Long? = null,
     onSelectionChanged: ((Long?, Long?) -> Unit)? = null,
     onCopySelection: (() -> Unit)? = null,
-    activeBreakpoints: MutableMap<Int, Long> = remember { mutableStateOf(mutableStateMapOf<Int, Long>()).value },
-    activeWatchpoints: MutableMap<Int, Long> = remember { mutableStateOf(mutableStateMapOf<Int, Long>()).value },
+    activeBreakpoints: MutableMap<Int, Long> = remember { mutableStateMapOf<Int, Long>() },
+    activeWatchpoints: MutableMap<Int, Long> = remember { mutableStateMapOf<Int, Long>() },
     onShowXrefs: ((Long) -> Unit)? = null,
     sidebarsWrapper: @Composable (@Composable () -> Unit) -> Unit = { it() }
 ) {
@@ -90,14 +90,14 @@ fun MemoryViewerLayout(
         )
     }
     
-    // Sync current navigation/selection into disasmState
-    SideEffect {
+    // Sync current navigation/selection into disasmState safely outside composition
+    LaunchedEffect(state.selectionStart, state.selectionEnd, state.currentJumpAddress) {
         disasmState.selectionStart = state.selectionStart
         disasmState.selectionEnd = state.selectionEnd
         disasmState.goToAddressText = state.currentJumpAddress?.toString(16)?.uppercase() ?: ""
     }
 
-    val hexState = remember(state.activeMap, state.activeMaps.size) {
+    val hexState = remember {
         HexState(
             activeMapInitial = state.activeMap,
             activeMapsInitial = state.activeMaps,
@@ -108,14 +108,54 @@ fun MemoryViewerLayout(
             scope = coroutineScope
         )
     }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            hexState.cancelJobs()
+        }
+    }
     
-    SideEffect {
+    val isConnected by AppContainer.debuggerUseCase.isConnected.collectAsState()
+    val activeMapsSnapshot = state.activeMaps.toList()
+    LaunchedEffect(state.activeMap, activeMapsSnapshot, isConnected, activeProcess?.pid) {
+        val mapChanged = hexState.activeMap != state.activeMap
+        if (mapChanged) {
+            state.cancelBackgroundJobs()
+        }
+        
+        val mapsChanged = mapChanged || (hexState.activeMaps.toList() != activeMapsSnapshot)
+        hexState.activeMap = state.activeMap
+        if (hexState.activeMaps.toList() != activeMapsSnapshot) {
+            hexState.activeMaps.clear()
+            hexState.activeMaps.addAll(activeMapsSnapshot)
+        }
+        val targets = hexState.getEffectiveTargets()
+        val newStart = targets.firstOrNull()?.start ?: 0L
+        val newEnd = targets.lastOrNull()?.end ?: 0L
+        if (hexState.startAddress != newStart) hexState.startAddress = newStart
+        if (hexState.endAddress != newEnd) hexState.endAddress = newEnd
+        if (mapsChanged) {
+            if (mapChanged) {
+                hexState.restoreScrollForActiveMap()
+            }
+            hexState.restoreRegionProgress()
+            if (state.activeMap?.localData != null || AppContainer.isOfflineSession) {
+                hexState.loadingProgress = 1f
+                hexState.isCurrentTargetReady = true
+                hexState.isHexComplete = true
+            }
+        }
+        if (!AppContainer.isOfflineSession) {
+            hexState.startGreedyLoader()
+        }
+    }
+
+    LaunchedEffect(state.selectionStart, state.selectionEnd, state.currentJumpAddress) {
         hexState.selectionStart = state.selectionStart
         hexState.selectionEnd = state.selectionEnd
         hexState.currentJumpAddress = state.currentJumpAddress
     }
 
-    val isConnected by AppContainer.debuggerUseCase.isConnected.collectAsState()
     val shortcuts = remember { DefaultIpHelper.getShortcuts() }
     
     val performInject: suspend () -> Unit = {
@@ -147,8 +187,26 @@ fun MemoryViewerLayout(
         }
     }
 
-    LaunchedEffect(state.activeMap, state.activeMaps.size, isConnected) {
-        hexState.startGreedyLoader()
+    // Only start processing disassembly once the hex for the active memory region has been loaded
+    LaunchedEffect(
+        hexState.isCurrentTargetReady,
+        state.activeMap,
+        hexState.activeMap,
+        isConnected,
+        activeProcess?.pid
+    ) {
+        if (hexState.isCurrentTargetReady) {
+            val current = state.activeMap ?: return@LaunchedEffect
+            val hasLocal = current.localData != null
+            val hasRemote = current.localData == null
+            // Check that the currently loaded hex data ACTUALLY matches the active tab we want to disassemble
+            val isCurrentHexTarget = hexState.activeMap?.start == current.start || hexState.activeMaps.any { it.start == current.start }
+            if (isCurrentHexTarget) {
+                if (hasLocal || (hasRemote && (isConnected || AppContainer.isOfflineSession) && activeProcess != null)) {
+                    state.loadInitialInstructions()
+                }
+            }
+        }
     }
 
     LaunchedEffect(functions.size) {
@@ -458,7 +516,7 @@ private fun StatusBar(
                     )
                 }
             }
-            if (hexState.loadingProgress > 0f && hexState.loadingProgress < 1f) {
+            if (!hexState.isHexComplete) {
                 Text(
                     "Processing: ${(hexState.loadingProgress * 100).toInt()}%",
                     fontSize = 10.sp,
@@ -474,7 +532,7 @@ private fun StatusBar(
                         strokeCap = androidx.compose.ui.graphics.StrokeCap.Round
                     )
                 }
-            } else if (hexState.loadingProgress >= 1f) {
+            } else {
                 Text(
                     "Cache Ready",
                     fontSize = 10.sp,

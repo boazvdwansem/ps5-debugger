@@ -7,4 +7,5 @@ interface FilePicker {
     fun loadJson(onResult: (String?) -> Unit)
     fun loadEboot(onResult: (ByteArray?, String?) -> Unit)
     fun pickDirectory(onResult: (String?) -> Unit)
+    fun pickSessionFile(onResult: (java.io.File?) -> Unit) { onResult(null) }
 }

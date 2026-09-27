@@ -110,7 +110,7 @@ fun watchListFromJson(json: String): List<WatchItem> {
     }
 }
 
-private fun jsonEscape(value: String): String = buildString {
+internal fun jsonEscape(value: String): String = buildString {
     value.forEach { ch ->
         when (ch) {
             '\"' -> append("\\\"")
@@ -124,7 +124,7 @@ private fun jsonEscape(value: String): String = buildString {
     }
 }
 
-private fun extractJsonObjects(json: String): List<String> {
+internal fun extractJsonObjects(json: String): List<String> {
     val result = mutableListOf<String>()
     var i = 0
     while (i < json.length) {
@@ -143,7 +143,7 @@ private fun extractJsonObjects(json: String): List<String> {
     return result
 }
 
-private fun readJsonStringField(json: String, field: String): String? {
+internal fun readJsonStringField(json: String, field: String): String? {
     val key = "\"$field\""
     val idx = json.indexOf(key)
     if (idx == -1) return null
@@ -154,7 +154,7 @@ private fun readJsonStringField(json: String, field: String): String? {
     return json.substring(startQuote + 1, endQuote)
 }
 
-private fun readJsonRawField(json: String, field: String): String? {
+internal fun readJsonRawField(json: String, field: String): String? {
     val key = "\"$field\""
     val idx = json.indexOf(key)
     if (idx == -1) return null

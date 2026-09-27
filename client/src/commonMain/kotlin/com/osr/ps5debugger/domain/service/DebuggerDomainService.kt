@@ -82,20 +82,43 @@ class DebuggerDomainService(
             while (isActive) {
                 if (_isConnected.value && !clientPort.isConnected) {
                     if (com.osr.ps5debugger.util.DefaultIpHelper.isAutoReconnectEnabled()) {
-                        log("SYSTEM", "Socket connection lost. Reconnecting...", LogEntry.Level.WARN)
                         val ip = lastConnectedIp
                         if (ip != null) {
-                            val ok = clientPort.connect(ip)
-                            if (ok) {
-                                try {
-                                    clientPort.auth()
-                                    log("SYSTEM", "Reconnected successfully.", LogEntry.Level.INFO)
-                                } catch (e: Exception) {
-                                    log("SYSTEM", "Reconnect authentication failed: ${e.message}", LogEntry.Level.ERROR)
-                                    _isConnected.value = false
+                            val retrySchedule = listOf(
+                                30_000L to "30 sec",
+                                60_000L to "1 min",
+                                180_000L to "3 min",
+                                300_000L to "5 min"
+                            )
+                            var reconnected = false
+                            for ((index, step) in retrySchedule.withIndex()) {
+                                val (waitMs, label) = step
+                                log("SYSTEM", "Socket connection lost. Retrying in $label (attempt ${index + 1}/${retrySchedule.size})...", LogEntry.Level.WARN)
+
+                                val waitStart = System.currentTimeMillis()
+                                while (isActive && _isConnected.value && System.currentTimeMillis() - waitStart < waitMs) {
+                                    delay(500)
                                 }
-                            } else {
-                                log("SYSTEM", "Reconnect failed. Returning to connection screen.", LogEntry.Level.ERROR)
+                                if (!isActive || !_isConnected.value) break
+
+                                log("SYSTEM", "Attempting background reconnection to $ip...", LogEntry.Level.INFO)
+                                val ok = clientPort.connect(ip)
+                                if (ok) {
+                                    try {
+                                        clientPort.auth()
+                                        try { clientPort.startDebugChannel() } catch (_: Exception) {}
+                                        log("SYSTEM", "Reconnected successfully to $ip.", LogEntry.Level.INFO)
+                                        reconnected = true
+                                        break
+                                    } catch (e: Exception) {
+                                        log("SYSTEM", "Reconnect authentication failed: ${e.message}", LogEntry.Level.WARN)
+                                    }
+                                } else {
+                                    log("SYSTEM", "Reconnect attempt ${index + 1} ($label) failed.", LogEntry.Level.WARN)
+                                }
+                            }
+                            if (!reconnected && isActive && _isConnected.value) {
+                                log("SYSTEM", "All reconnect attempts failed after 5 minutes. Returning to connection screen.", LogEntry.Level.ERROR)
                                 _isConnected.value = false
                             }
                         } else {
@@ -235,6 +258,10 @@ class DebuggerDomainService(
         processManager.loadMemoryMaps(proc)
     }
 
+    override fun setOfflineSession(process: Process?, processInfo: Ps5ProcessInfo?, maps: List<MemoryRange>) {
+        processManager.setOfflineSession(process, processInfo, maps)
+    }
+
     override suspend fun pullFile(path: String): Result<ByteArray> = try {
         val data = clientPort.pullFile(path)
         if (data != null) Result.success(data) else Result.failure(Exception("File not found or empty: $path"))
@@ -255,6 +282,26 @@ class DebuggerDomainService(
             } catch (e: Exception) {
                 Result.failure(e)
             }
+        }
+
+        if (com.osr.ps5debugger.di.AppContainer.isOfflineSession || !clientPort.isConnected) {
+            // Read from cached hex memory in offline mode
+            val out = ByteArray(length)
+            var readBytes = 0
+            var curr = address
+            while (readBytes < length) {
+                val pageStart = (curr / 65536L) * 65536L
+                val page = com.osr.ps5debugger.di.AppContainer.hexCache[pageStart]
+                val pageOffset = (curr - pageStart).toInt()
+                val inPage = minOf(length - readBytes, (65536L - pageOffset).toInt())
+                if (page != null && pageOffset >= 0 && pageOffset < page.size) {
+                    val toCopy = minOf(inPage, page.size - pageOffset)
+                    System.arraycopy(page, pageOffset, out, readBytes, toCopy)
+                }
+                readBytes += inPage
+                curr += inPage
+            }
+            return Result.success(out)
         }
 
         val proc = processManager.activeProcess.value ?: return Result.failure(IllegalStateException("No active process selected"))
@@ -353,6 +400,10 @@ class DebuggerDomainService(
 
     override fun deleteCheat(titleId: String, version: String, cheatId: String) {
         cheatManager.deleteCheat(titleId, version, cheatId)
+    }
+
+    override fun toggleFreezeCheat(titleId: String, version: String, cheatId: String) {
+        cheatManager.toggleFreezeCheat(titleId, version, cheatId)
     }
 
     override fun updateGameName(titleId: String, name: String) {

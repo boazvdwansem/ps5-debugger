@@ -33,74 +33,200 @@ private const val ScanReadTimeoutMs = 5 * 60 * 1000
 class CompactScanResults(initialCapacity: Int = 10000) {
     private val lock = Any()
 
+    companion object {
+        private const val MAX_MEM_ITEMS = 10000
+        private const val READ_BUF_RECORDS = 4096
+    }
+
     @Volatile
     var size: Int = 0
         private set
 
-    private var offsets: LongArray = LongArray(initialCapacity)
-    private var valueBytes: ByteArray = ByteArray(initialCapacity * 4)
-    private var valueOffsets: IntArray = IntArray(0)
-    private var valueLengths: IntArray = IntArray(0)
-    private var totalBytesStored: Int = 0
+    private var lastOffset: Long = Long.MIN_VALUE
     private var uniformLen: Int = -1
+
+    // Fast in-memory cache for top candidates (and full storage for scans <= MAX_MEM_ITEMS)
+    private var memOffsets = LongArray(minOf(initialCapacity, MAX_MEM_ITEMS))
+    private var memValues = ByteArray(minOf(initialCapacity, MAX_MEM_ITEMS) * 4)
+    private var memValueOffsets: IntArray = IntArray(0)
+    private var memValueLengths: IntArray = IntArray(0)
+    private var memTotalBytes: Int = 0
+
+    // Disk spillover for large scans (> MAX_MEM_ITEMS)
+    private var tempFile: java.io.File? = null
+    private var diskWriter: java.io.BufferedOutputStream? = null
+    private var diskReader: java.io.RandomAccessFile? = null
+    private var diskRecordLen: Int = 12
+
+    // Read cache for disk items
+    private var readCacheBuf: ByteArray? = null
+    private var readCacheStartIdx: Int = -1
+    private var readCacheEndIdx: Int = -1
+
+    private fun closeStreams() {
+        try { diskWriter?.flush(); diskWriter?.close() } catch (_: Exception) {}
+        try { diskReader?.close() } catch (_: Exception) {}
+        diskWriter = null
+        diskReader = null
+    }
+
+    private fun flushDiskWriter() {
+        try { diskWriter?.flush() } catch (_: Exception) {}
+    }
+
+    private fun getDiskReader(file: java.io.File): java.io.RandomAccessFile? {
+        if (diskReader == null && file.exists()) {
+            try {
+                diskReader = java.io.RandomAccessFile(file, "r")
+            } catch (_: Exception) {}
+        }
+        return diskReader
+    }
 
     fun clear() {
         synchronized(lock) {
+            closeStreams()
+            tempFile?.delete()
+            tempFile = null
             size = 0
-            totalBytesStored = 0
+            memTotalBytes = 0
             uniformLen = -1
+            lastOffset = Long.MIN_VALUE
+            readCacheStartIdx = -1
+            readCacheEndIdx = -1
         }
     }
 
-    private fun ensureCapacity(minCapacity: Int) {
-        if (minCapacity > offsets.size) {
-            val newCap = maxOf(offsets.size * 2, minCapacity)
-            offsets = offsets.copyOf(newCap)
-            if (uniformLen <= 0 && valueOffsets.isNotEmpty()) {
-                valueOffsets = valueOffsets.copyOf(newCap)
-                valueLengths = valueLengths.copyOf(newCap)
+    private fun writeDiskRecord(offset: Long, value: ByteArray) {
+        val out = diskWriter ?: return
+        out.write((offset ushr 56).toInt())
+        out.write((offset ushr 48).toInt())
+        out.write((offset ushr 40).toInt())
+        out.write((offset ushr 32).toInt())
+        out.write((offset ushr 24).toInt())
+        out.write((offset ushr 16).toInt())
+        out.write((offset ushr 8).toInt())
+        out.write(offset.toInt())
+        if (diskRecordLen <= 0) {
+            out.write((value.size ushr 8) and 0xFF)
+            out.write(value.size and 0xFF)
+        }
+        out.write(value)
+    }
+
+    private fun getMemValueBytes(index: Int): ByteArray {
+        if (index !in 0 until minOf(size, MAX_MEM_ITEMS)) return ByteArray(0)
+        return if (uniformLen > 0) {
+            val srcPos = index * uniformLen
+            if (srcPos + uniformLen <= memValues.size) {
+                memValues.copyOfRange(srcPos, srcPos + uniformLen)
+            } else ByteArray(0)
+        } else {
+            if (index < memValueOffsets.size && index < memValueLengths.size) {
+                val srcPos = memValueOffsets[index]
+                val vLen = memValueLengths[index]
+                if (srcPos + vLen <= memValues.size) {
+                    memValues.copyOfRange(srcPos, srcPos + vLen)
+                } else ByteArray(0)
+            } else ByteArray(0)
+        }
+    }
+
+    private fun readDiskRecord(index: Int): Pair<Long, ByteArray> {
+        val file = tempFile ?: return 0L to ByteArray(0)
+        flushDiskWriter()
+        val raf = getDiskReader(file) ?: return 0L to ByteArray(0)
+        val recLen = diskRecordLen
+        if (recLen > 0) {
+            val cacheBuf = readCacheBuf ?: ByteArray(READ_BUF_RECORDS * recLen).also { readCacheBuf = it }
+            if (index !in readCacheStartIdx until readCacheEndIdx) {
+                val seekPos = index.toLong() * recLen.toLong()
+                if (seekPos >= raf.length()) return 0L to ByteArray(0)
+                try {
+                    raf.seek(seekPos)
+                    val bytesToRead = minOf(READ_BUF_RECORDS.toLong() * recLen, raf.length() - seekPos).toInt()
+                    val readCount = raf.read(cacheBuf, 0, bytesToRead)
+                    if (readCount <= 0) return 0L to ByteArray(0)
+                    readCacheStartIdx = index
+                    readCacheEndIdx = index + (readCount / recLen)
+                } catch (_: Exception) {
+                    return 0L to ByteArray(0)
+                }
+            }
+            if (index in readCacheStartIdx until readCacheEndIdx) {
+                val relIdx = index - readCacheStartIdx
+                val pos = relIdx * recLen
+                val off = ((cacheBuf[pos].toLong() and 0xFFL) shl 56) or
+                        ((cacheBuf[pos + 1].toLong() and 0xFFL) shl 48) or
+                        ((cacheBuf[pos + 2].toLong() and 0xFFL) shl 40) or
+                        ((cacheBuf[pos + 3].toLong() and 0xFFL) shl 32) or
+                        ((cacheBuf[pos + 4].toLong() and 0xFFL) shl 24) or
+                        ((cacheBuf[pos + 5].toLong() and 0xFFL) shl 16) or
+                        ((cacheBuf[pos + 6].toLong() and 0xFFL) shl 8) or
+                        (cacheBuf[pos + 7].toLong() and 0xFFL)
+                val vLen = recLen - 8
+                val valBytes = cacheBuf.copyOfRange(pos + 8, pos + 8 + vLen)
+                return off to valBytes
             }
         }
+        return 0L to ByteArray(0)
     }
 
     fun add(offset: Long, value: ByteArray) {
         synchronized(lock) {
-            if (size > 0 && offsets[size - 1] == offset) {
+            if (size > 0 && lastOffset == offset) {
                 return
             }
             val vLen = value.size
             if (size == 0) {
                 uniformLen = vLen
+                diskRecordLen = 8 + uniformLen
             } else if (uniformLen > 0 && uniformLen != vLen) {
-                val prevLen = uniformLen
                 uniformLen = -1
-                valueOffsets = IntArray(offsets.size)
-                valueLengths = IntArray(offsets.size)
-                for (i in 0 until size) {
-                    valueOffsets[i] = i * prevLen
-                    valueLengths[i] = prevLen
-                }
+                diskRecordLen = -1
             }
 
-            ensureCapacity(size + 1)
-            offsets[size] = offset
-
-            if (uniformLen > 0) {
-                val destPos = size * uniformLen
-                if (destPos + vLen > valueBytes.size) {
-                    valueBytes = valueBytes.copyOf(maxOf(valueBytes.size * 2, destPos + vLen + 4096))
+            if (size < MAX_MEM_ITEMS) {
+                if (size >= memOffsets.size) {
+                    memOffsets = memOffsets.copyOf(minOf(MAX_MEM_ITEMS, maxOf(memOffsets.size * 2, 100)))
                 }
-                System.arraycopy(value, 0, valueBytes, destPos, vLen)
-                totalBytesStored = destPos + vLen
+                memOffsets[size] = offset
+
+                if (uniformLen > 0) {
+                    val destPos = size * uniformLen
+                    if (destPos + vLen > memValues.size) {
+                        memValues = memValues.copyOf(maxOf(memValues.size * 2, destPos + vLen + 1024))
+                    }
+                    System.arraycopy(value, 0, memValues, destPos, vLen)
+                    memTotalBytes = destPos + vLen
+                } else {
+                    if (memValueOffsets.isEmpty()) {
+                        memValueOffsets = IntArray(MAX_MEM_ITEMS)
+                        memValueLengths = IntArray(MAX_MEM_ITEMS)
+                    }
+                    memValueOffsets[size] = memTotalBytes
+                    memValueLengths[size] = vLen
+                    if (memTotalBytes + vLen > memValues.size) {
+                        memValues = memValues.copyOf(maxOf(memValues.size * 2, memTotalBytes + vLen + 1024))
+                    }
+                    System.arraycopy(value, 0, memValues, memTotalBytes, vLen)
+                    memTotalBytes += vLen
+                }
             } else {
-                valueOffsets[size] = totalBytesStored
-                valueLengths[size] = vLen
-                if (totalBytesStored + vLen > valueBytes.size) {
-                    valueBytes = valueBytes.copyOf(maxOf(valueBytes.size * 2, totalBytesStored + vLen + 4096))
+                if (tempFile == null) {
+                    try {
+                        val f = java.io.File.createTempFile("ps5_scan_", ".bin").apply { deleteOnExit() }
+                        tempFile = f
+                        diskWriter = java.io.BufferedOutputStream(java.io.FileOutputStream(f, true), 64 * 1024)
+                        for (i in 0 until size) {
+                            writeDiskRecord(memOffsets[i], getMemValueBytes(i))
+                        }
+                    } catch (_: Exception) {}
                 }
-                System.arraycopy(value, 0, valueBytes, totalBytesStored, vLen)
-                totalBytesStored += vLen
+                writeDiskRecord(offset, value)
             }
+
+            lastOffset = offset
             size++
         }
     }
@@ -108,24 +234,37 @@ class CompactScanResults(initialCapacity: Int = 10000) {
     fun replaceWith(other: CompactScanResults) {
         synchronized(lock) {
             synchronized(other.lock) {
+                closeStreams()
+                tempFile?.delete()
+
                 size = other.size
                 uniformLen = other.uniformLen
-                offsets = other.offsets.copyOf(other.size)
-                valueBytes = other.valueBytes.copyOf(other.totalBytesStored)
-                totalBytesStored = other.totalBytesStored
-                valueOffsets = if (other.uniformLen <= 0 && other.valueOffsets.isNotEmpty()) other.valueOffsets.copyOf(other.size) else IntArray(0)
-                valueLengths = if (other.uniformLen <= 0 && other.valueLengths.isNotEmpty()) other.valueLengths.copyOf(other.size) else IntArray(0)
+                lastOffset = other.lastOffset
+                diskRecordLen = other.diskRecordLen
+
+                memOffsets = other.memOffsets.copyOf(other.memOffsets.size)
+                memValues = other.memValues.copyOf(other.memValues.size)
+                memValueOffsets = other.memValueOffsets.copyOf(other.memValueOffsets.size)
+                memValueLengths = other.memValueLengths.copyOf(other.memValueLengths.size)
+                memTotalBytes = other.memTotalBytes
+
+                other.flushDiskWriter()
+                other.closeStreams()
+
+                tempFile = other.tempFile
+                other.tempFile = null // Transfer file ownership
+
+                readCacheStartIdx = -1
+                readCacheEndIdx = -1
             }
         }
     }
 
     fun addAll(other: CompactScanResults) {
         synchronized(lock) {
-            synchronized(other.lock) {
-                val otherSize = other.size
-                for (i in 0 until otherSize) {
-                    add(other.getOffset(i), other.getValueBytes(i))
-                }
+            val otherSize = other.size
+            for (i in 0 until otherSize) {
+                add(other.getOffset(i), other.getValueBytes(i))
             }
         }
     }
@@ -133,35 +272,47 @@ class CompactScanResults(initialCapacity: Int = 10000) {
     fun getOffset(index: Int): Long {
         synchronized(lock) {
             if (index !in 0 until size) return 0L
-            return offsets[index]
+            return if (index < MAX_MEM_ITEMS) {
+                memOffsets[index]
+            } else {
+                readDiskRecord(index).first
+            }
         }
     }
 
     fun getValueBytes(index: Int): ByteArray {
         synchronized(lock) {
             if (index !in 0 until size) return ByteArray(0)
-            return if (uniformLen > 0) {
-                val srcPos = index * uniformLen
-                valueBytes.copyOfRange(srcPos, srcPos + uniformLen)
+            return if (index < MAX_MEM_ITEMS) {
+                getMemValueBytes(index)
             } else {
-                val srcPos = valueOffsets[index]
-                val vLen = valueLengths[index]
-                valueBytes.copyOfRange(srcPos, srcPos + vLen)
+                readDiskRecord(index).second
             }
         }
     }
 
     fun snapshot(): CompactScanResults {
         synchronized(lock) {
-            val copy = CompactScanResults(size.coerceAtLeast(100))
+            flushDiskWriter()
+            val copy = CompactScanResults(minOf(size, MAX_MEM_ITEMS))
             copy.size = size
             copy.uniformLen = uniformLen
-            copy.offsets = offsets.copyOf(size)
-            copy.valueBytes = valueBytes.copyOf(totalBytesStored)
-            copy.totalBytesStored = totalBytesStored
-            if (uniformLen <= 0 && valueOffsets.isNotEmpty()) {
-                copy.valueOffsets = valueOffsets.copyOf(size)
-                copy.valueLengths = valueLengths.copyOf(size)
+            copy.lastOffset = lastOffset
+            copy.diskRecordLen = diskRecordLen
+
+            copy.memOffsets = memOffsets.copyOf(minOf(size, MAX_MEM_ITEMS))
+            copy.memValues = memValues.copyOf(memTotalBytes)
+            copy.memValueOffsets = memValueOffsets.copyOf(minOf(size, MAX_MEM_ITEMS))
+            copy.memValueLengths = memValueLengths.copyOf(minOf(size, MAX_MEM_ITEMS))
+            copy.memTotalBytes = memTotalBytes
+
+            val curFile = tempFile
+            if (curFile != null && curFile.exists()) {
+                try {
+                    val newFile = java.io.File.createTempFile("ps5_scan_snap_", ".bin").apply { deleteOnExit() }
+                    java.nio.file.Files.copy(curFile.toPath(), newFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                    copy.tempFile = newFile
+                } catch (_: Exception) {}
             }
             return copy
         }
@@ -496,6 +647,7 @@ fun MemoryScannerView(
 
                                 MemoryScannerState.allCandidates.replaceWith(survivorResults)
                                 totalMatchesCount = MemoryScannerState.allCandidates.size.toLong()
+                                previousCandidates.clear()
                             } else {
                                 // --- FIRST SCAN: Multi-range CMD_PROC_SCAN_START ---
                                 AppContainer.debuggerUseCase.log("SCAN", "Starting scan: vtVal=$vtVal, ctVal=$ctVal, alignment=$alignment, ${targetRanges.size} ranges, total=${totalScanBytes}B", com.osr.ps5debugger.domain.model.LogEntry.Level.INFO)
@@ -1142,7 +1294,7 @@ fun ScannerResults(
                     Column {
                         Text("Results", style = MaterialTheme.typography.titleMedium, color = PS5ThemeColors.TextMain)
                         Text(
-                            if (isScanning) timeRemainingText else "$totalHits matches kept in memory",
+                            if (isScanning) timeRemainingText else if (totalHits > 5000) "Showing first 5,000 of $totalHits matches" else "$totalHits matches found",
                             color = if (isScanning) PS5ThemeColors.AccentCyan else PS5ThemeColors.TextMuted,
                             fontSize = 11.sp
                         )
@@ -1193,11 +1345,12 @@ fun ScannerResults(
         }
 
         Box(modifier = Modifier.weight(1f)) {
+            val maxDisplayHits = minOf(totalHits, 5000)
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
-                items(totalHits) { idx ->
+                items(maxDisplayHits) { idx ->
                     val absAddr = allCandidates.getOffset(idx)
                     val valueBytes = allCandidates.getValueBytes(idx)
                     val containingMap = allVmMaps.firstOrNull { absAddr >= it.start && absAddr < it.end }

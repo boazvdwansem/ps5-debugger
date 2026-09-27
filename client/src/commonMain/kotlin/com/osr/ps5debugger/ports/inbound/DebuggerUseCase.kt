@@ -41,6 +41,7 @@ interface DebuggerUseCase {
     suspend fun refreshProcesses()
     suspend fun selectProcess(proc: Process?)
     suspend fun loadMemoryMaps(proc: Process)
+    fun setOfflineSession(process: Process?, processInfo: Ps5ProcessInfo?, maps: List<MemoryRange>)
     suspend fun pullFile(path: String): Result<ByteArray>
     suspend fun readMemory(address: Long, length: Int): Result<ByteArray>
     suspend fun writeMemory(address: Long, data: ByteArray): Result<Boolean>
@@ -58,6 +59,7 @@ interface DebuggerUseCase {
     fun addCheat(titleId: String, version: String, cheat: com.osr.ps5debugger.domain.model.Cheat, gameName: String = "Unknown")
     fun toggleCheat(titleId: String, version: String, cheatId: String): com.osr.ps5debugger.domain.model.Cheat?
     fun deleteCheat(titleId: String, version: String, cheatId: String)
+    fun toggleFreezeCheat(titleId: String, version: String, cheatId: String)
     fun updateGameName(titleId: String, name: String)
     fun updateGameVersion(titleId: String, version: String)
     fun updateGamePlatform(titleId: String, platform: String)

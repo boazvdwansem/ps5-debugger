@@ -26,8 +26,19 @@ object AppContainer {
     var elfEntryPoint: Long? = null
 
     val instructionsCache = mutableMapOf<String, androidx.compose.runtime.snapshots.SnapshotStateList<com.osr.ps5debugger.ui.DisasmLine>>()
-    val disassemblyProgressCache = mutableStateMapOf<String, Float>()
-    val hexCache = mutableMapOf<String, androidx.compose.runtime.snapshots.SnapshotStateMap<Long, ByteArray>>()
+    val disassemblyProgressCache = java.util.concurrent.ConcurrentHashMap<String, Float>()
+    val hexCache = androidx.compose.runtime.mutableStateMapOf<Long, ByteArray>()
+
+    class HexRegionProgress(
+        val completedChunks: MutableSet<Long> = java.util.concurrent.ConcurrentHashMap.newKeySet(),
+        @Volatile var loadedBytes: Long = 0L,
+        @Volatile var progress: Float = 0f,
+        @Volatile var isComplete: Boolean = false
+    )
+    val hexProgressCache = java.util.concurrent.ConcurrentHashMap<String, HexRegionProgress>()
+
+    var isOfflineSession by androidx.compose.runtime.mutableStateOf(false)
+    var loadedSessionName by androidx.compose.runtime.mutableStateOf<String?>(null)
     
     sealed class IconState {
         object Loading : IconState()
@@ -51,19 +62,41 @@ object AppContainer {
         cheatStorage = cheatStorageAdapter
     )
 
+    private const val MAX_DISASM_CACHED_REGIONS = 32
+
+    private val disasmAccessOrder = mutableListOf<String>()
+
     fun getInstructions(mapKey: String): androidx.compose.runtime.snapshots.SnapshotStateList<com.osr.ps5debugger.ui.DisasmLine> {
-        return instructionsCache.getOrPut(mapKey) { androidx.compose.runtime.mutableStateListOf() }
+        synchronized(disasmAccessOrder) {
+            disasmAccessOrder.remove(mapKey)
+            disasmAccessOrder.add(mapKey)
+            while (disasmAccessOrder.size > MAX_DISASM_CACHED_REGIONS) {
+                val oldestKey = disasmAccessOrder.removeAt(0)
+                if (oldestKey != mapKey) {
+                    instructionsCache.remove(oldestKey)
+                    disassemblyProgressCache.remove(oldestKey)
+                }
+            }
+            return instructionsCache.getOrPut(mapKey) { androidx.compose.runtime.mutableStateListOf() }
+        }
     }
 
-    fun getHexCache(mapKey: String): androidx.compose.runtime.snapshots.SnapshotStateMap<Long, ByteArray> {
-        return hexCache.getOrPut(mapKey) { androidx.compose.runtime.mutableStateMapOf() }
+    fun getHexCache(mapKey: String = ""): androidx.compose.runtime.snapshots.SnapshotStateMap<Long, ByteArray> {
+        return hexCache
+    }
+
+    fun clearHexCache() {
+        hexCache.clear()
+        hexProgressCache.clear()
     }
 
     fun clearCache(mapKey: String) {
+        synchronized(disasmAccessOrder) { disasmAccessOrder.remove(mapKey) }
         instructionsCache.remove(mapKey)
         disassemblyProgressCache.remove(mapKey)
-        hexCache.remove(mapKey)
+        hexProgressCache.remove(mapKey)
     }
+
 
     private fun isLikelyPrintableAscii(bytes: ByteArray): Boolean {
         if (bytes.isEmpty()) return false
@@ -301,6 +334,20 @@ object AppContainer {
     }
 
     suspend fun preloadRegionInBackground(map: com.osr.ps5debugger.domain.model.MemoryRange, pid: Int?, jumpToAddress: Long? = null) {
+        if (map.subRanges.isNotEmpty()) {
+            val execSubRanges = map.subRanges.filter { (it.protections and 4) != 0 || it.localData != null }
+            val targets = if (jumpToAddress != null) {
+                val matching = execSubRanges.find { jumpToAddress >= it.start && jumpToAddress < it.end }
+                if (matching != null) listOf(matching) else execSubRanges
+            } else {
+                execSubRanges
+            }
+            for (sub in targets) {
+                preloadRegionInBackground(sub, pid, jumpToAddress)
+            }
+            return
+        }
+
         val chunkSize = 64 * 1024L
         val focusAddr = (jumpToAddress ?: map.start).coerceIn(map.start, maxOf(map.start, map.end - 1))
         val focusChunkIdx = ((focusAddr - map.start) / chunkSize).toInt()
@@ -415,7 +462,7 @@ object AppContainer {
                             if (isZero && zStart < 0) zStart = i
                             if (!isZero && zStart >= 0) {
                                 val zlen = i - zStart
-                                if (zlen >= 2) zeroRanges.add(zStart to zlen)
+                                if (zlen >= 16) zeroRanges.add(zStart to zlen)
                                 zStart = -1
                             }
                         }
@@ -472,12 +519,25 @@ object AppContainer {
                             }
                         }
 
-                        val dataRanges = stringRanges + zeroRanges
-                        val filtered = if (dataRanges.isEmpty()) rawInstrs else {
+                        val filtered = if (stringRanges.isEmpty() && zeroRanges.isEmpty()) rawInstrs else {
                             rawInstrs.filterNot { instr ->
-                                val iStart = instr.addr - chunkStart
+                                val iStart = (instr.addr - chunkStart).toInt()
                                 val iEnd = iStart + instr.length
-                                dataRanges.any { (dOff, dLen) -> iStart < (dOff + dLen) && iEnd > dOff }
+                                if (iStart < 0 || iEnd > rawBytes.size) return@filterNot false
+
+                                val isInsideString = stringRanges.any { (sOff, sLen) ->
+                                    iStart >= sOff && iEnd <= (sOff + sLen)
+                                }
+                                if (isInsideString) return@filterNot true
+
+                                val isZeroInstr = (iStart until iEnd).all { rawBytes[it].toInt() == 0 }
+                                if (isZeroInstr) {
+                                    zeroRanges.any { (zOff, zLen) ->
+                                        iStart < (zOff + zLen) && iEnd > zOff
+                                    }
+                                } else {
+                                    false
+                                }
                             }
                         }
 

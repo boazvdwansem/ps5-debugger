@@ -16,6 +16,9 @@ import kotlinx.coroutines.sync.withPermit
 
 import androidx.compose.ui.graphics.Color
 import com.osr.ps5debugger.ui.disasm.DisasmFormatter
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 
 private data class PrintableRange(val offset: Int, val length: Int)
 
@@ -49,7 +52,7 @@ private fun findZeroDataRanges(bytes: ByteArray): List<PrintableRange> {
         if (isZero && start < 0) start = index
         if (!isZero && start >= 0) {
             val length = index - start
-            if (length >= 2) {
+            if (length >= 16) {
                 ranges += PrintableRange(start, length)
             }
             start = -1
@@ -205,25 +208,32 @@ class MemoryViewerState(
     val selectedDbRegs = AppContainer.debuggerUseCase.selectedDbRegs
     val selectedFsGs = AppContainer.debuggerUseCase.selectedFsGs
     private var lastLoadedMapKey: String? = null
+    private var xrefJob: Job? = null
+
+    fun cancelBackgroundJobs() {
+        xrefJob?.cancel()
+    }
 
     suspend fun loadInitialInstructions() {
+        cancelBackgroundJobs()
         val activeProcess = AppContainer.debuggerUseCase.activeProcess.value
         val isConnected = AppContainer.debuggerUseCase.isConnected.value
 
         val allTargets = (listOfNotNull(activeMap) + activeMaps).distinctBy { it.start }
         val currentTarget = activeMap ?: allTargets.firstOrNull() ?: return
         
-        val hasRemote = allTargets.any { it.localData == null }
-        val hasLocal = allTargets.any { it.localData != null }
+        val hasRemote = currentTarget.localData == null
+        val hasLocal = currentTarget.localData != null
         
-        if (hasRemote && !hasLocal && (activeProcess == null || !isConnected)) {
+        if (hasRemote && !hasLocal && (activeProcess == null || (!isConnected && !AppContainer.isOfflineSession))) {
             instructions.clear()
             lastLoadedMapKey = null
             return
         }
 
-        val execTargets = allTargets.filter { (it.protections and 4) != 0 || it.localData != null }
-        val currentTargets = (listOfNotNull(activeMap) + execTargets).distinctBy { it.start }
+        // Strictly ONLY disassemble the currently active memory region.
+        // Background regions are ignored to prevent network socket congestion.
+        val currentTargets = listOf(currentTarget)
         
         if (currentTargets.isEmpty()) {
             instructions.clear()
@@ -244,18 +254,20 @@ class MemoryViewerState(
                 disassemblyProgressLabel = if (cachedProgress >= 1f) "Disassembly ready" else "Disassembling memory..."
             }
         }
+        val isFullyCached = cachedProgress == 1f
         // MemoryViewerState is recreated when navigating away and back, but the instruction
         // cache lives in AppContainer. Reuse that cache instead of restarting the scan/progress.
-        if (instructions.isNotEmpty() && lastLoadedMapKey == null) {
+        if (instructions.isNotEmpty() && lastLoadedMapKey == null && isFullyCached) {
             withContext(Dispatchers.Main) {
                 lastLoadedMapKey = mapKey
                 isLoading = false
                 disassemblyProgress = 1f
                 disassemblyProgressLabel = "Disassembly ready"
             }
+            updateMetadata()
             return
         }
-        if (currentTarget.localData != null && mapKey == lastLoadedMapKey && instructions.isNotEmpty()) {
+        if (mapKey == lastLoadedMapKey && instructions.isNotEmpty() && isFullyCached) {
             return
         }
 
@@ -275,7 +287,15 @@ class MemoryViewerState(
                 val client = AppContainer.clientAdapter.client
                 val allLines = mutableListOf<DisasmLine>()
                 
-                for (map in currentTargets) {
+                val targetsToDisassemble = currentTargets.flatMap { target ->
+                    if (target.subRanges.isNotEmpty() && target.localData == null) {
+                        target.subRanges.filter { (it.protections and 4) != 0 }.ifEmpty { listOf(target) }
+                    } else {
+                        listOf(target)
+                    }
+                }.distinctBy { it.start }
+
+                for (map in targetsToDisassemble) {
                     if (map.localData != null && map.subRanges.isNotEmpty()) {
                         // Parallel segment disassembly for local files
                         val segmentResults = map.subRanges.map { seg ->
@@ -300,15 +320,15 @@ class MemoryViewerState(
                         // large map does not turn into an ever-growing queue of console requests.
                         val chunkSize = 64 * 1024L
                         val totalRegionChunks = ((map.end - map.start + chunkSize - 1) / chunkSize).toInt().coerceAtLeast(1)
-                        // For large regions (>32 chunks / >2MB), restrict disassembly
-                        // to a localized window (~2MB / 32 chunks) around the focus address rather than
+                        // For large regions (>256 chunks / >16MB), restrict disassembly
+                        // to a localized window (~8MB / 128 chunks) around the focus address rather than
                         // sequentially disassembling megabytes or gigabytes over socket / in memory.
-                        val isLargeRegion = totalRegionChunks > 32
+                        val isLargeRegion = totalRegionChunks > 256
 
                         val prioritizedRequests = if (isLargeRegion) {
                             val focusAddr = (currentJumpAddress ?: jumpToAddress ?: map.start).coerceIn(map.start, maxOf(map.start, map.end - 1))
                             val focusChunkIdx = ((focusAddr - map.start) / chunkSize).toInt().coerceIn(0, totalRegionChunks - 1)
-                            val windowRadius = 16 // 32 chunks = 2MB window
+                            val windowRadius = 64 // 128 chunks = 8MB window
                             val startIdx = maxOf(0, focusChunkIdx - windowRadius)
                             val endIdx = minOf(totalRegionChunks, focusChunkIdx + windowRadius + 1)
                             (startIdx until endIdx).map { idx ->
@@ -337,15 +357,18 @@ class MemoryViewerState(
                                         if (map.localData != null) {
                                             val offset = (chunkStart - map.start).toInt()
                                             map.localData.copyOfRange(offset, offset + len)
-                                        } else {
+                                        } else if (AppContainer.clientAdapter.isConnected) {
                                             client.readMemory(activeProcess!!.pid, chunkStart, len)
+                                        } else {
+                                            AppContainer.debuggerUseCase.readMemory(chunkStart, len).getOrNull() ?: ByteArray(0)
                                         }
                                     } catch (_: Exception) { ByteArray(0) }
                                     if (rawBytes.isEmpty()) return@withPermit emptyList<DisasmLine>()
 
                                     val syncAddrs = (AppContainer.discoveredFunctions.toSet() + AppContainer.symbolNames.keys.toSet() + AppContainer.discoveredJumpTargets.toSet())
+                                    val isLocalOrOffline = map.localData != null || !AppContainer.clientAdapter.isConnected
                                     val rawInstrs = try {
-                                        if (map.localData != null) {
+                                        if (isLocalOrOffline) {
                                             com.osr.ps5debugger.util.LocalDisassembler.disassemble(rawBytes, chunkStart, syncAddrs)
                                         } else {
                                             // Keep the response bounded. The region is already split
@@ -355,7 +378,7 @@ class MemoryViewerState(
                                         }
                                     } catch (_: Exception) { emptyList() }
 
-                                    if (map.localData != null) {
+                                    if (isLocalOrOffline) {
                                         // Local disassembler already decodes strings and groups data/zeroes cleanly
                                         rawInstrs.map { instr ->
                                             val offset = (instr.addr - chunkStart).toInt()
@@ -421,15 +444,26 @@ class MemoryViewerState(
                                                 emittedBytes += instrLen
                                             }
                                         }
-                                        val dataRanges = stringRanges + zeroRanges
-                                        val filteredInstrs = if (dataRanges.isEmpty()) {
+                                        val filteredInstrs = if (stringRanges.isEmpty() && zeroRanges.isEmpty()) {
                                             rawInstrs
                                         } else {
                                             rawInstrs.filterNot { instr ->
-                                                val instrStart = instr.addr - chunkStart
+                                                val instrStart = (instr.addr - chunkStart).toInt()
                                                 val instrEnd = instrStart + instr.length
-                                                dataRanges.any { range ->
-                                                    instrStart < (range.offset + range.length) && instrEnd > range.offset
+                                                if (instrStart < 0 || instrEnd > rawBytes.size) return@filterNot false
+
+                                                val isInsideString = stringRanges.any { range ->
+                                                    instrStart >= range.offset && instrEnd <= (range.offset + range.length)
+                                                }
+                                                if (isInsideString) return@filterNot true
+
+                                                val isZeroInstr = (instrStart until instrEnd).all { rawBytes[it].toInt() == 0 }
+                                                if (isZeroInstr) {
+                                                    zeroRanges.any { range ->
+                                                        instrStart < (range.offset + range.length) && instrEnd > range.offset
+                                                    }
+                                                } else {
+                                                    false
                                                 }
                                             }
                                         }
@@ -443,10 +477,14 @@ class MemoryViewerState(
                                 }
                             chunkLines.addAll(result)
                             withContext(Dispatchers.Main) {
-                                disassemblyProgress = (index + 1).toFloat() / prioritizedRequests.size.coerceAtLeast(1)
-                                disassemblyProgressLabel = "Disassembling memory..."
-                                AppContainer.disassemblyProgressCache[mapKey] = disassemblyProgress
+                                val prog = (index + 1).toFloat() / prioritizedRequests.size.coerceAtLeast(1)
+                                if (map.start == currentTarget.start) {
+                                    disassemblyProgress = prog
+                                    disassemblyProgressLabel = "Disassembling memory..."
+                                }
+                                AppContainer.disassemblyProgressCache[mapKey] = prog
                             }
+                            kotlinx.coroutines.delay(5)
                         }
                         allLines.addAll(chunkLines)
                     }
@@ -492,7 +530,7 @@ class MemoryViewerState(
                 isLoading = false
             }
             updateMetadata()
-            scope.launch { fetchXrefs(finalLines) }
+            xrefJob = scope.launch { fetchXrefs(finalLines) }
         } catch (e: Exception) {
             // ignore
         } finally {
@@ -521,6 +559,7 @@ class MemoryViewerState(
             .take(50) // Limit per batch
 
         for (target in targets) {
+            if (!currentCoroutineContext().isActive) break
             try {
                 val refs = client.findXrefs(pid, scanStart, scanLen, target)
                 if (refs.isNotEmpty()) {
@@ -574,20 +613,5 @@ fun rememberMemoryViewerState(
         }
     }
 
-    val isConnected by AppContainer.debuggerUseCase.isConnected.collectAsState()
-    val activeProcess by AppContainer.debuggerUseCase.activeProcess.collectAsState()
-    val selectedMapsSnapshot = state.activeMaps.toList()
-    LaunchedEffect(state.activeMap, selectedMapsSnapshot, state.currentJumpAddress, isConnected, activeProcess) {
-        val allMaps = (listOfNotNull(state.activeMap) + selectedMapsSnapshot).distinctBy { it.start }
-        if (allMaps.isEmpty()) return@LaunchedEffect
-
-        val hasLocal = allMaps.any { it.localData != null }
-        val hasRemote = allMaps.any { it.localData == null }
-
-        if (hasLocal || (hasRemote && isConnected && activeProcess != null)) {
-            state.loadInitialInstructions()
-        }
-    }
-    
     return state
 }

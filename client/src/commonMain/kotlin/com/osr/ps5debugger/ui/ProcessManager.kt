@@ -20,6 +20,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.osr.ps5debugger.domain.model.MemoryRange
+import com.osr.ps5debugger.domain.model.Process
 import com.osr.ps5debugger.domain.model.DumpRegionEntry
 import com.osr.ps5debugger.service.MemoryDumper
 import com.osr.ps5debugger.di.AppContainer
@@ -40,6 +41,7 @@ fun ProcessManager(
     activeMap: MemoryRange?,
     activeMaps: List<MemoryRange> = emptyList(),
     onMapsSelected: ((List<MemoryRange>) -> Unit)? = null,
+    onProcessSelected: ((Process) -> Unit)? = null,
     modifier: Modifier = Modifier,
     onCollapse: (() -> Unit)? = null
 ) {
@@ -192,6 +194,9 @@ fun ProcessManager(
                             .background(if (isSelected) PS5ThemeColors.AccentCyan.copy(alpha = 0.15f) else Color.Transparent)
                             .clickable {
                                 coroutineScope.launch { 
+                                    if (activeProcess?.pid != proc.pid) {
+                                        onProcessSelected?.invoke(proc)
+                                    }
                                     AppContainer.debuggerUseCase.selectProcess(proc)
                                     // Auto switch to memory regions tab when a process is selected
                                     activeTab = 1
@@ -311,6 +316,9 @@ fun ProcessManager(
                                                 (activeMaps + entryMergedRange).distinctBy { it.uiKey() }.sortedBy { it.start }
                                             }
                                             onMapsSelected(newList)
+                                            if (!isSelectedEntry) {
+                                                onMapSelected(entryMergedRange)
+                                            }
                                         } else {
                                             onMapSelected(entryMergedRange)
                                         }

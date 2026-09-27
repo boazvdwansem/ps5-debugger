@@ -74,13 +74,21 @@ fun MainScreen(state: MainState) {
     }
 
     Ps5DebuggerTheme {
-        if (!isConnected && !AppContainer.debugMockEnabled) {
+        if (!isConnected && !AppContainer.debugMockEnabled && !state.isOfflineSession) {
             ConnectionScreen(
                 onSettingsClick = { state.isSettingsOpen = true },
-                onLoadEboot = { state.handleFileAction("Load eboot") }
+                onLoadEboot = { state.handleFileAction("Load eboot") },
+                onLoadSession = { file -> state.loadSessionFile(file) }
             )
         } else {
             MainLayout(state)
+        }
+
+        if (state.showSaveSessionDialog) {
+            com.osr.ps5debugger.ui.dialogs.SaveSessionDialog(
+                state = state,
+                onDismiss = { state.showSaveSessionDialog = false }
+            )
         }
 
         if (state.isSettingsOpen) {
@@ -137,10 +145,11 @@ private fun MainLayout(state: MainState) {
         }
     }
 
-    LaunchedEffect(activeProcess) {
+    LaunchedEffect(activeProcess?.pid) {
+        if (!AppContainer.isOfflineSession) {
+            state.closeAllOpenedRegions()
+        }
         if (activeProcess == null) {
-            state.activeMap = null
-            state.activeMaps.clear()
             if (activeLeftTab == "map" || activeLeftTab == "symbols") {
                 activeLeftTab = "connections"
             }
@@ -154,37 +163,7 @@ private fun MainLayout(state: MainState) {
         (listOfNotNull(state.activeMap) + activeMapsSnapshot).distinctBy { it.start }
     }
 
-    // Continuous background processing for open regions AND all remaining memory regions
-    LaunchedEffect(allOpenMaps, vmMaps, isConnected, activeProcess, state.jumpToAddress) {
-        val hasLocal = allOpenMaps.any { it.localData != null } || vmMaps.any { it.localData != null }
-        val hasRemote = allOpenMaps.any { it.localData == null } || vmMaps.any { it.localData == null }
-        if (!hasLocal && (!hasRemote || !isConnected || activeProcess == null)) return@LaunchedEffect
 
-        val pid = activeProcess?.pid
-        val jumpAddr = state.jumpToAddress
-        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-            // 1. High priority: Preload all currently open/selected maps first
-            for (map in allOpenMaps) {
-                if (!isActive) return@withContext
-                AppContainer.preloadRegionInBackground(map, pid, jumpAddr)
-            }
-
-            // 2. Background scanner: Continue scanning all other memory regions in the background
-            val otherMaps = vmMaps
-                .filterNot { vm -> allOpenMaps.any { it.start == vm.start } }
-                .filter { (it.protections and 1) != 0 || it.localData != null }
-                .sortedWith(
-                    compareByDescending<com.osr.ps5debugger.domain.model.MemoryRange> { (it.protections and 4) != 0 || it.localData != null }
-                        .thenBy { it.start }
-                )
-
-            for (map in otherMaps) {
-                if (!isActive) break
-                AppContainer.preloadRegionInBackground(map, pid, null)
-                kotlinx.coroutines.yield()
-            }
-        }
-    }
 
     LaunchedEffect(Unit) {
         focusRequester.requestFocus()
@@ -410,8 +389,11 @@ private fun MainLayout(state: MainState) {
                                             state.activeMaps.clear()
                                             state.activeMaps.addAll(maps)
                                             if (state.activeMap == null || !maps.any { it.start == state.activeMap?.start }) {
-                                                state.activeMap = maps.firstOrNull()
+                                                state.activeMap = maps.lastOrNull() ?: maps.firstOrNull()
                                             }
+                                        },
+                                        onProcessSelected = {
+                                            state.closeAllOpenedRegions()
                                         },
                                         activeMap = state.activeMap,
                                         activeMaps = state.activeMaps
@@ -593,7 +575,7 @@ private fun TabContent(
     when (state.selectedTab) {
         0 -> MemoryViewerLayout(
             activeMap = state.activeMap,
-            activeMaps = emptyList(), // Only show activeMap, don't stack them
+            activeMaps = state.activeMaps,
             jumpToAddress = state.jumpToAddress,
             viewModeParam = state.viewMode,
             onViewModeChanged = { state.viewMode = it },
@@ -778,30 +760,65 @@ private fun TopBar(state: MainState, isMobile: Boolean, onSettingsClick: () -> U
         Spacer(Modifier.weight(1f))
 
         // Connection Status Indicator
-        Surface(
-            color = if (state.isConnected.collectAsState().value) Color(0xFF43A047).copy(alpha = 0.1f) else Color(0xFFE53935).copy(alpha = 0.1f),
-            shape = RoundedCornerShape(16.dp),
-            modifier = Modifier.padding(end = 12.dp)
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+        if (state.isOfflineSession) {
+            Surface(
+                color = PS5ThemeColors.AccentCyan.copy(alpha = 0.15f),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.padding(end = 12.dp)
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(8.dp)
-                        .background(
-                            if (state.isConnected.collectAsState().value) Color(0xFF43A047) else Color(0xFFE53935),
-                            RoundedCornerShape(4.dp)
-                        )
-                )
-                Text(
-                    text = if (state.isConnected.collectAsState().value) "CONNECTED" else "DISCONNECTED",
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = if (state.isConnected.collectAsState().value) Color(0xFF43A047) else Color(0xFFE53935)
-                )
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .background(PS5ThemeColors.AccentCyan, RoundedCornerShape(4.dp))
+                    )
+                    Text(
+                        text = "OFFLINE: ${state.loadedSessionName ?: "SESSION"}",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = PS5ThemeColors.AccentCyan
+                    )
+                    Text(
+                        text = "Close",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = PS5ThemeColors.TextMuted,
+                        modifier = Modifier
+                            .padding(start = 4.dp)
+                            .clickable { state.closeOfflineSession() }
+                    )
+                }
+            }
+        } else {
+            Surface(
+                color = if (state.isConnected.collectAsState().value) Color(0xFF43A047).copy(alpha = 0.1f) else Color(0xFFE53935).copy(alpha = 0.1f),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.padding(end = 12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .background(
+                                if (state.isConnected.collectAsState().value) Color(0xFF43A047) else Color(0xFFE53935),
+                                RoundedCornerShape(4.dp)
+                            )
+                    )
+                    Text(
+                        text = if (state.isConnected.collectAsState().value) "CONNECTED" else "DISCONNECTED",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (state.isConnected.collectAsState().value) Color(0xFF43A047) else Color(0xFFE53935)
+                    )
+                }
             }
         }
 

@@ -20,6 +20,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.yield
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 
 enum class ClickedArea { ADDRESS, HEX, ASCII }
@@ -36,11 +37,7 @@ class HexState(
     val scope: CoroutineScope
 ) {
     val pageSize = 65536
-    val memoryCache: androidx.compose.runtime.snapshots.SnapshotStateMap<Long, ByteArray> get() {
-        val map = activeMap ?: activeMaps.firstOrNull()
-        val key = map?.let { "${it.start}_${it.end}_${it.name}" } ?: "default"
-        return AppContainer.getHexCache(key)
-    }
+    val memoryCache: androidx.compose.runtime.snapshots.SnapshotStateMap<Long, ByteArray> get() = AppContainer.hexCache
     val pendingEdits = mutableStateMapOf<Long, Byte>()
     
     var activeMap by mutableStateOf(activeMapInitial)
@@ -89,15 +86,144 @@ class HexState(
 
     var loadedPagesCount by mutableIntStateOf(0)
     var totalPagesCount by mutableIntStateOf(0)
-    val loadingProgress by derivedStateOf { 
-        if (totalPagesCount > 0) loadedPagesCount.toFloat() / totalPagesCount.toFloat() else 0f 
+
+    private val isInitialLocal = (activeMapInitial?.localData != null) || (activeMapsInitial.isNotEmpty() && activeMapsInitial.all { it.localData != null })
+    var loadingProgress by mutableFloatStateOf(if (isInitialLocal) 1f else 0f)
+    var isCurrentTargetReady by mutableStateOf(isInitialLocal)
+    var isHexComplete by mutableStateOf(isInitialLocal)
+
+    var loadedBytes by mutableLongStateOf(0L)
+    var currentTargetRegionKey by mutableStateOf<String?>(null)
+
+    private val fallbackRegionProgress = AppContainer.HexRegionProgress()
+
+    val currentRegionProgress: AppContainer.HexRegionProgress
+        get() {
+            val key = currentTargetRegionKey ?: getRegionKey()
+            return if (key.isNotEmpty()) {
+                AppContainer.hexProgressCache.getOrPut(key) { AppContainer.HexRegionProgress() }
+            } else {
+                fallbackRegionProgress
+            }
+        }
+
+    val completedChunks: MutableSet<Long>
+        get() = currentRegionProgress.completedChunks
+
+    fun getRegionKey(): String {
+        val targets = getEffectiveTargets()
+        return targets.joinToString(";") { "${it.start}-${it.end}" }
+    }
+
+    fun restoreRegionProgress() {
+        val currentEffective = getEffectiveTargets()
+        val allLocal = currentEffective.isNotEmpty() && currentEffective.all { it.localData != null }
+        val currentIsLocal = (activeMap?.localData != null) || allLocal
+
+        if (currentEffective.isEmpty()) {
+            currentTargetRegionKey = null
+            loadingProgress = 0f
+            isCurrentTargetReady = false
+            isHexComplete = false
+            loadedBytes = 0L
+            return
+        }
+
+        val regionKey = currentEffective.joinToString(";") { "${it.start}-${it.end}" }
+        currentTargetRegionKey = regionKey
+
+        if (allLocal || currentIsLocal || AppContainer.isOfflineSession) {
+            loadingProgress = 1f
+            isCurrentTargetReady = true
+            isHexComplete = true
+            return
+        }
+
+        val cached = AppContainer.hexProgressCache[regionKey]
+        if (cached != null) {
+            loadedBytes = cached.loadedBytes
+            loadingProgress = cached.progress
+            isHexComplete = cached.isComplete
+            isCurrentTargetReady = cached.isComplete || cached.progress > 0f
+        } else {
+            loadedBytes = 0L
+            loadingProgress = 0f
+            isHexComplete = false
+            isCurrentTargetReady = false
+        }
+    }
+
+    init {
+        restoreRegionProgress()
+    }
+
+    fun pruneCacheIfNeeded() {
+        if (AppContainer.isOfflineSession) return
+        val maxPages = 8192 // 512MB cache limit (8192 * 64KB)
+        val runtime = Runtime.getRuntime()
+        val freeMem = runtime.freeMemory()
+        
+        // Only prune if we exceed 512MB OR if JVM free memory drops dangerously low (< 80MB)
+        val needsPrune = memoryCache.size > maxPages || (freeMem < 80 * 1024 * 1024L && memoryCache.size > 2048)
+        if (!needsPrune) return
+
+        val targetPages = if (freeMem < 80 * 1024 * 1024L) maxOf(1024, memoryCache.size - 256) else maxPages
+        val countToRemove = memoryCache.size - targetPages
+        if (countToRemove <= 0) return
+
+        val centerAddr = getAddressForRow(scrollPosition)
+        val centerPage = (centerAddr / pageSize) * pageSize
+
+        val keysToRemove = memoryCache.keys
+            .sortedByDescending { kotlin.math.abs(it - centerPage) }
+            .take(countToRemove)
+
+        androidx.compose.runtime.snapshots.Snapshot.withMutableSnapshot {
+            for (p in keysToRemove) {
+                memoryCache.remove(p)
+            }
+        }
+    }
+
+    fun getEffectiveTargets(): List<MemoryRange> {
+        val base = if (activeMap != null) listOf(activeMap!!) else activeMaps.toList()
+        return base.flatMap { map ->
+            if (map.subRanges.isNotEmpty()) {
+                map.subRanges
+            } else {
+                listOf(map)
+            }
+        }.sortedBy { it.start }
+    }
+
+    fun getAllOpenTargets(): List<MemoryRange> {
+        val base = if (activeMaps.isNotEmpty()) activeMaps.toList() else listOfNotNull(activeMap)
+        return base.flatMap { map ->
+            if (map.subRanges.isNotEmpty()) {
+                map.subRanges
+            } else {
+                listOf(map)
+            }
+        }
     }
 
     fun updateScrollPosition(newPos: Long) {
         scrollPosition = newPos
         // Store scroll position based on the first map's start to maintain context
-        val sorted = if (activeMap != null) listOf(activeMap!!) else activeMaps.sortedBy { it.start }
+        val sorted = getEffectiveTargets()
         sorted.firstOrNull()?.let { hexViewerScrollPositions[it.start] = newPos }
+    }
+
+    fun restoreScrollForActiveMap() {
+        val saved = activeMap?.let { hexViewerScrollPositions[it.start] } ?: 0L
+        scrollPosition = saved.coerceIn(0L, getMaxScrollPosition())
+    }
+
+    fun cancelJobs() {
+        loadJob?.cancel()
+        greedyJob?.cancel()
+        isLoading = false
+        isGreedyLoading = false
     }
 
     fun changeSelection(start: Long?, end: Long?) {
@@ -108,7 +234,7 @@ class HexState(
 
     fun getAddressForRow(row: Long): Long {
         var remainingRows = row
-        val sorted = if (activeMap != null) listOf(activeMap!!) else activeMaps.sortedBy { it.start }
+        val sorted = getEffectiveTargets()
         for (map in sorted) {
             val rowsInMap = (map.end - map.start + bytesPerRow - 1) / bytesPerRow
             if (remainingRows < rowsInMap) {
@@ -121,7 +247,7 @@ class HexState(
 
     fun getRowForAddress(address: Long): Long {
         var rowCount = 0L
-        val sorted = if (activeMap != null) listOf(activeMap!!) else activeMaps.sortedBy { it.start }
+        val sorted = getEffectiveTargets()
         for (map in sorted) {
             if (address >= map.start && address < map.end) {
                 return rowCount + (address - map.start) / bytesPerRow
@@ -131,10 +257,12 @@ class HexState(
         return rowCount
     }
 
+    fun getTotalRows(): Long {
+        return getEffectiveTargets().sumOf { (it.end - it.start + bytesPerRow - 1) / bytesPerRow }
+    }
+
     fun getMaxScrollPosition(): Long {
-        val sorted = if (activeMap != null) listOf(activeMap!!) else activeMaps.sortedBy { it.start }
-        val rowCount = sorted.sumOf { (it.end - it.start + bytesPerRow - 1) / bytesPerRow }
-        return maxOf(0L, rowCount - visibleRowsCount)
+        return maxOf(0L, getTotalRows() - visibleRowsCount)
     }
 
     fun handleKeyEvent(keyEvent: androidx.compose.ui.input.key.KeyEvent): Boolean {
@@ -186,7 +314,7 @@ class HexState(
             val nextCursor = if (kotlin.math.abs(step) == 1) {
                 // Horizontal move: try simple add but check if it's still in a valid map
                 val simpleNext = cursor + step
-                val targets = if (activeMap != null) listOf(activeMap!!) else activeMaps.toList()
+                val targets = getEffectiveTargets()
                 if (targets.any { simpleNext >= it.start && simpleNext < it.end }) {
                     simpleNext
                 } else {
@@ -195,7 +323,7 @@ class HexState(
                 }
             } else {
                 // Vertical move: jump by row index
-                val nextRow = (currentRow + (step / bytesPerRow)).coerceIn(0L, ((if (activeMap != null) listOf(activeMap!!) else activeMaps).sumOf { (it.end - it.start + bytesPerRow - 1) / bytesPerRow }) - 1)
+                val nextRow = (currentRow + (step / bytesPerRow)).coerceIn(0L, (getEffectiveTargets().sumOf { (it.end - it.start + bytesPerRow - 1) / bytesPerRow }) - 1)
                 getAddressForRow(nextRow) + (cursor % bytesPerRow) // Try to maintain column
             }
 
@@ -249,7 +377,7 @@ class HexState(
     fun advanceCursor() {
         val cursor = selectionEnd ?: return
         val nextCursor = cursor + 1
-        val targets = if (activeMap != null) listOf(activeMap!!) else activeMaps.toList()
+        val targets = getEffectiveTargets()
         if (targets.any { nextCursor >= it.start && nextCursor < it.end }) {
             val nextStart = if (selectionStart == cursor) nextCursor else selectionStart
             changeSelection(nextStart, nextCursor)
@@ -260,303 +388,417 @@ class HexState(
     private var greedyJob: kotlinx.coroutines.Job? = null
 
     fun loadMemory(forceRefresh: Boolean = false) {
+        if (AppContainer.isOfflineSession) return
         val pid = AppContainer.debuggerUseCase.activeProcess.value?.pid
-        val targets = if (activeMap != null) listOf(activeMap!!) else activeMaps.toList()
+        val targets = getEffectiveTargets()
         if (targets.isEmpty()) return
         
-        val allLocal = targets.all { it.localData != null }
-        if (!allLocal && pid == null) return
-        
+        val remoteTargets = targets.filter { it.localData == null }
+        if (remoteTargets.isEmpty() || pid == null) return
+
+        if (!forceRefresh) {
+            val viewAddr = getAddressForRow(scrollPosition)
+            val viewPage = (viewAddr / pageSize) * pageSize
+            if (memoryCache.containsKey(viewPage)) {
+                return
+            }
+            if (!isGreedyLoading) {
+                startGreedyLoader()
+            }
+            return
+        }
+
+        val totalRows = getTotalRows()
+        val neededPages = LinkedHashSet<Long>()
+        for (r in 0 until visibleRowsCount) {
+            val row = scrollPosition + r
+            if (row in 0 until totalRows) {
+                val rowAddr = getAddressForRow(row)
+                neededPages.add((rowAddr / pageSize) * pageSize)
+            }
+        }
         loadJob?.cancel()
         loadJob = scope.launch {
-            if (!allLocal && !forceRefresh) delay(10) // Small delay to prevent jitter
-            
-            isLoading = true
             try {
-                val visibleStart = getAddressForRow(scrollPosition)
-                // Use visibleRowsCount + some buffer to pre-load slightly ahead
-                val bufferRows = 10
-                val visibleEnd = getAddressForRow(scrollPosition + visibleRowsCount + bufferRows)
-                
                 withContext(Dispatchers.IO) {
-                    val currentVisiblePage = (visibleStart / pageSize) * pageSize
-                    if (memoryCache.size > 512) {
-                        val pagesToRemove = memoryCache.keys.filter { pageAddr ->
-                            kotlin.math.abs(pageAddr - currentVisiblePage) > 256 * pageSize
-                        }
-                        for (p in pagesToRemove) {
-                            memoryCache.remove(p)
-                        }
-                    }
-
-                    var page = currentVisiblePage
-                    while (page <= visibleEnd) {
-                        if (forceRefresh || !memoryCache.containsKey(page)) {
-                            loadPage(pid, page, targets)
-                            withContext(Dispatchers.Main) { 
-                                loadedPagesCount = memoryCache.size
-                            }
-                        }
-                        page += pageSize.toLong()
+                    for (page in neededPages) {
+                        if (!isActive) break
+                        loadPage(pid, page, remoteTargets)
                     }
                 }
             } finally {
-                isLoading = false
             }
         }
     }
 
-    private suspend fun loadPage(pid: Int?, page: Long, targets: List<MemoryRange>, skipChangeTracking: Boolean = false) {
+    private suspend fun loadPage(pid: Int?, page: Long, targets: List<MemoryRange>, skipChangeTracking: Boolean = false): Boolean {
         try {
-            val pageData = ByteArray(pageSize)
+            val overlappingMaps = targets.filter { it.localData == null && it.start < page + pageSize && it.end > page }
+            if (overlappingMaps.isEmpty() || pid == null) return false
+
+            val pageData = memoryCache[page]?.copyOf() ?: ByteArray(pageSize)
             var hasData = false
-            val overlappingMaps = targets.filter { it.start < page + pageSize && it.end > page }
-            
+
             for (map in overlappingMaps) {
                 val readStart = maxOf(page, map.start)
                 val readEnd = minOf(page + pageSize, map.end)
                 if (readStart < readEnd) {
                     val readLen = (readEnd - readStart).toInt()
                     try {
-                        val data = if (map.localData != null) {
-                            val localOffset = (readStart - map.start).toInt()
-                            map.localData.copyOfRange(localOffset, localOffset + readLen)
-                        } else if (pid != null) {
-                            AppContainer.clientAdapter.client.readMemory(pid, readStart, readLen)
-                        } else ByteArray(readLen)
-                        
-                        val destOffset = (readStart - page).toInt()
-                        
-                        // CHANGE TRACKING LOGIC — skip on first load and during greedy pre-fetching
-                        if (!skipChangeTracking) {
-                            val oldData = memoryCache[page]
-                            if (oldData != null) {
-                                for (i in 0 until data.size) {
-                                    val absAddr = readStart + i
-                                    val oldVal = oldData[destOffset + i]
-                                    val newVal = data[i]
-                                    if (newVal != oldVal) {
-                                        changedBytes[absAddr] = System.currentTimeMillis()
-                                        
-                                        // Log the change
-                                        AppContainer.debuggerUseCase.log(
-                                            "MEMORY",
-                                            "Value at 0x${absAddr.toString(16).uppercase()} changed: 0x${(oldVal.toInt() and 0xFF).toString(16).padStart(2, '0').uppercase()} -> 0x${(newVal.toInt() and 0xFF).toString(16).padStart(2, '0').uppercase()}",
-                                            com.osr.ps5debugger.domain.model.LogEntry.Level.INFO
-                                        )
+                        val data = AppContainer.clientAdapter.client.readMemory(pid, readStart, readLen)
+                        if (data.isNotEmpty()) {
+                            val destOffset = (readStart - page).toInt()
+                            withContext(NonCancellable) {
+                                if (!skipChangeTracking) {
+                                    val oldData = memoryCache[page]
+                                    if (oldData != null) {
+                                        var changedCount = 0
+                                        for (i in 0 until minOf(data.size, pageSize - destOffset)) {
+                                            val absAddr = readStart + i
+                                            val oldVal = oldData[destOffset + i]
+                                            val newVal = data[i]
+                                            if (newVal != oldVal) {
+                                                changedBytes[absAddr] = System.currentTimeMillis()
+                                                changedCount++
+                                                if (changedCount <= 5) {
+                                                    AppContainer.debuggerUseCase.log(
+                                                        "MEMORY",
+                                                        "Value at 0x${absAddr.toString(16).uppercase()} changed: 0x${(oldVal.toInt() and 0xFF).toString(16).padStart(2, '0').uppercase()} -> 0x${(newVal.toInt() and 0xFF).toString(16).padStart(2, '0').uppercase()}",
+                                                        com.osr.ps5debugger.domain.model.LogEntry.Level.INFO
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        if (changedBytes.size > 2000) {
+                                            val cutoff = System.currentTimeMillis() - 5000L
+                                            val expired = changedBytes.filter { it.value < cutoff }.keys
+                                            expired.forEach { changedBytes.remove(it) }
+                                        }
                                     }
                                 }
+
+                                val copyLen = minOf(data.size, pageSize - destOffset)
+                                if (copyLen > 0) {
+                                    System.arraycopy(data, 0, pageData, destOffset, copyLen)
+                                }
+                                hasData = true
                             }
                         }
-
-                        System.arraycopy(data, 0, pageData, destOffset, data.size)
-                        hasData = true
                     } catch (_: Exception) {}
                 }
             }
-            if (hasData || overlappingMaps.isEmpty()) {
-                memoryCache[page] = pageData
+
+            if (hasData) {
+                withContext(Dispatchers.Main) {
+                    memoryCache[page] = pageData
+                    pruneCacheIfNeeded()
+                }
             }
-        } catch (e: Exception) {
-            memoryCache[page] = ByteArray(pageSize)
+            return hasData
+        } catch (_: Exception) {
+            return false
         }
     }
 
     fun startGreedyLoader() {
-        val pid = AppContainer.debuggerUseCase.activeProcess.value?.pid
-        val targets = if (activeMap != null) listOf(activeMap!!) else activeMaps.toList()
-        if (targets.isEmpty()) return
-
-        val totalBytes = targets.sumOf { it.end - it.start }
-        val allLocal = targets.all { it.localData != null }
-
-        // For large regions (>32MB, e.g. 1GB+), skip full-region greedy downloading.
-        // HexViewer is virtualized and loads visible pages on demand via loadMemory().
-        if (totalBytes > 32 * 1024 * 1024L) {
-            totalPagesCount = 0
-            loadedPagesCount = 0
+        greedyJob?.cancel()
+        if (AppContainer.isOfflineSession) {
+            loadingProgress = 1f
+            isCurrentTargetReady = true
+            isHexComplete = true
+            isGreedyLoading = false
             return
         }
-        
-        greedyJob?.cancel()
+        val pid = AppContainer.debuggerUseCase.activeProcess.value?.pid
+        val allOpenTargets = getAllOpenTargets()
+        if (allOpenTargets.isEmpty()) {
+            totalPagesCount = 0
+            loadedPagesCount = 0
+            loadingProgress = 1f
+            isCurrentTargetReady = true
+            isHexComplete = true
+            isGreedyLoading = false
+            return
+        }
+
+        val allLocal = allOpenTargets.all { it.localData != null }
+        if (allLocal) {
+            totalPagesCount = 1
+            loadedPagesCount = 1
+            loadingProgress = 1f
+            isCurrentTargetReady = true
+            isHexComplete = true
+            isGreedyLoading = false
+            return
+        }
+
+        val currentEffective = getEffectiveTargets()
+        val currentIsLocal = currentEffective.isNotEmpty() && currentEffective.all { it.localData != null }
+
+        if (pid == null) {
+            isCurrentTargetReady = currentIsLocal
+            isHexComplete = allLocal
+            loadingProgress = if (allLocal || currentIsLocal) 1f else 0f
+            isGreedyLoading = false
+            return
+        }
+
+        // Only load readable subranges for the active memory region.
+        // We strictly ignore background/inactive tabs to prevent network bottlenecks.
+        val remoteTargetsToLoad = currentEffective.filter { 
+            it.localData == null && it.end > it.start && (it.protections == 0 || (it.protections and 1) != 0)
+        }
+
+        if (remoteTargetsToLoad.isEmpty()) {
+            loadingProgress = 1f
+            isCurrentTargetReady = true
+            isHexComplete = true
+            isGreedyLoading = false
+            return
+        }
+
+        val totalRemoteBytes = currentEffective.filter { it.localData == null && it.end > it.start }.sumOf { it.end - it.start }
+        val totalToLoad = totalRemoteBytes
+
+        val regionKey = currentEffective.joinToString(";") { "${it.start}-${it.end}" }
+        currentTargetRegionKey = regionKey
+
+        val regionProgress = AppContainer.hexProgressCache.getOrPut(regionKey) {
+            AppContainer.HexRegionProgress()
+        }
+
+        if (regionProgress.isComplete) {
+            loadingProgress = 1f
+            isHexComplete = true
+            isCurrentTargetReady = true
+            isGreedyLoading = false
+            return
+        }
+
+        // Restore current state from persistent cache
+        loadingProgress = regionProgress.progress
+        loadedBytes = regionProgress.loadedBytes
+        isHexComplete = regionProgress.isComplete
+        isCurrentTargetReady = regionProgress.isComplete || regionProgress.progress > 0f
+        isGreedyLoading = true
+
         greedyJob = scope.launch(Dispatchers.IO) {
-            isGreedyLoading = true
             try {
-                // 1. Calculate total pages
-                var total = 0
-                for (map in targets) {
-                    total += ((map.end - map.start + pageSize - 1) / pageSize).toInt()
-                }
-                withContext(Dispatchers.Main) { 
-                    totalPagesCount = total
-                    loadedPagesCount = memoryCache.size
-                }
+                val chunkSize = 1024 * 1024L // 1MB chunks for high throughput memory streaming
+                val activeTargetStarts = currentEffective.map { it.start }.toSet()
+                var lastProgressUpdateTime = 0L
+                var lastReportedProgress = regionProgress.progress
 
-                val allLocal = targets.all { it.localData != null }
-
-                if (allLocal) {
-                    // FAST PATH: Local processing with batched progress updates
-                    var pagesSinceUpdate = 0
-                    targets.forEach { map ->
-                        val mapData = map.localData ?: return@forEach
-                        val start = map.start
-                        val end = map.end
-                        
-                        var current = start
-                        while (current < end) {
-                            if (!isActive) return@launch
-                            val page = (current / pageSize) * pageSize
-                            if (!memoryCache.containsKey(page)) {
-                                val pageData = ByteArray(pageSize)
-                                val readStart = maxOf(page, start)
-                                val readEnd = minOf(page + pageSize, end)
-                                val offsetInMap = (readStart - start).toInt()
-                                val len = (readEnd - readStart).toInt()
-                                mapData.copyInto(pageData, (readStart - page).toInt(), offsetInMap, offsetInMap + len)
-                                memoryCache[page] = pageData
-                                pagesSinceUpdate++
-                            }
-                            current = page + pageSize
-                            // Batch progress updates and yield every 100 pages
-                            if (pagesSinceUpdate >= 100) {
-                                withContext(Dispatchers.Main) { loadedPagesCount = memoryCache.size }
-                                pagesSinceUpdate = 0
-                                yield()
+                suspend fun updateProgress(force: Boolean = false) {
+                    val now = System.currentTimeMillis()
+                    val progress = if (totalRemoteBytes > 0) (regionProgress.loadedBytes.toFloat() / totalRemoteBytes.toFloat()).coerceIn(0f, 1f) else 1f
+                    regionProgress.progress = progress
+                    if (force || now - lastProgressUpdateTime >= 100L || progress - lastReportedProgress >= 0.02f) {
+                        lastProgressUpdateTime = now
+                        lastReportedProgress = progress
+                        withContext(Dispatchers.Main) {
+                            loadedBytes = regionProgress.loadedBytes
+                            loadingProgress = progress
+                            if (progress >= 1f) {
+                                regionProgress.isComplete = true
+                                isHexComplete = true
+                                isCurrentTargetReady = true
                             }
                         }
                     }
-                    // Final progress update
-                    if (pagesSinceUpdate > 0) {
-                        withContext(Dispatchers.Main) { loadedPagesCount = memoryCache.size }
+                }
+
+                suspend fun loadChunkAt(map: MemoryRange, chunkStart: Long, mapProgress: AppContainer.HexRegionProgress = regionProgress): Boolean {
+                    val chunkEnd = minOf(chunkStart + chunkSize, map.end)
+                    val readLen = (chunkEnd - chunkStart).toInt()
+                    if (readLen <= 0) {
+                        mapProgress.completedChunks.add(chunkStart)
+                        return false
                     }
-                } else {
-                    // CONSOLE PATH: Large-chunk reads to minimize network round-trips
-                    // Read 4MB at a time (64 pages) instead of 64KB per call
-                    val largeChunkSize = 4L * 1024 * 1024 // 4MB
-                    var pagesSinceUpdate = 0
 
-                    for (map in targets) {
-                        if (!isActive) break
-                        val mapStart = map.start
-                        val mapEnd = map.end
+                    // If connection dropped, wait patiently for background auto-reconnect without losing progress
+                    while (isActive && (!AppContainer.debuggerUseCase.isConnected.value || !AppContainer.clientAdapter.isConnected)) {
+                        delay(1000)
+                    }
+                    if (!isActive) return false
 
-                        if (map.localData != null) {
-                            // Local data within a mixed target set — process locally
-                            val mapData = map.localData
-                            var current = mapStart
-                            while (current < mapEnd) {
-                                if (!isActive) return@launch
-                                val page = (current / pageSize) * pageSize
-                                if (!memoryCache.containsKey(page)) {
-                                    val pageData = ByteArray(pageSize)
-                                    val readStart = maxOf(page, mapStart)
-                                    val readEnd = minOf(page + pageSize, mapEnd)
-                                    val offsetInMap = (readStart - mapStart).toInt()
-                                    val len = (readEnd - readStart).toInt()
-                                    mapData.copyInto(pageData, (readStart - page).toInt(), offsetInMap, offsetInMap + len)
-                                    memoryCache[page] = pageData
-                                    pagesSinceUpdate++
+                    val chunkPages = mutableMapOf<Long, ByteArray>()
+                    try {
+                        val data = AppContainer.clientAdapter.client.readMemory(pid, chunkStart, readLen)
+                        if (data.isNotEmpty()) {
+                            var pageAddr = (chunkStart / pageSize) * pageSize
+                            while (pageAddr < chunkEnd) {
+                                val copyStart = maxOf(pageAddr, chunkStart)
+                                val copyEnd = minOf(pageAddr + pageSize, chunkEnd)
+                                val srcOffset = (copyStart - chunkStart).toInt()
+                                val destOffset = (copyStart - pageAddr).toInt()
+                                val copyLen = (copyEnd - copyStart).toInt()
+                                if (copyLen > 0 && srcOffset + copyLen <= data.size) {
+                                    val pageData = chunkPages[pageAddr]
+                                        ?: (if (copyLen == pageSize && destOffset == 0) ByteArray(pageSize) else memoryCache[pageAddr]?.copyOf() ?: ByteArray(pageSize))
+                                    System.arraycopy(data, srcOffset, pageData, destOffset, copyLen)
+                                    chunkPages[pageAddr] = pageData
                                 }
-                                current = page + pageSize
-                                if (pagesSinceUpdate >= 100) {
-                                    withContext(Dispatchers.Main) { loadedPagesCount = memoryCache.size }
-                                    pagesSinceUpdate = 0
-                                    yield()
-                                }
+                                pageAddr += pageSize
                             }
-                            continue
+                        }
+                    } catch (_: Exception) {
+                        // If this error occurred because connection was lost, wait for reconnect and retry this chunk!
+                        if (!AppContainer.clientAdapter.isConnected) {
+                            while (isActive && (!AppContainer.debuggerUseCase.isConnected.value || !AppContainer.clientAdapter.isConnected)) {
+                                delay(1000)
+                            }
+                            if (!isActive) return false
+                            return loadChunkAt(map, chunkStart)
                         }
 
-                        if (pid == null) continue
-
-                        // Network reads in large chunks
-                        var chunkAddr = (mapStart / pageSize) * pageSize
-                        while (chunkAddr < mapEnd) {
-                            if (!isActive) return@launch
-                            // Yield to visible-area loading
-                            while (isLoading) delay(200)
-
-                            // Find how many consecutive uncached pages we can batch
-                            val chunkEnd = minOf(chunkAddr + largeChunkSize, mapEnd)
-                            val readStart = maxOf(chunkAddr, mapStart)
-                            val readEnd = minOf(chunkEnd, mapEnd)
-                            val readLen = (readEnd - readStart).toInt()
-
-                            if (readLen <= 0) {
-                                chunkAddr = chunkEnd
-                                continue
-                            }
-
-                            // Check if we actually need any pages in this range
-                            var needsAnyPage = false
-                            var checkAddr = (readStart / pageSize) * pageSize
-                            while (checkAddr < readEnd) {
-                                if (!memoryCache.containsKey(checkAddr)) {
-                                    needsAnyPage = true
-                                    break
-                                }
-                                checkAddr += pageSize
-                            }
-
-                            if (!needsAnyPage) {
-                                chunkAddr = chunkEnd
-                                continue
-                            }
-
-                            try {
-                                // Single large network read
-                                val data = AppContainer.clientAdapter.client.readMemory(pid, readStart, readLen)
-
-                                // Split into page-sized entries in the cache
-                                var pageAddr = (readStart / pageSize) * pageSize
-                                while (pageAddr < readEnd) {
-                                    if (!memoryCache.containsKey(pageAddr)) {
-                                        val pageData = ByteArray(pageSize)
-                                        val copyStart = maxOf(pageAddr, readStart)
-                                        val copyEnd = minOf(pageAddr + pageSize, readEnd)
-                                        val srcOffset = (copyStart - readStart).toInt()
-                                        val destOffset = (copyStart - pageAddr).toInt()
-                                        val copyLen = (copyEnd - copyStart).toInt()
-                                        if (copyLen > 0 && srcOffset + copyLen <= data.size) {
-                                            System.arraycopy(data, srcOffset, pageData, destOffset, copyLen)
+                        var fallbackPage = (chunkStart / pageSize) * pageSize
+                        while (fallbackPage < chunkEnd) {
+                            if (!isActive) return false
+                            val fStart = maxOf(fallbackPage, chunkStart)
+                            val fEnd = minOf(fallbackPage + pageSize, chunkEnd)
+                            val fLen = (fEnd - fStart).toInt()
+                            if (fLen > 0) {
+                                val pageData = chunkPages[fallbackPage]
+                                    ?: memoryCache[fallbackPage]?.copyOf()
+                                    ?: ByteArray(pageSize)
+                                try {
+                                    val pData = AppContainer.clientAdapter.client.readMemory(pid, fStart, fLen)
+                                    if (pData.isNotEmpty()) {
+                                        System.arraycopy(pData, 0, pageData, (fStart - fallbackPage).toInt(), pData.size)
+                                        chunkPages[fallbackPage] = pageData
+                                    }
+                                } catch (_: Exception) {
+                                    if (!AppContainer.clientAdapter.isConnected) {
+                                        while (isActive && (!AppContainer.debuggerUseCase.isConnected.value || !AppContainer.clientAdapter.isConnected)) {
+                                            delay(1000)
                                         }
-                                        memoryCache[pageAddr] = pageData
-                                        pagesSinceUpdate++
+                                        if (!isActive) return false
+                                        return loadChunkAt(map, chunkStart, mapProgress)
                                     }
-                                    pageAddr += pageSize
-                                }
-                            } catch (_: Exception) {
-                                // On failure, fall back to individual page loading for this chunk
-                                var fallbackPage = (readStart / pageSize) * pageSize
-                                while (fallbackPage < readEnd) {
-                                    if (!isActive) return@launch
                                     if (!memoryCache.containsKey(fallbackPage)) {
-                                        loadPage(pid, fallbackPage, targets, skipChangeTracking = true)
-                                        pagesSinceUpdate++
+                                        chunkPages[fallbackPage] = pageData
                                     }
-                                    fallbackPage += pageSize
                                 }
                             }
-
-                            // Batched progress update
-                            if (pagesSinceUpdate >= 50) {
-                                withContext(Dispatchers.Main) { loadedPagesCount = memoryCache.size }
-                                pagesSinceUpdate = 0
-                                yield()
-                            }
-
-                            chunkAddr = chunkEnd
+                            fallbackPage += pageSize
                         }
                     }
 
-                    // Final progress update
-                    if (pagesSinceUpdate > 0) {
-                        withContext(Dispatchers.Main) { loadedPagesCount = memoryCache.size }
+                    if (mapProgress.completedChunks.add(chunkStart)) {
+                        mapProgress.loadedBytes += readLen
+                    }
+
+                    if (chunkPages.isNotEmpty()) {
+                        androidx.compose.runtime.snapshots.Snapshot.withMutableSnapshot {
+                            for ((pAddr, pData) in chunkPages) {
+                                memoryCache[pAddr] = pData
+                            }
+                        }
+                        if (memoryCache.size > 8192) {
+                            pruneCacheIfNeeded()
+                        }
+                    }
+                    return true
+                }
+
+                suspend fun checkAndLoadViewport(): Boolean {
+                    val currentView = getAddressForRow(scrollPosition)
+                    val activeMapForView = remoteTargetsToLoad.firstOrNull { currentView >= it.start && currentView < it.end } ?: return false
+                    val viewChunkStart = ((currentView - activeMapForView.start) / chunkSize) * chunkSize + activeMapForView.start
+                    val viewPage = (currentView / pageSize) * pageSize
+                    var didLoad = false
+                    if (!memoryCache.containsKey(viewPage) || !regionProgress.completedChunks.contains(viewChunkStart)) {
+                        val chunkEnd = minOf(viewChunkStart + chunkSize, activeMapForView.end)
+                        val rLen = (chunkEnd - viewChunkStart).toInt()
+                        if (regionProgress.completedChunks.remove(viewChunkStart)) {
+                            regionProgress.loadedBytes = maxOf(0L, regionProgress.loadedBytes - rLen)
+                        }
+                        if (loadChunkAt(activeMapForView, viewChunkStart)) {
+                            didLoad = true
+                            withContext(Dispatchers.Main) {
+                                isCurrentTargetReady = true
+                            }
+                            val nextViewChunk = viewChunkStart + chunkSize
+                            val nextPage = viewPage + pageSize
+                            if (nextViewChunk < activeMapForView.end && (!memoryCache.containsKey(nextPage) || !regionProgress.completedChunks.contains(nextViewChunk))) {
+                                val nextEnd = minOf(nextViewChunk + chunkSize, activeMapForView.end)
+                                val nextLen = (nextEnd - nextViewChunk).toInt()
+                                if (regionProgress.completedChunks.remove(nextViewChunk)) {
+                                    regionProgress.loadedBytes = maxOf(0L, regionProgress.loadedBytes - nextLen)
+                                }
+                                loadChunkAt(activeMapForView, nextViewChunk, regionProgress)
+                            }
+                            val prevViewChunk = viewChunkStart - chunkSize
+                            val prevPage = viewPage - pageSize
+                            if (prevViewChunk >= activeMapForView.start && (!memoryCache.containsKey(prevPage) || !regionProgress.completedChunks.contains(prevViewChunk))) {
+                                val prevEnd = minOf(prevViewChunk + chunkSize, activeMapForView.end)
+                                val prevLen = (prevEnd - prevViewChunk).toInt()
+                                if (regionProgress.completedChunks.remove(prevViewChunk)) {
+                                    regionProgress.loadedBytes = maxOf(0L, regionProgress.loadedBytes - prevLen)
+                                }
+                                loadChunkAt(activeMapForView, prevViewChunk, regionProgress)
+                            }
+                            updateProgress()
+                        }
+                    }
+                    return didLoad
+                }
+
+                // 1. Initial viewport priority load: user sees bytes right away
+                checkAndLoadViewport()
+                updateProgress(force = true)
+
+                // 2. Sequential pass through the active remote targets
+                for (map in remoteTargetsToLoad) {
+                    if (!isActive) break
+                    
+                    val mapKey = "${map.start}-${map.end}"
+                    val isCurrentMap = currentEffective.any { it.start == map.start }
+                    val mapProgress = if (isCurrentMap) regionProgress else AppContainer.hexProgressCache.getOrPut(mapKey) { AppContainer.HexRegionProgress() }
+                    val mapBytes = map.end - map.start
+                    
+                    var chunk = map.start
+                    while (chunk < map.end) {
+                        if (!isActive) break
+
+                        // Before reading each chunk, satisfy any new scroll viewport location
+                        checkAndLoadViewport()
+
+                        // Only load chunk if not already completed
+                        if (!mapProgress.completedChunks.contains(chunk)) {
+                            loadChunkAt(map, chunk, mapProgress)
+                            
+                            if (isCurrentMap) {
+                                updateProgress(force = false)
+                                if (map.start in activeTargetStarts) {
+                                    withContext(Dispatchers.Main) {
+                                        isCurrentTargetReady = true
+                                    }
+                                }
+                            } else {
+                                val prog = if (mapBytes > 0) (mapProgress.loadedBytes.toFloat() / mapBytes.toFloat()).coerceIn(0f, 1f) else 1f
+                                mapProgress.progress = prog
+                                if (prog >= 1f) mapProgress.isComplete = true
+                            }
+                            delay(15)
+                        }
+
+                        chunk += chunkSize
+                    }
+                    if (!isCurrentMap) {
+                        mapProgress.progress = 1f
+                        mapProgress.isComplete = true
                     }
                 }
-                
-                withContext(Dispatchers.Main) { 
-                    loadedPagesCount = totalPagesCount 
+
+                updateProgress(force = true)
+                withContext(Dispatchers.Main) {
+                    regionProgress.isComplete = true
+                    regionProgress.progress = 1f
+                    loadingProgress = 1f
+                    isCurrentTargetReady = true
+                    isHexComplete = true
                 }
             } finally {
                 isGreedyLoading = false
@@ -578,7 +820,7 @@ class HexState(
         // y is local to HexGridBody where row 0 starts at y = 0
         val rowIndex = if (y < 0f) 0 else (y / rowHeightPx).toInt()
         
-        val sorted = if (activeMap != null) listOf(activeMap!!) else activeMaps.sortedBy { it.start }
+        val sorted = getEffectiveTargets()
         if (sorted.isEmpty()) return null
 
         val targetRow = scrollPosition + rowIndex
@@ -712,13 +954,15 @@ class HexState(
     fun getByteAt(addr: Long): Byte {
         pendingEdits[addr]?.let { return it }
         
-        // Fast path for local files: read directly from source data if cache is missing
-        val targets = if (activeMap != null) listOf(activeMap!!) else activeMaps.toList()
+        val targets = getEffectiveTargets()
         val localMap = targets.firstOrNull { it.localData != null && addr >= it.start && addr < it.end }
+            ?: (if (activeMap?.localData != null && addr >= activeMap!!.start && addr < activeMap!!.end) activeMap else null)
+            ?: activeMaps.firstOrNull { it.localData != null && addr >= it.start && addr < it.end }
         if (localMap != null) {
             val offset = (addr - localMap.start).toInt()
-            if (offset >= 0 && offset < (localMap.localData?.size ?: 0)) {
-                return localMap.localData!![offset]
+            val data = localMap.localData
+            if (data != null && offset >= 0 && offset < data.size) {
+                return data[offset]
             }
         }
 
@@ -758,7 +1002,7 @@ class HexState(
         
         if (bytes.isEmpty()) return
         
-        val targets = if (activeMap != null) listOf(activeMap!!) else activeMaps.toList()
+        val targets = getEffectiveTargets()
         var currentAddr = baseAddr
         for (b in bytes) {
             if (!targets.any { currentAddr >= it.start && currentAddr < it.end }) {
@@ -795,18 +1039,21 @@ fun rememberHexState(
         HexState(activeMap, activeMaps, jumpToAddress, selectionStartParam, selectionEndParam, onSelectionChanged, scope)
     }
     
-    state.selectionStart = selectionStartParam
-    state.selectionEnd = selectionEndParam
-
-    SideEffect {
+    val activeMapsSnapshot = activeMaps.toList()
+    LaunchedEffect(activeMap, activeMapsSnapshot, selectionStartParam, selectionEndParam, jumpToAddress) {
         val mapsChanged = state.activeMap != activeMap || state.activeMaps.size != activeMaps.size || !state.activeMaps.containsAll(activeMaps)
         state.activeMap = activeMap
-        state.activeMaps.clear()
-        state.activeMaps.addAll(activeMaps)
-        state.onSelectionChanged = onSelectionChanged
         if (mapsChanged) {
-            state.memoryCache.clear()
+            state.activeMaps.clear()
+            state.activeMaps.addAll(activeMaps)
+            val targets = state.getEffectiveTargets()
+            state.startAddress = targets.firstOrNull()?.start ?: 0L
+            state.endAddress = targets.lastOrNull()?.end ?: 0L
+            state.pendingEdits.clear()
         }
+        state.selectionStart = selectionStartParam
+        state.selectionEnd = selectionEndParam
+        state.onSelectionChanged = onSelectionChanged
     }
     
     return state

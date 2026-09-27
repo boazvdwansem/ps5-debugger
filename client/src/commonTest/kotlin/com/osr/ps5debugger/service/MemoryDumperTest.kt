@@ -168,6 +168,7 @@ class MemoryDumperTest {
                 override fun addCheat(titleId: String, version: String, cheat: com.osr.ps5debugger.domain.model.Cheat, gameName: String) {}
                 override fun toggleCheat(titleId: String, version: String, cheatId: String): com.osr.ps5debugger.domain.model.Cheat? = null
                 override fun deleteCheat(titleId: String, version: String, cheatId: String) {}
+                override fun toggleFreezeCheat(titleId: String, version: String, cheatId: String) {}
                 override fun updateGameName(titleId: String, name: String) {}
                 override fun updateGameVersion(titleId: String, version: String) {}
                 override fun updateGamePlatform(titleId: String, platform: String) {}
@@ -318,6 +319,7 @@ class MemoryDumperTest {
                 override fun addCheat(titleId: String, version: String, cheat: com.osr.ps5debugger.domain.model.Cheat, gameName: String) {}
                 override fun toggleCheat(titleId: String, version: String, cheatId: String): com.osr.ps5debugger.domain.model.Cheat? = null
                 override fun deleteCheat(titleId: String, version: String, cheatId: String) {}
+                override fun toggleFreezeCheat(titleId: String, version: String, cheatId: String) {}
                 override fun updateGameName(titleId: String, name: String) {}
                 override fun updateGameVersion(titleId: String, version: String) {}
                 override fun updateGamePlatform(titleId: String, platform: String) {}

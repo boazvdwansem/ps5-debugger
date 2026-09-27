@@ -16,7 +16,7 @@ class MemoryService(private val connection: Ps5Connection) {
         connection.sendPacket(outStr, ProtocolConstants.CMD_PROC_READ, payload)
         
         val status = connection.receiveStatus(inStr)
-        if (status != ProtocolConstants.CMD_SUCCESS) throw java.io.IOException("Read memory command failed")
+        if (status != ProtocolConstants.CMD_SUCCESS) throw com.osr.ps5debugger.protocol.Ps5CommandException("Read memory command failed: status 0x${status.toString(16)}", status)
 
         connection.readExactly(inStr, length)
     }
@@ -132,7 +132,7 @@ class MemoryService(private val connection: Ps5Connection) {
 
         val list = mutableListOf<Ps5DisasmInstr>()
         while (true) {
-            val bufBytes = connection.readExactly(inStr, 32)
+            val bufBytes = connection.readExactly(inStr, ProtocolConstants.DISASM_INSTR_ENTRY_SIZE)
             // Check sentinel (all bytes 0xFF)
             var isSentinel = true
             for (b in bufBytes) {
