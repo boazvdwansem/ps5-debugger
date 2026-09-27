@@ -47,6 +47,7 @@ class MainState(
     var pendingCheatToCreate by mutableStateOf<com.osr.ps5debugger.domain.model.Cheat?>(null)
     var showAddCheatDialog by mutableStateOf(false)
     var showSaveSessionDialog by mutableStateOf(false)
+    var showConnectDialog by mutableStateOf(false)
 
     val isOfflineSession: Boolean get() = AppContainer.isOfflineSession
     val loadedSessionName: String? get() = AppContainer.loadedSessionName
@@ -57,8 +58,22 @@ class MainState(
         jumpToAddress = null
         selectionStart = null
         selectionEnd = null
-        if (!AppContainer.isOfflineSession) {
+        if (!AppContainer.isOfflineSession && AppContainer.loadedSessionName == null) {
             HexCache.clearHexCache()
+        }
+    }
+
+    fun disconnectAndReturnToConnectionScreen() {
+        scope.launch {
+            if (AppContainer.debuggerUseCase.isConnected.value) {
+                AppContainer.debuggerUseCase.disconnect()
+            }
+            if (AppContainer.isOfflineSession) {
+                closeOfflineSession()
+            } else {
+                AppContainer.loadedSessionName = null
+                closeAllOpenedRegions()
+            }
         }
     }
 

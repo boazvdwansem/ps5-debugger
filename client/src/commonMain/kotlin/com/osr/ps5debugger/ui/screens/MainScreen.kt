@@ -58,6 +58,7 @@ import com.osr.ps5debugger.ui.common.Tooltip
 import com.osr.ps5debugger.ui.common.ConsoleToggleButton
 import com.osr.ps5debugger.ui.common.TabItem
 import com.osr.ps5debugger.ui.common.TopMenuBar
+import com.osr.ps5debugger.ui.dialogs.ConnectPs5Dialog
 import com.osr.ps5debugger.ui.state.MainState
 import com.osr.ps5debugger.ui.state.rememberMainState
 import kotlinx.coroutines.isActive
@@ -131,6 +132,13 @@ fun MainScreen(state: MainState) {
                 }
             )
         }
+
+        if (state.showConnectDialog) {
+            ConnectPs5Dialog(
+                initialIp = DefaultIpHelper.getDefaultIp() ?: "192.168.1.100",
+                onDismiss = { state.showConnectDialog = false }
+            )
+        }
     }
 }
 
@@ -168,7 +176,7 @@ private fun MainLayout(state: MainState) {
     }
 
     LaunchedEffect(activeProcess?.pid) {
-        if (!AppContainer.isOfflineSession) {
+        if (!AppContainer.isOfflineSession && AppContainer.loadedSessionName == null) {
             state.closeAllOpenedRegions()
         }
         if (activeProcess == null) {
@@ -227,7 +235,7 @@ private fun MainLayout(state: MainState) {
     ) {
         // TOP BAR (File Edit View, CONNECTED, Settings) - Full width
         BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-            val isMobileToolbar = maxWidth < 800.dp
+            val isMobileToolbar = this.maxWidth < 800.dp
             TopBar(state, isMobile = isMobileToolbar, onSettingsClick = { state.isSettingsOpen = true })
         }
         HorizontalDivider(color = PS5ThemeColors.BorderColor)
