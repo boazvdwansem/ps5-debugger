@@ -14,7 +14,9 @@ import androidx.compose.ui.input.key.isMetaPressed
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import com.osr.ps5debugger.di.AppContainer
+import com.osr.ps5debugger.domain.model.LogEntry
 import com.osr.ps5debugger.domain.model.MemoryRange
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -187,17 +189,6 @@ class HexState(
     }
 
     fun getEffectiveTargets(): List<MemoryRange> {
-        val base = if (activeMap != null) listOf(activeMap!!) else activeMaps.toList()
-        return base.flatMap { map ->
-            if (map.subRanges.isNotEmpty()) {
-                map.subRanges
-            } else {
-                listOf(map)
-            }
-        }.sortedBy { it.start }
-    }
-
-    fun getAllOpenTargets(): List<MemoryRange> {
         val base = if (activeMaps.isNotEmpty()) activeMaps.toList() else listOfNotNull(activeMap)
         return base.flatMap { map ->
             if (map.subRanges.isNotEmpty()) {
@@ -205,7 +196,11 @@ class HexState(
             } else {
                 listOf(map)
             }
-        }
+        }.distinctBy { it.start }.sortedBy { it.start }
+    }
+
+    fun getAllOpenTargets(): List<MemoryRange> {
+        return getEffectiveTargets()
     }
 
     fun updateScrollPosition(newPos: Long) {
@@ -397,13 +392,31 @@ class HexState(
         val remoteTargets = targets.filter { it.localData == null }
         if (remoteTargets.isEmpty() || pid == null) return
 
+        val viewAddr = getAddressForRow(scrollPosition)
+        val viewPage = (viewAddr / pageSize) * pageSize
+
         if (!forceRefresh) {
-            val viewAddr = getAddressForRow(scrollPosition)
-            val viewPage = (viewAddr / pageSize) * pageSize
-            if (memoryCache.containsKey(viewPage)) {
-                return
+            if (!memoryCache.containsKey(viewPage)) {
+                val totalRows = getTotalRows()
+                val neededPages = LinkedHashSet<Long>()
+                for (r in 0 until visibleRowsCount) {
+                    val row = scrollPosition + r
+                    if (row in 0 until totalRows) {
+                        val rowAddr = getAddressForRow(row)
+                        neededPages.add((rowAddr / pageSize) * pageSize)
+                    }
+                }
+                loadJob?.cancel()
+                loadJob = scope.launch {
+                    withContext(Dispatchers.IO) {
+                        for (page in neededPages) {
+                            if (!isActive) break
+                            loadPage(pid, page, remoteTargets)
+                        }
+                    }
+                }
             }
-            if (!isGreedyLoading) {
+            if (!isGreedyLoading && !isHexComplete) {
                 startGreedyLoader()
             }
             return
@@ -511,8 +524,8 @@ class HexState(
             return
         }
         val pid = AppContainer.debuggerUseCase.activeProcess.value?.pid
-        val allOpenTargets = getAllOpenTargets()
-        if (allOpenTargets.isEmpty()) {
+        val currentEffective = getEffectiveTargets()
+        if (currentEffective.isEmpty()) {
             totalPagesCount = 0
             loadedPagesCount = 0
             loadingProgress = 1f
@@ -522,7 +535,7 @@ class HexState(
             return
         }
 
-        val allLocal = allOpenTargets.all { it.localData != null }
+        val allLocal = currentEffective.all { it.localData != null }
         if (allLocal) {
             totalPagesCount = 1
             loadedPagesCount = 1
@@ -533,19 +546,14 @@ class HexState(
             return
         }
 
-        val currentEffective = getEffectiveTargets()
-        val currentIsLocal = currentEffective.isNotEmpty() && currentEffective.all { it.localData != null }
-
         if (pid == null) {
-            isCurrentTargetReady = currentIsLocal
+            isCurrentTargetReady = allLocal
             isHexComplete = allLocal
-            loadingProgress = if (allLocal || currentIsLocal) 1f else 0f
+            loadingProgress = if (allLocal) 1f else 0f
             isGreedyLoading = false
             return
         }
 
-        // Only load readable subranges for the active memory region.
-        // We strictly ignore background/inactive tabs to prevent network bottlenecks.
         val remoteTargetsToLoad = currentEffective.filter { 
             it.localData == null && it.end > it.start && (it.protections == 0 || (it.protections and 1) != 0)
         }
@@ -558,22 +566,13 @@ class HexState(
             return
         }
 
-        val totalRemoteBytes = currentEffective.filter { it.localData == null && it.end > it.start }.sumOf { it.end - it.start }
-        val totalToLoad = totalRemoteBytes
+        val totalRemoteBytes = remoteTargetsToLoad.sumOf { it.end - it.start }
 
         val regionKey = currentEffective.joinToString(";") { "${it.start}-${it.end}" }
         currentTargetRegionKey = regionKey
 
         val regionProgress = HexCache.hexProgressCache.getOrPut(regionKey) {
             HexCache.HexRegionProgress()
-        }
-
-        if (regionProgress.isComplete) {
-            loadingProgress = 1f
-            isHexComplete = true
-            isCurrentTargetReady = true
-            isGreedyLoading = false
-            return
         }
 
         // Restore current state from persistent cache
@@ -585,7 +584,7 @@ class HexState(
 
         greedyJob = scope.launch(Dispatchers.IO) {
             try {
-                val chunkSize = 1024 * 1024L // 1MB chunks for high throughput memory streaming
+                val chunkSize = 1024 * 1024L // 1MB chunks
                 val activeTargetStarts = currentEffective.map { it.start }.toSet()
                 var lastProgressUpdateTime = 0L
                 var lastReportedProgress = regionProgress.progress
@@ -594,7 +593,7 @@ class HexState(
                     val now = System.currentTimeMillis()
                     val progress = if (totalRemoteBytes > 0) (regionProgress.loadedBytes.toFloat() / totalRemoteBytes.toFloat()).coerceIn(0f, 1f) else 1f
                     regionProgress.progress = progress
-                    if (force || now - lastProgressUpdateTime >= 100L || progress - lastReportedProgress >= 0.02f) {
+                    if (force || now - lastProgressUpdateTime >= 100L || progress - lastReportedProgress >= 0.01f) {
                         lastProgressUpdateTime = now
                         lastReportedProgress = progress
                         withContext(Dispatchers.Main) {
@@ -617,13 +616,17 @@ class HexState(
                         return false
                     }
 
-                    // If connection dropped, wait patiently for background auto-reconnect without losing progress
+                    var waitCount = 0
                     while (isActive && (!AppContainer.debuggerUseCase.isConnected.value || !AppContainer.clientAdapter.isConnected)) {
-                        delay(1000)
+                        delay(500)
+                        waitCount++
+                        if (waitCount > 10) return false
                     }
                     if (!isActive) return false
 
                     val chunkPages = mutableMapOf<Long, ByteArray>()
+                    var readSuccess = false
+
                     try {
                         val data = AppContainer.clientAdapter.client.readMemory(pid, chunkStart, readLen)
                         if (data.isNotEmpty()) {
@@ -642,47 +645,27 @@ class HexState(
                                 }
                                 pageAddr += pageSize
                             }
+                            readSuccess = true
                         }
                     } catch (_: Exception) {
-                        // If this error occurred because connection was lost, wait for reconnect and retry this chunk!
                         if (!AppContainer.clientAdapter.isConnected) {
+                            var retryWait = 0
                             while (isActive && (!AppContainer.debuggerUseCase.isConnected.value || !AppContainer.clientAdapter.isConnected)) {
-                                delay(1000)
+                                delay(500)
+                                retryWait++
+                                if (retryWait > 10) return false
                             }
                             if (!isActive) return false
-                            return loadChunkAt(map, chunkStart)
+                            return loadChunkAt(map, chunkStart, mapProgress)
                         }
 
-                        var fallbackPage = (chunkStart / pageSize) * pageSize
-                        while (fallbackPage < chunkEnd) {
-                            if (!isActive) return false
-                            val fStart = maxOf(fallbackPage, chunkStart)
-                            val fEnd = minOf(fallbackPage + pageSize, chunkEnd)
-                            val fLen = (fEnd - fStart).toInt()
-                            if (fLen > 0) {
-                                val pageData = chunkPages[fallbackPage]
-                                    ?: memoryCache[fallbackPage]?.copyOf()
-                                    ?: ByteArray(pageSize)
-                                try {
-                                    val pData = AppContainer.clientAdapter.client.readMemory(pid, fStart, fLen)
-                                    if (pData.isNotEmpty()) {
-                                        System.arraycopy(pData, 0, pageData, (fStart - fallbackPage).toInt(), pData.size)
-                                        chunkPages[fallbackPage] = pageData
-                                    }
-                                } catch (_: Exception) {
-                                    if (!AppContainer.clientAdapter.isConnected) {
-                                        while (isActive && (!AppContainer.debuggerUseCase.isConnected.value || !AppContainer.clientAdapter.isConnected)) {
-                                            delay(1000)
-                                        }
-                                        if (!isActive) return false
-                                        return loadChunkAt(map, chunkStart, mapProgress)
-                                    }
-                                    if (!memoryCache.containsKey(fallbackPage)) {
-                                        chunkPages[fallbackPage] = pageData
-                                    }
-                                }
+                        // Connection is alive, but PS5 kernel rejected reading this memory range (unmapped/protected).
+                        var pageAddr = (chunkStart / pageSize) * pageSize
+                        while (pageAddr < chunkEnd) {
+                            if (!memoryCache.containsKey(pageAddr)) {
+                                chunkPages[pageAddr] = ByteArray(pageSize)
                             }
-                            fallbackPage += pageSize
+                            pageAddr += pageSize
                         }
                     }
 
@@ -691,16 +674,14 @@ class HexState(
                     }
 
                     if (chunkPages.isNotEmpty()) {
-                        androidx.compose.runtime.snapshots.Snapshot.withMutableSnapshot {
+                        withContext(Dispatchers.Main) {
                             for ((pAddr, pData) in chunkPages) {
                                 memoryCache[pAddr] = pData
                             }
-                        }
-                        if (memoryCache.size > 8192) {
                             pruneCacheIfNeeded()
                         }
                     }
-                    return true
+                    return readSuccess
                 }
 
                 suspend fun checkAndLoadViewport(): Boolean {
@@ -709,38 +690,13 @@ class HexState(
                     val viewChunkStart = ((currentView - activeMapForView.start) / chunkSize) * chunkSize + activeMapForView.start
                     val viewPage = (currentView / pageSize) * pageSize
                     var didLoad = false
-                    if (!memoryCache.containsKey(viewPage) || !regionProgress.completedChunks.contains(viewChunkStart)) {
-                        val chunkEnd = minOf(viewChunkStart + chunkSize, activeMapForView.end)
-                        val rLen = (chunkEnd - viewChunkStart).toInt()
-                        if (regionProgress.completedChunks.remove(viewChunkStart)) {
-                            regionProgress.loadedBytes = maxOf(0L, regionProgress.loadedBytes - rLen)
-                        }
+                    if (!memoryCache.containsKey(viewPage)) {
                         if (loadChunkAt(activeMapForView, viewChunkStart)) {
                             didLoad = true
                             withContext(Dispatchers.Main) {
                                 isCurrentTargetReady = true
                             }
-                            val nextViewChunk = viewChunkStart + chunkSize
-                            val nextPage = viewPage + pageSize
-                            if (nextViewChunk < activeMapForView.end && (!memoryCache.containsKey(nextPage) || !regionProgress.completedChunks.contains(nextViewChunk))) {
-                                val nextEnd = minOf(nextViewChunk + chunkSize, activeMapForView.end)
-                                val nextLen = (nextEnd - nextViewChunk).toInt()
-                                if (regionProgress.completedChunks.remove(nextViewChunk)) {
-                                    regionProgress.loadedBytes = maxOf(0L, regionProgress.loadedBytes - nextLen)
-                                }
-                                loadChunkAt(activeMapForView, nextViewChunk, regionProgress)
-                            }
-                            val prevViewChunk = viewChunkStart - chunkSize
-                            val prevPage = viewPage - pageSize
-                            if (prevViewChunk >= activeMapForView.start && (!memoryCache.containsKey(prevPage) || !regionProgress.completedChunks.contains(prevViewChunk))) {
-                                val prevEnd = minOf(prevViewChunk + chunkSize, activeMapForView.end)
-                                val prevLen = (prevEnd - prevViewChunk).toInt()
-                                if (regionProgress.completedChunks.remove(prevViewChunk)) {
-                                    regionProgress.loadedBytes = maxOf(0L, regionProgress.loadedBytes - prevLen)
-                                }
-                                loadChunkAt(activeMapForView, prevViewChunk, regionProgress)
-                            }
-                            updateProgress()
+                            updateProgress(force = true)
                         }
                     }
                     return didLoad
@@ -754,42 +710,26 @@ class HexState(
                 for (map in remoteTargetsToLoad) {
                     if (!isActive) break
                     
-                    val mapKey = "${map.start}-${map.end}"
-                    val isCurrentMap = currentEffective.any { it.start == map.start }
-                    val mapProgress = if (isCurrentMap) regionProgress else HexCache.hexProgressCache.getOrPut(mapKey) { HexCache.HexRegionProgress() }
-                    val mapBytes = map.end - map.start
-                    
                     var chunk = map.start
                     while (chunk < map.end) {
                         if (!isActive) break
 
-                        // Before reading each chunk, satisfy any new scroll viewport location
+                        // Satisfy any new scroll viewport location first
                         checkAndLoadViewport()
 
-                        // Only load chunk if not already completed
-                        if (!mapProgress.completedChunks.contains(chunk)) {
-                            loadChunkAt(map, chunk, mapProgress)
-                            
-                            if (isCurrentMap) {
-                                updateProgress(force = false)
-                                if (map.start in activeTargetStarts) {
-                                    withContext(Dispatchers.Main) {
-                                        isCurrentTargetReady = true
-                                    }
+                        val pageForChunk = (chunk / pageSize) * pageSize
+                        if (!regionProgress.completedChunks.contains(chunk) || !memoryCache.containsKey(pageForChunk)) {
+                            loadChunkAt(map, chunk, regionProgress)
+                            updateProgress(force = false)
+                            if (map.start in activeTargetStarts) {
+                                withContext(Dispatchers.Main) {
+                                    isCurrentTargetReady = true
                                 }
-                            } else {
-                                val prog = if (mapBytes > 0) (mapProgress.loadedBytes.toFloat() / mapBytes.toFloat()).coerceIn(0f, 1f) else 1f
-                                mapProgress.progress = prog
-                                if (prog >= 1f) mapProgress.isComplete = true
                             }
-                            delay(15)
+                            delay(10)
                         }
 
                         chunk += chunkSize
-                    }
-                    if (!isCurrentMap) {
-                        mapProgress.progress = 1f
-                        mapProgress.isComplete = true
                     }
                 }
 
@@ -801,8 +741,18 @@ class HexState(
                     isCurrentTargetReady = true
                     isHexComplete = true
                 }
+            } catch (e: Exception) {
+                if (e !is CancellationException) {
+                    AppContainer.debuggerUseCase.log(
+                        "MEMORY",
+                        "Hex region streaming encountered an error: ${e.message}",
+                        LogEntry.Level.WARN
+                    )
+                }
             } finally {
-                isGreedyLoading = false
+                withContext(Dispatchers.Main) {
+                    isGreedyLoading = false
+                }
             }
         }
     }

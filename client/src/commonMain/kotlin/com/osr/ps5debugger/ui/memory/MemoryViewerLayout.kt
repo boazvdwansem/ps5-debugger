@@ -34,6 +34,7 @@ import com.osr.ps5debugger.ui.state.rememberMemoryViewerState
 import com.osr.ps5debugger.util.DefaultIpHelper
 import com.osr.ps5debugger.util.ShortcutManager
 import androidx.compose.ui.input.key.*
+import com.osr.ps5debugger.di.HexCache
 import kotlinx.coroutines.launch
 
 @Composable
@@ -177,7 +178,9 @@ fun MemoryViewerLayout(
                 }
                 hexState.pendingEdits.clear()
                 hexState.memoryCache.clear()
-                hexState.loadMemory()
+                HexCache.hexProgressCache.remove(hexState.getRegionKey())
+                hexState.restoreRegionProgress()
+                hexState.startGreedyLoader()
                 AppContainer.debuggerUseCase.log(
                     "MEMORY",
                     "Injected ${writes.size} byte(s) successfully",
@@ -193,23 +196,25 @@ fun MemoryViewerLayout(
         }
     }
 
-    // Only start processing disassembly once the hex for the active memory region has been loaded
+    // Only start processing disassembly if user is in Disassembly (0) or Graph (1) view and hex is ready
     LaunchedEffect(
+        state.viewMode,
         hexState.isCurrentTargetReady,
         state.activeMap,
         hexState.activeMap,
         isConnected,
         activeProcess?.pid
     ) {
-        if (hexState.isCurrentTargetReady) {
-            val current = state.activeMap ?: return@LaunchedEffect
-            val hasLocal = current.localData != null
-            val hasRemote = current.localData == null
-            // Check that the currently loaded hex data ACTUALLY matches the active tab we want to disassemble
-            val isCurrentHexTarget = hexState.activeMap?.start == current.start || hexState.activeMaps.any { it.start == current.start }
-            if (isCurrentHexTarget) {
-                if (hasLocal || (hasRemote && (isConnected || AppContainer.isOfflineSession) && activeProcess != null)) {
-                    state.loadInitialInstructions()
+        if (state.viewMode == 0 || state.viewMode == 1) {
+            if (hexState.isCurrentTargetReady) {
+                val current = state.activeMap ?: return@LaunchedEffect
+                val hasLocal = current.localData != null
+                val hasRemote = current.localData == null
+                val isCurrentHexTarget = hexState.activeMap?.start == current.start || hexState.activeMaps.any { it.start == current.start }
+                if (isCurrentHexTarget) {
+                    if (hasLocal || (hasRemote && (isConnected || AppContainer.isOfflineSession) && activeProcess != null)) {
+                        state.loadInitialInstructions()
+                    }
                 }
             }
         }
